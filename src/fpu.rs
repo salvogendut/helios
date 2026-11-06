@@ -8,6 +8,7 @@ const FSR_FCC: u32 = 3 << 10;
 mod addition;
 mod division;
 mod ieee;
+mod multiplication;
 use ieee::NV;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -147,8 +148,8 @@ impl Fpu {
         instruction: u32,
     ) -> bool {
         let double = match opf {
-            0x41 | 0x45 | 0x4d => false,
-            0x42 | 0x46 | 0x4e => true,
+            0x41 | 0x45 | 0x49 | 0x4d => false,
+            0x42 | 0x46 | 0x4a | 0x4e => true,
             _ => return false,
         };
         let (a, b) = if double {
@@ -158,10 +159,10 @@ impl Fpu {
         };
         let rounding = self.status >> 30;
         let trap_underflow = self.status & (ieee::UF << 23) != 0;
-        let (result, flags) = if matches!(opf, 0x4d | 0x4e) {
-            division::divide(a, b, double, rounding, trap_underflow)
-        } else {
-            addition::add(a, b, double, opf & 4 != 0, rounding, trap_underflow)
+        let (result, flags) = match opf {
+            0x49 | 0x4a => multiplication::multiply(a, b, double, rounding, trap_underflow),
+            0x4d | 0x4e => division::divide(a, b, double, rounding, trap_underflow),
+            _ => addition::add(a, b, double, opf & 4 != 0, rounding, trap_underflow),
         };
         if self.complete_exceptions(flags, pc, instruction) {
             if double {

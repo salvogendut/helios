@@ -28,6 +28,7 @@ or assume host scheduling is guest timing.
 | `src/fpu.rs` | Floating registers, FSR, moves/comparisons/arithmetic, branch conditions and deferred exceptions |
 | `src/fpu/division.rs` | Integer quotient/remainder IEEE division, rounding and exception flags |
 | `src/fpu/addition.rs` | Integer addition/subtraction with guard, round and sticky bits |
+| `src/fpu/multiplication.rs` | Exact integer products rounded onto normal/subnormal grids |
 | `src/fpu/ieee.rs` | Shared Meiko NaN propagation, IEEE flags and overflow results |
 | `src/bus.rs` | Physical bus contract, RAM/ROM mappings and external byte import |
 | `src/system_bus.rs` | Physical decoding, device widths, clock advancement and IRQ wiring |
@@ -166,11 +167,12 @@ and EF. MB86904 implementation/version bits are fixed at `0x04000000`.
 Reserved bits and EC read zero; there is no auxiliary coprocessor. EF gates
 floating-point execution; recognized FPU instructions trap with TT=4 when clear.
 The [FPU subset](docs/fpu.md) supports transfers, FSR, moves, comparisons,
-single/double division and addition/subtraction, branches and deferred
+single/double division, addition/subtraction and multiplication, branches and deferred
 IEEE/sequence exceptions with queue draining. Division uses integer
 quotient/remainder calculations; addition/subtraction aligns integer significands
-with guard/round/sticky bits. Both support all rounding modes and gradual
-underflow without host floating-point state. Enabled
+with guard/round/sticky bits. Multiplication retains an exact product of up to
+106 bits in u128 before rounding once. These operations support all rounding
+modes and gradual underflow without host floating-point state. Enabled
 exceptions inhibit destinations and AEXC; only the highest enabled cause enters
 CEXC. Other arithmetic, conversions and quad-operation traps remain pending.
 PIL is used to mask external interrupt levels. With ET=1, an interrupt above PIL is
@@ -313,7 +315,9 @@ regressions cover both precisions, all rounding modes, signs, subnormals, NaNs,
 all five IEEE exceptions, enabled-cause priority and destination preservation.
 Addition/subtraction tests include cancellation and signed zero, ties and nearby
 values, shifts beyond the host word width, subnormal normalization, infinity/NaN
-classification, overflow after rounding and deferred trap recovery.
+classification, overflow after rounding and deferred trap recovery. Multiplication
+adds full-product rounding, subnormal-to-normal results, tiny halfway products,
+zero/infinity classification, extreme exponents and all supported exception paths.
 An optional independent Python oracle uses exact fractions and a binary search
 for adjacent representable values, without host FP or additional packages:
 
@@ -322,10 +326,10 @@ cargo build --locked --offline --example fp_arithmetic_probe
 python3 tools/check_fp_arithmetic.py target/debug/examples/fp_arithmetic_probe --samples 2048
 ```
 
-The fixed seed checks 158336 guest operations: 48000 divisions, 55168 additions
-and 55168 subtractions. Boundary vectors, random operands and nearby magnitudes
+The fixed seed checks 208464 guest operations: 48000 divisions, 55168 additions,
+55168 subtractions and 50128 multiplications. Boundary vectors, random operands and nearby magnitudes
 exercise rounding and cancellation. The checker reports the operation, seed and
-case count; `--operations div`, `add` or `sub` selects individual operations.
+case count; `--operations div`, `add`, `sub` or `mul` selects individual operations.
 These are local regression checks, not a SPARC conformance suite or a completed
 QEMU/MAME differential comparison.
 

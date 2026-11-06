@@ -2,7 +2,7 @@
 
 Helios implements the initial FPU state and transfer subset: 32 word registers,
 LDF/LDDF/LDFSR, STF/STDF/STFSR, FMOVs/FNEGs/FABSs and all FBfcc conditions.
-Single/double comparisons, division and addition/subtraction, deferred IEEE
+Single/double comparisons, division, addition/subtraction and multiplication, deferred IEEE
 exceptions, sequence errors and STDFQ queue draining are implemented. Conversions,
 other arithmetic, quad-operation traps and unfinished operations remain explicit
 emulator stops when the FPU is enabled.
@@ -152,7 +152,7 @@ microSPARC-II figure 4.8 defines the Meiko NaN behavior. A quiet NaN preserves
 its payload and clears its sign; if both operands are quiet NaNs, rs1 wins.
 Any signaling NaN raises NV and yields positive `ME_NaN`: `0x7fff0000` for
 single or `0x7fffe00000000000` for double when masked. For invalid numeric inputs
-(0/0, infinity/infinity and infinity minus itself), Helios uses V8 N.4's
+(0/0, infinity/infinity, infinity minus itself and zero times infinity), Helios uses V8 N.4's
 recommended positive quiet NaN with all fraction bits set (`0x7fffffff` / `0x7fffffffffffffff`). The chip's table
 labels numeric/numeric results as IEEE 754 but does not specify this payload;
 that choice has not been verified against silicon. These rules deliberately
@@ -189,6 +189,33 @@ exceeds maximum finite. For example, maximum finite plus a minimum subnormal
 rounds back to maximum finite with NX alone under nearest rounding; toward
 positive infinity it yields infinity with OF and NX. Tests also cover the
 halfway overflow boundary, negative results and enabled OF versus NX traps.
+
+## Multiplication
+
+FMULs/FMULd (`opf=0x49/0x4a`) multiply rs1 and rs2 in the same precision.
+Both sources are read before committing a destination, including overlapping
+pairs. Register-pair choices, NaN propagation, FSR updates and deferred exception
+handling are shared with the other arithmetic instructions.
+
+The exact product of integer significands occupies at most 48 bits for single
+precision and 106 bits for double, so `u128` retains all product bits. The result
+is rounded once directly onto its normal or subnormal grid. Discarded bits are
+compared with half the grid spacing for ties-to-even and directed rounding;
+extremely small products are handled without oversized shifts. Tininess is
+checked before rounding, overflow after rounding. Exact tiny results trap with
+UFM enabled, while masked inexact tiny results set UF and NX, including when
+rounding up to minimum normal.
+
+Finite products, zeros and infinities use the XOR of operand signs. Zero times
+infinity raises NV with the documented numeric-invalid NaN default; infinity
+times a nonzero finite value or infinity returns signed infinity. Multiplication
+never raises DZ. The shared Meiko rules classify NaNs before numeric cases.
+
+microSPARC-II section 4.1 says FMULs/d complete in hardware even when the fast
+multiplier restarts work in the Meiko unit. Helios models the resulting bits and
+exceptions, without pipeline timing. FsMULd (single operands to double result),
+which has chip-specific unfinished cases, and quad multiplication remain explicit
+unsupported host stops; their arithmetic/trap behavior is not implemented yet.
 
 ## Deferred exceptions and queue
 
@@ -229,8 +256,8 @@ There is no fabricated pipeline occupancy or host-dependent completion order.
 An unsupported FPop in execution state remains a retryable
 `UnsupportedInstruction` host stop. In pending/exception state the architectural
 state checks take precedence, just as they do for supported FP instructions.
-Multiplication, square roots, conversions, quad-operation traps and unfinished
-operations remain pending; this is not a complete IEEE arithmetic implementation.
+Widening multiplication, square roots, conversions, quad-operation traps and
+unfinished operations remain pending; this is not a complete IEEE arithmetic implementation.
 
 ## Validation and firmware
 
@@ -251,14 +278,17 @@ Addition/subtraction tests cover destination aliases, cancellation, signed zero,
 halfway rounding and adjacent values, discarded operands, subnormal sums,
 overflow boundaries, NaN rules and deferred exception recovery.
 The independent exact-fraction oracle described in [HACKING.md](../HACKING.md)
-passes 158336 guest operations: 48000 divisions, 55168 additions and 55168
-subtractions. Seed `0x535335` and 2048 sampled operand pairs per precision and
+passes 208464 guest operations: 48000 divisions, 55168 additions, 55168
+subtractions and 50128 multiplications. Seed `0x535335` and 2048 sampled operand pairs per precision and
 operation, plus targeted boundary vectors, reproduce the run. The add/sub
 samples include nearby magnitudes to expose cancellation. The checker validates
 result words, FSR and queue presence; this is not exhaustive or a silicon comparison.
 
-Original OBP now passes the two FCMPs, following floating branches, its first
-FDIVs (`100 / 4 = 25`) and FADDs (`20 + 5 = 25`). After another LDF it reaches
-unsupported FMULs at `0x7000286c`. This run has not exercised subtraction.
-It has no serial output or firmware prompt.
+Multiplication regressions cover exact products, retained low bits, normal and
+subnormal ties, extreme exponents, overflow, NaNs, enabled exceptions and queue
+recovery. Original OBP now executes single/double division, addition, subtraction,
+multiplication, comparisons, branches and twelve deferred exception/queue cycles.
+Its 30000000-step probe reports a missing processor-timer interrupt on serial,
+resets and continues firmware initialization. A longer run reaches an unsupported
+processor breakpoint register. No firmware prompt has been demonstrated.
 [Firmware records](firmware.md) retain the bounded checkpoint and exact limits.

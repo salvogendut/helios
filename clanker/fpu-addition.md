@@ -1,5 +1,8 @@
 # Addition/subtraction, rounding boundaries and the OBP multiply stop
 
+Historical checkpoint; [fpu-multiplication.md](fpu-multiplication.md) records the
+subsequent multiplication support and processor-timer diagnostic.
+
 - FADDs/d (`opf=41/42`) and FSUBs/d (`45/46`) now execute. Primary V8 B.34
   printed146 defines encodings, rs1 minus rs2 ordering and NV/OF/UF/NX (never DZ).
   N.3–N.6 define inhibited results, tiny exact traps and overflow after rounding.

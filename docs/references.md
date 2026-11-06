@@ -26,7 +26,7 @@ test rather than assuming either emulator defines the hardware.
   [fpu.md](fpu.md) records the implemented subset and explicit choices.
   B.34 and N.3–N.4 define FCMP versus FCMPE NaN behavior and inhibited
   FCC/AEXC updates for enabled invalid exceptions. B.34 defines FDIVs/d, FADDs/d
-  and FSUBs/d encodings;
+  FSUBs/d and FMULs/d encodings;
   N.4–N.6 define default NaNs, overflow after rounding, tininess before rounding,
   exact-tiny traps with UFM enabled and the UF/NX priority table. Table 7-1 puts privilege,
   EF and alignment ahead of an FP exception, ahead of data-access faults.
@@ -70,7 +70,10 @@ test rather than assuming either emulator defines the hardware.
   results have sign zero, and signaling operands produce ME_NaN (`0x7fff0000`
   single, `0x7fffe00000000000` double). The numeric/numeric cell does not specify
   an invalid-result payload; Helios chooses V8 N.4's positive all-fraction-ones
-  default, pending silicon evidence.
+  default, pending silicon evidence. Section 4.1 distinguishes same-precision
+  multiplication (always completed in hardware, possibly via Meiko restart)
+  from FsMULd's possible unfinished exception. The current emulator implements
+  FMULs/d without multiplier pipeline timing; widening multiplication is pending.
 - [ST M48T08/M48T08Y/M48T18 datasheet](https://www.st.com/resource/en/datasheet/m48t18.pdf),
   DocID2411 Rev 11, June 2011: table 5 and sections 3.1–3.3 define the 8 KiB
   register layout, BCD calendar, R/W transfer latches and oscillator stop.
@@ -196,7 +199,7 @@ uses generic SPARC NaN defaults and a signaling-first, rs2-before-rs1 propagatio
 rule. Helios instead follows microSPARC-II figure 4.8 for quiet-operand priority
 and ME_NaN. Neither emulator is used as the golden oracle for these chip details;
 the independent fraction-based arithmetic checker and directed tests are described
-in [fpu.md](fpu.md). The pinned MAME FADDs/d and FSUBs/d dispatch also delegates
+in [fpu.md](fpu.md). The pinned MAME FADDs/d, FSUBs/d and FMULs/d dispatch delegates
 to SoftFloat. QEMU's corresponding `do_env_fff`/`do_env_ddd` dispatch reads both
 operands before calling helpers and writing the result. Helios implements the
 integer arithmetic independently and retains its microSPARC-II deferred state

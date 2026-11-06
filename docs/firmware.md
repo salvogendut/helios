@@ -289,8 +289,8 @@ single-precision result; double division, rounding and deferred exceptions are
 covered by tests and the independent exact-fraction oracle (48000 guest cases,
 seed `0x535335`). This checkpoint identified addition/subtraction as the next work.
 
-With [single/double addition and subtraction](fpu.md) implemented, original OBP
-completes **25374281 instructions**, with the same **two diagnostic bus traps**,
+At the [single/double addition and subtraction](fpu.md) milestone, original OBP
+completed **25374281 instructions**, with the same **two diagnostic bus traps**,
 **zero interrupts**, **zero resets** and **zero serial bytes**. The firmware hash,
 128 MiB layout, default NVRAM, no input, 100 ns quantum and 30000000-step budget
 are unchanged.
@@ -309,8 +309,41 @@ checkpoint plus one FADDs and one LDF. This firmware run has not exercised
 subtraction or double arithmetic; focused regressions and the independent
 fraction oracle cover them. Seed `0x535335`, with 2048 sampled operand pairs
 per precision/operation plus boundary cases, checks 48000 divisions and 55168
-each of addition and subtraction (158336 total). Multiplication is the next
-observed blocker. POST completion and a firmware prompt remain unproved.
+each of addition and subtraction (158336 total). This identified multiplication
+as the next observed blocker.
+
+With [single/double multiplication](fpu.md) implemented, the unchanged original
+ROM reaches the **30000000-step budget** at PC=`0xffd2f554`, nPC=`0xffd2f558`:
+**29999968 instructions**, **16 synchronous traps**, **16 interrupts**, and
+**one software reset**. Resetting store instructions are included in the instruction
+count. The run uses the same 128 MiB layout, default NVRAM, no input and 100 ns
+step quantum. It produces 71 serial bytes:
+
+```text
+ERROR  : No interrupt received, expected 0000001e
+UNUMBER: U1507
+```
+
+The run now exercises both precisions of add/subtract/multiply/divide, comparison
+and branches, including 12 deferred FPU exceptions and queue stores. The other
+four synchronous traps are the two earlier diagnostic bus faults and two
+misaligned FP transfers. It takes software interrupt levels 1–15, but the later
+processor-timer diagnostic times out waiting for level 14 (TT=`0x1e`). After the
+reported failure the firmware resets; one further level-14 interrupt occurs in
+initialization. This is progress beyond the FPU stops, not successful POST.
+
+`local/probes/fpu-multiplication-ss5/` records configuration, source, bounded
+library trace, CLI stop and matching serial transcripts. The independent
+arithmetic oracle passes 208464 guest cases, including 50128 multiplications
+(seed `0x535335`, 2048 sampled operand pairs per precision/operation).
+
+A separate **100000000-step-budget** CLI probe continues beyond that checkpoint,
+prints configuration-checksum/default-NVRAM messages, then stops on
+`UnsupportedMemory` at PC=`0xffd27690`, nPC=`0xffd27694`, word=`0xc8840400`.
+The access is an ASI `0x20` read of the processor breakpoint register at
+`0x10003018`. The CLI exits 1; its logs are retained alongside the 30M evidence.
+Processor-timer timing and breakpoint-register behavior are the next blockers.
+No firmware prompt has been demonstrated.
 
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)

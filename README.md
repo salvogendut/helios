@@ -30,9 +30,9 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
   synchronous STBAR. Precise traps save PC/nPC, rotate windows and enter a guest
   handler; faults with traps disabled latch CPU error state.
 - Initial FPU state, single/double transfers, FSR, moves, comparisons, division,
-  addition/subtraction and floating-point branches, plus disabled/deferred traps
+  addition/subtraction, multiplication and floating-point branches, plus disabled/deferred traps
   and queue draining. Implemented arithmetic supports all rounding modes and IEEE
-  exception flags; multiplication, square roots and conversions remain pending.
+  exception flags; widening multiplication, square roots and conversions remain pending.
 - Word-backed RAM and ROM, big-endian byte lanes, checked mappings and accesses,
   raw image loading, instruction tracing, and focused CPU/bus tests.
 - Alternate-space byte, halfword, word and doubleword loads/stores and atomic
@@ -177,11 +177,13 @@ cargo run --locked --offline -- boot local/firmware/sun-ss5.bin --steps 10000 --
 
 This short probe now reaches its 10000-step budget in OBP's timed keyboard
 polling loop. With a 30000000-step budget, OBP passes the former memory-bank,
-TLB-diagnostic and IOMMU-enable stops. It completes 25374281 instructions with
-two diagnostic bus traps, no interrupts and no resets. The earlier fault-status
-warning is gone. Floating-point transfers, comparisons, branches, division and
-addition pass. It reaches PC `0x7000286c` on `FMULs`; multiplication is the next
-FPU boundary. There is no serial output or firmware prompt in this run.
+TLB-diagnostic and IOMMU-enable stops, then exercises single/double arithmetic,
+deferred FPU exceptions and software interrupts. It completes the 30000000-step
+budget with 29999968 instructions, 16 traps, 16 interrupts and one reset. Serial
+output reports a missing processor-timer interrupt (`expected 0000001e`). A
+longer probe reaches an unsupported processor breakpoint register at
+`0x10003018`. There is no firmware prompt yet; see the recorded limitations in
+[firmware.md](docs/firmware.md).
 The fetched image is hash-verified and stays ignored.
 OpenBIOS remains a separate compatibility test until it is proved working.
 

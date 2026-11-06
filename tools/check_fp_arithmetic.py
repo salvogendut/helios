@@ -53,6 +53,14 @@ class Format:
             if a == 0:
                 return sign, 0
             exact = self.value(a) / self.value(b)
+        elif operation == "mul":
+            if (a == 0 and b == self.inf) or (a == self.inf and b == 0):
+                return self.sign - 1, 16
+            if a == self.inf or b == self.inf:
+                return sign | self.inf, 0
+            if a == 0 or b == 0:
+                return sign, 0
+            exact = self.value(a) * self.value(b)
         else:
             sign_b ^= operation == "sub"
             if a == self.inf or b == self.inf:
@@ -116,7 +124,17 @@ class Format:
                   (hidden*2-1,two),(self.inf-1,one-1),(self.inf-1,one),
                   (self.inf-1,two),(self.inf-1,1),(1,self.inf-1),
                   (one,three),(two,three),(one,one+1),(one+1,one-1)]
-        if operation != "div":
+        if operation == "mul":
+            half = (self.bias - 1) * hidden
+            one_and_half = one + hidden // 2
+            pairs += [(1, half), (3, half), (hidden, half), (hidden * 2 - 1, half),
+                      (hidden, one - 1), (hidden, one + 1), (hidden - 1, two),
+                      (1, one + 1), (self.inf - 1, two), (self.inf - 2, one + 1),
+                      (self.inf - 1, self.inf - 1), (1, 1),
+                      (one + 1, one_and_half), (one + 3, one_and_half),
+                      (one + 1, one_and_half - 1), (one + 1, one_and_half + 1),
+                      (one + 1, one + 1), (one - 1, one - 1), (two - 1, two - 1)]
+        if operation in ("add", "sub"):
             maximum = self.inf - 1
             half_ulp = (self.bias - self.fraction - 1) * hidden
             overflow_half = (self.bias * 2 - self.fraction - 1) * hidden
@@ -139,7 +157,7 @@ class Format:
                         yield a ^ sign, b, rounding, mask
         for sample in range(samples):
             a,b = rng.getrandbits(self.width), rng.getrandbits(self.width)
-            if operation != "div" and sample % 2 == 0:
+            if operation in ("add", "sub") and sample % 2 == 0:
                 # Nearby magnitudes expose cancellation missed by uniform bit patterns.
                 magnitude = min(a & (self.sign - 1), self.inf - 1)
                 b = (b & self.sign) | max(0, min(self.inf - 1, magnitude + rng.randrange(-16, 17)))
@@ -153,8 +171,8 @@ def main():
     parser.add_argument('probe', help='built fp_arithmetic_probe executable')
     parser.add_argument('--samples', type=int, default=1024, help='random operand pairs per precision')
     parser.add_argument('--seed', type=lambda s: int(s,0), default=0x535335)
-    parser.add_argument('--operations', nargs='+', choices=['div', 'add', 'sub'],
-                        default=['div', 'add', 'sub'])
+    parser.add_argument('--operations', nargs='+', choices=['div', 'add', 'sub', 'mul'],
+                        default=['div', 'add', 'sub', 'mul'])
     args = parser.parse_args()
     if args.samples < 0:
         parser.error('samples must be nonnegative')

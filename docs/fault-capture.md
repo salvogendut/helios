@@ -120,6 +120,6 @@ CPU/DMA metadata, actual CPU mode, unsupported operations and resets.
 
 This milestone let the unchanged original OBP pass both bus-error diagnostic
 checks without the earlier warning/reset, reaching `LDDF` in POST. The subsequent
-[FPU milestones](fpu.md) advance through transfers/comparisons/division/addition to `FMULs`; see
+[FPU milestones](fpu.md) advance through arithmetic and deferred traps to timer diagnostics; see
 [firmware.md](firmware.md) for the bounded runs. No firmware prompt or successful
 POST is claimed.

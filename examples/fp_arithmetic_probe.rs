@@ -8,8 +8,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let single_opf = match std::env::args().nth(1).as_deref().unwrap_or("div") {
         "add" => 0x41,
         "sub" => 0x45,
+        "mul" => 0x49,
         "div" => 0x4d,
-        _ => return Err("operation must be add, sub or div".into()),
+        _ => return Err("operation must be add, sub, mul or div".into()),
     };
     let mut output = io::BufWriter::new(io::stdout().lock());
     for line in io::stdin().lock().lines() {
