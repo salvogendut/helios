@@ -345,6 +345,14 @@ The access is an ASI `0x20` read of the processor breakpoint register at
 Processor-timer timing and breakpoint-register behavior are the next blockers.
 No firmware prompt has been demonstrated.
 
+With the chip revision and virtual-address compare registers implemented, a
+**200000000-step** run gets past the read at `0x10003018` and prints
+`Probing CPU FMI,MB86904` on TTYA. It reaches the budget at PC=`0xffd16298`,
+nPC=`0xffd162a0`, with **199998745 instructions, 17 synchronous traps,
+1238 interrupts and one software reset**. The earlier processor-timer warning
+and NVRAM checksum/default messages remain. This is ongoing firmware execution,
+not a prompt or successful POST. Records are in `local/probes/chip-revision-ss5/`.
+
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)
 provide the bring-up workflow; register semantics still require chip-level

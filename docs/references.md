@@ -25,7 +25,7 @@ test rather than assuming either emulator defines the hardware.
   register encodings; its recommended invalid-register trap is optional.
   [fpu.md](fpu.md) records the implemented subset and explicit choices.
   B.34 and N.3–N.4 define FCMP versus FCMPE NaN behavior and inhibited
-  FCC/AEXC updates for enabled invalid exceptions. B.34 defines FDIVs/d, FADDs/d
+  FCC/AEXC updates for enabled invalid exceptions. B.34 defines FDIVs/d, FADDs/d,
   FSUBs/d and FMULs/d encodings;
   N.4–N.6 define default NaNs, overflow after rounding, tininess before rounding,
   exact-tiny traps with UFM enabled and the UF/NX priority table. Table 7-1 puts privilege,
@@ -46,7 +46,10 @@ test rather than assuming either emulator defines the hardware.
   Table 30, sections 5.7.1–5.7.2, 5.7.7, 5.7.10 and 9.4 define the implemented
   I/O configuration subset. Figures 5.21/5.23 were checked visually to resolve
   omitted bit labels and the SBAE reserved-bit typo; [io-control.md](io-control.md)
-  records the chosen masks and differences from QEMU. Sections 8.2.1–8.2.2
+  records the chosen masks and differences from QEMU. Sections 5.7.17–5.7.18,
+  figure 5.30 (checked visually) and table 38 define the mask ID and virtual
+  address compare configuration; section 5.14.2 distinguishes external lab
+  breakpoint logic from CPU traps. Sections 8.2.1–8.2.2
   define the DRAM bank map, mirrors and empty-bank completion; sections 5.2,
   5.6.6 and 5.14.1 define TLB diagnostic data/tags and replacement controls.
   Figures 5.15/5.35/5.36 and table 41 were inspected visually. Sections 5.2.5,

@@ -49,6 +49,7 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
   a second polled SCC for the keyboard/mouse ports (input protocols pending).
 - microSPARC-II IOMMU page translation, I/O TLB flushes, SBus arbitration and
   slot bypass, with byte/halfword/word DMA access to RAM through the shared TLB.
+  The chip revision and virtual-address compare configuration are readable.
 - microSPARC-II instruction/data cache diagnostic storage and indexed
   invalidation; normal accesses still use coherent memory without cache fills.
 - SS-5 DRAM banks, smaller-module mirrors and empty-bank access behavior.

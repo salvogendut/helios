@@ -7,6 +7,9 @@ pub const IO_CONTROL_SIZE: u64 = 0x8000;
 const VERSION: u32 = 0x0400_0000;
 const BASE_MASK: u32 = 0x07ff_fc00;
 const ARBITRATION_MASK: u32 = 0x003f_0000;
+// microSPARC-II manual table 38: revision 3.0. This is a model choice,
+// independent of the IOCR version, not QEMU's turboSPARC identity.
+const MASK_ID: u32 = 0x3000_0000;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IoControl {
@@ -22,6 +25,8 @@ pub struct IoControl {
     memory_address: u32,
     memory_status_locked: bool,
     memory_address_locked: bool,
+    virtual_address_mask: u32,
+    virtual_address_compare: u32,
 }
 
 pub(crate) enum IoMapping {
@@ -55,6 +60,8 @@ impl IoControl {
                 Ok(self.slots[((offset - 0x1010) / 4) as usize])
             }
             0x2000 => Ok(self.arbitration | 8), // immutable MID=8
+            0x3018 => Ok(MASK_ID | self.virtual_address_mask),
+            0x301c => Ok(self.virtual_address_compare),
             _ => Err(Self::unsupported_register(offset)),
         }
     }
@@ -93,6 +100,10 @@ impl IoControl {
             // Figure 5.23 and the six-master arbiter description agree on
             // bits 21:16; the text's reserved-bit list has an off-by-one typo.
             0x2000 => self.arbitration = value & ARBITRATION_MASK,
+            // Figure 5.30: ID[31:24] read-only, [23:11] reserved,
+            // comparison enables/inversions [10:0] writable.
+            0x3018 => self.virtual_address_mask = value & 0x7ff,
+            0x301c => self.virtual_address_compare = value,
             _ => return Err(Self::unsupported_register(offset)),
         }
         Ok(())
@@ -188,7 +199,7 @@ impl IoControl {
     fn unsupported_register(offset: u64) -> BusErrorKind {
         match offset {
             0x14 | 0x18 => BusErrorKind::Unsupported("read of write-only I/O TLB flush port"),
-            0x3000 | 0x3004 | 0x3008 | 0x300c | 0x3010 | 0x3014 | 0x3018 | 0x301c => {
+            0x3000 | 0x3004 | 0x3008 | 0x300c | 0x3010 | 0x3014 => {
                 BusErrorKind::Unsupported("microSPARC-II performance/breakpoint register")
             }
             0x4000 | 0x6000 | 0x7000 => {

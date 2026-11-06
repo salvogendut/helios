@@ -18,3 +18,5 @@
 - [fpu-division.md](fpu-division.md) — reference: exact FDIVs/d rounding, five IEEE exceptions, Meiko NaNs, independent oracle and the historical OBP addition stop.
 - [fpu-addition.md](fpu-addition.md) — reference: guard/round/sticky arithmetic, cancellation, signed zeros, overflow boundaries and the historical OBP multiplication stop.
 - [fpu-multiplication.md](fpu-multiplication.md) — reference: exact products, full arithmetic POST coverage, processor-timer diagnostic and breakpoint-register stop.
+
+- [chip-revision.md](chip-revision.md) — reference: mask identity, comparison configuration and continuing OBP initialization.

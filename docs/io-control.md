@@ -24,6 +24,8 @@ generic sun4m model.
 | `0x10001010`–`0x1000101c` | Slot configuration 0–3 | SA30 bit 16, BA8 bit 1, bypass bit 0 writable |
 | `0x10001020` | Shared slot configuration 4 | BA8 bit 1 writable; bypass and SA30 zero |
 | `0x10002000` | MID / SBus arbitration | MID reads 8; six enable bits at 21:16 writable |
+| `0x10003018` | Mask ID / virtual-address mask | ID `0x30` at 31:24; compare enables/inversions at 10:0 writable |
+| `0x1000301c` | Virtual-address compare | Full word readable/writable |
 
 Reserved/identity bits ignore writes. Flush ports have no stored readback value;
 reads stop explicitly. All registers require plain aligned word accesses.
@@ -100,12 +102,23 @@ future multi-transfer engines must track partial completion themselves.
 
 [Fault registers](fault-capture.md) at `+0x1000/+0x1004` and `+0x1050/+0x1054`
 now capture asynchronous CPU store errors and live memory-request metadata.
-Performance/breakpoint registers (`+0x3000`–`+0x301c`) and local-graphics queue
+The mask/compare registers store comparison configuration, with zero initial
+values and an immutable mask ID. Revision 3.0 is an explicit model choice from
+the microSPARC-II manual table 38, independent of IOCR version 4. Figure 5.30
+and the following Mask ID definition take precedence over the prose that calls
+all bits 31:11 reserved: only 23:11 are reserved. Writes replace the low eleven
+bits; they do not accumulate them. Section 5.14.2 describes lab-only clock-stop
+breakpoints requiring external scan setup, which is not modeled. Configuring
+these two registers alone does not enable a breakpoint or synthesize CPU traps.
+
+Trigger/breakpoint controls and performance counters (`+0x3000`–`+0x3014`)
+and local-graphics queue
 controls (`+0x4000`, `+0x6000`, `+0x7000`) still stop explicitly. Reserved holes
 are unmapped. No generic register array substitutes for these facilities.
 
 Other documented differences from QEMU remain: IOCR version 4 rather than its
-SS-5 profile's 5; six SBAE bits rather than five; five slot registers with shared
+SS-5 profile's 5; microSPARC-II mask revision 3.0 instead of its
+turboSPARC mask identity; six SBAE bits rather than five; five slot registers with shared
 slot-4 restrictions; no MBus arbiter register at `+0x1008`. Figure 5.23 and the
 six-master arbiter description resolve the prose's SBAE reserved-bit typo.
 

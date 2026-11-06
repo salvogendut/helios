@@ -82,7 +82,7 @@ fn unimplemented_facilities_stop_without_fabricating_success_or_changing_configu
     io.write(0, 0x1c).unwrap();
     let before = io.clone();
     for offset in [
-        0x3000, 0x3004, 0x3008, 0x300c, 0x3010, 0x3014, 0x3018, 0x301c, 0x4000, 0x6000, 0x7000,
+        0x3000, 0x3004, 0x3008, 0x300c, 0x3010, 0x3014, 0x4000, 0x6000, 0x7000,
     ] {
         assert!(io.read(offset).unwrap_err().is_host_stop(), "{offset:#x}");
         assert!(
@@ -237,4 +237,30 @@ fn translated_read_only_control_mapping_does_not_allow_arbitration_writes() {
         Err(MemoryError::Translation(fault)) if fault.kind == FaultType::Protection)
     );
     assert_eq!(m.bus.read32(IO_CONTROL_BASE + 0x2000).unwrap(), 8);
+}
+
+#[test]
+fn chip_revision_is_immutable_and_address_compare_fields_replace_and_reset() {
+    let mut io = IoControl::default();
+    assert_eq!(io.read(0x3018).unwrap(), 0x3000_0000);
+    assert_eq!(io.read(0x301c).unwrap(), 0);
+    io.write(0x3018, u32::MAX).unwrap();
+    io.write(0x301c, 0x8765_4321).unwrap();
+    assert_eq!(io.read(0x3018).unwrap(), 0x3000_07ff);
+    assert_eq!(io.read(0x301c).unwrap(), 0x8765_4321);
+    // Each compare field can be cleared, including previously set bits.
+    for bit in 0..11 {
+        io.write(0x3018, 1 << bit).unwrap();
+        assert_eq!(io.read(0x3018).unwrap(), 0x3000_0000 | 1 << bit);
+    }
+    io.write(0x3018, 0xffff_f800).unwrap();
+    assert_eq!(io.read(0x3018).unwrap(), 0x3000_0000);
+    // Configuring an address does not enable external scan/JTAG triggers;
+    // trigger control remains an explicit unsupported facility.
+    let before = io.clone();
+    assert!(io.write(0x300c, 1).unwrap_err().is_host_stop());
+    assert_eq!(io, before);
+    io.reset();
+    assert_eq!(io.read(0x3018).unwrap(), 0x3000_0000);
+    assert_eq!(io.read(0x301c).unwrap(), 0);
 }
