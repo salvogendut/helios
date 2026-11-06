@@ -213,7 +213,9 @@ impl Srmmu {
     ) -> Result<T, MemoryError> {
         let fault = match result {
             Err(MemoryError::Translation(fault)) => fault,
-            Err(MemoryError::Bus(error)) if error.kind != BusErrorKind::Misaligned => {
+            Err(MemoryError::Bus(error))
+                if matches!(error.kind, BusErrorKind::Unmapped | BusErrorKind::ReadOnly) =>
+            {
                 access.fault(FaultType::AccessBus, 0)
             }
             _ => return result,
@@ -237,7 +239,7 @@ impl Srmmu {
     ) -> Result<u32, MemoryError> {
         Self::aligned(address, width)?;
         match asi {
-            3 if width == Width::Word => return Ok(self.probe(bus, address)),
+            3 if width == Width::Word => return self.probe(bus, address),
             4 if width == Width::Word => return self.read_register(address),
             8..=11 | 0x20 => {}
             _ => {
@@ -529,9 +531,7 @@ impl Srmmu {
         let missing = bits & !entry.pte;
         if missing != 0 {
             bus.write32_masked(entry.pte_address, missing, missing)
-                .map_err(|_| {
-                    MemoryError::Translation(access.fault(FaultType::Translation, entry.level))
-                })?;
+                .map_err(|error| Self::table_error(access, entry.level, error))?;
             entry.pte |= missing;
         }
         Ok(())
@@ -539,6 +539,14 @@ impl Srmmu {
 
     fn root(&self) -> u64 {
         (u64::from(self.context_table) << 4) | (u64::from(self.context) << 2)
+    }
+
+    fn table_error(access: Access, level: u8, error: BusError) -> MemoryError {
+        if error.kind.is_host_stop() {
+            MemoryError::Bus(error)
+        } else {
+            MemoryError::Translation(access.fault(FaultType::Translation, level))
+        }
     }
 
     fn next_table(word: u32, address: u32, level: u8) -> u64 {
@@ -572,9 +580,9 @@ impl Srmmu {
     fn walk(&self, bus: &mut impl Bus, access: Access) -> Result<Entry, MemoryError> {
         let mut physical = self.root();
         for level in 0..=3 {
-            let word = bus.read32(physical).map_err(|_| {
-                MemoryError::Translation(access.fault(FaultType::Translation, level))
-            })?;
+            let word = bus
+                .read32(physical)
+                .map_err(|error| Self::table_error(access, level, error))?;
             match word & 3 {
                 1 if level < 3 => physical = Self::next_table(word, access.address, level),
                 2 if level == 0 => return Err(MemoryError::UnsupportedRootPte),
@@ -594,10 +602,10 @@ impl Srmmu {
         unreachable!("level 3 terminates the walk")
     }
 
-    fn probe(&mut self, bus: &mut impl Bus, address: u32) -> u32 {
+    fn probe(&mut self, bus: &mut impl Bus, address: u32) -> Result<u32, MemoryError> {
         let kind = (address >> 8) & 15;
         if kind > 4 {
-            return 0;
+            return Ok(0);
         }
         let access = Access {
             address: address & !0xfff,
@@ -611,7 +619,7 @@ impl Srmmu {
                 .flatten()
                 .find(|entry| entry.matches(access.address, self.context, true))
             {
-                return entry.pte;
+                return Ok(entry.pte);
             }
         } else {
             // Conservative invalidation also removes any cached intermediate
@@ -622,37 +630,42 @@ impl Srmmu {
         for level in 0..=3 {
             let word = match bus.read32(physical) {
                 Ok(word) => word,
-                Err(_) => {
+                Err(error) => {
+                    if error.kind.is_host_stop() {
+                        return Err(MemoryError::Bus(error));
+                    }
                     self.record(access.fault(FaultType::Translation, level));
-                    return 0;
+                    return Ok(0);
                 }
             };
             let et = word & 3;
             if kind < 4 && level == 3 - kind as u8 {
-                return if et == 3 || (level == 3 && et == 1) {
+                return Ok(if et == 3 || (level == 3 && et == 1) {
                     0
                 } else {
                     word
-                };
+                });
             }
             match et {
                 1 if level < 3 => physical = Self::next_table(word, access.address, level),
                 2 if kind == 4 => {
                     let mut entry = self.entry(access.address, level, physical, word);
-                    if let Err(MemoryError::Translation(fault)) =
-                        Self::touch(bus, access, &mut entry)
-                    {
-                        self.record(fault);
-                        return 0;
+                    match Self::touch(bus, access, &mut entry) {
+                        Err(MemoryError::Translation(fault)) => {
+                            self.record(fault);
+                            return Ok(0);
+                        }
+                        Err(error) => return Err(error),
+                        Ok(()) => {}
                     }
                     if level != 0 {
                         self.insert(entry);
                     }
-                    return entry.pte;
+                    return Ok(entry.pte);
                 }
-                _ => return 0,
+                _ => return Ok(0),
             }
         }
-        0
+        Ok(0)
     }
 }

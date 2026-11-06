@@ -305,12 +305,12 @@ fn control_space_doublewords_and_atomics_stop_before_register_side_effects() {
 
 /// A device-aware bus makes composite operations explicit. The CPU must use
 /// these methods, rather than decomposing an exchange into destructive reads.
-struct RecordingBus {
-    memory: MemoryBus,
+struct RecordingBus<B> {
+    memory: B,
     events: Vec<(&'static str, u64)>,
 }
 
-impl Bus for RecordingBus {
+impl<B: Bus> Bus for RecordingBus<B> {
     fn read32(&mut self, address: u64) -> Result<u32, BusError> {
         self.events.push(("read32", address));
         self.memory.read32(address)

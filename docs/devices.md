@@ -1,0 +1,115 @@
+# Console and NVRAM devices
+
+`Machine::sun4m` installs the following physical byte apertures. These are a
+functional polling subset, tested with a synthetic PROM, not a firmware-boot
+compatibility claim. `Machine::bare_metal` continues to install RAM only.
+Sources and reference revisions are listed in [references.md](references.md).
+
+| Physical address | Device/register |
+| --- | --- |
+| `0x71100000`, `0x71100002` | SCC channel B control, data |
+| `0x71100004`, `0x71100006` | SCC channel A control, data (TTYA) |
+| `0x71200000`–`0x71201fff` | M48T08 NVRAM/RTC, 8192 bytes |
+| `0x71201fd8`–`0x71201fe7` | First 16 IDPROM bytes, including checksum |
+| `0x71201ff8`–`0x71201fff` | RTC control and seven calendar registers |
+
+The SCC ignores address bit zero within its eight-byte aperture. Wider, masked,
+doubleword and atomic device accesses are explicitly unsupported. `SystemBus`
+routes plain bytes directly; a status read cannot consume a neighboring data
+register. Mapping RAM/ROM or loading a raw image over a device is rejected.
+
+## NVRAM, identity and clock
+
+Fresh NVRAM has zeroed configuration SRAM and an IDPROM with format 1, SS-5
+machine type `0x80`, locally administered MAC `02:00:00:00:00:01`, manufacture
+date zero and serial `000001` (hostid `80000001`). Byte 15 makes the XOR of the
+first 16 bytes zero. `Nvram::new` accepts another MAC and three-byte serial.
+Imported images and guest writes are retained without automatic checksum
+repair. No Sun environment defaults or OpenBIOS configuration partitions are
+fabricated; firmware-specific initialization remains separate work.
+
+The RTC defaults to 2000-01-01 00:00:00, weekday 7. Its two-digit year is `0x32`
+using the SS-5 software origin of 1968. The chip stores no century. Registers
+are BCD seconds, minutes, hours, weekday, date, month and year, in that order.
+The calendar uses 24-hour time, weekday 1–7, a leap day every fourth encoded
+year and year rollover from 99 to 00.
+
+Control bit 6 (R) freezes visible transfer registers while internal time keeps
+advancing. Bit 7 (W) similarly holds the transfer registers for editing;
+clearing W loads all fields into the counter together. The seconds register's
+bit 7 stops the oscillator. Invalid BCD/calendar fields or unsupported test
+bits stop before a W-clear commits. Frequency calibration is unsupported.
+
+`Machine::advance_seconds` or `Nvram::advance_seconds` advances time explicitly;
+CPU instruction counts and host wall time do not currently advance it. Very
+large advances use bounded calendar work. Machine reset retains SRAM, clock
+state and latches. A future machine event clock will supply elapsed time.
+
+`Nvram::from_image` requires exactly 8192 bytes and valid supported clock fields.
+`Nvram::image` exports raw SRAM/register contents. With R/W clear, this includes
+the current counter; with a latch held, it includes the held/staged fields.
+This file is not a machine snapshot: it cannot preserve both a latched register
+value and a separately advancing hidden counter. A partially edited invalid
+clock can be exported but will be rejected on import until repaired.
+
+## Z8530 polling subset
+
+Both channels have separate receive/transmit state and a shared control-register
+pointer. WR2 (interrupt vector) and WR9 (master/reset control) are also shared.
+A control write selects the next register, including WR0's point-high command;
+the next control access clears the pointer. Direct data access leaves it alone.
+RR8/WR8 also access the data port. Legacy read aliases follow the Z8530 map.
+
+The model accepts asynchronous initialization, character lengths of 5–8 bits,
+receiver/transmitter enable, baud-generator register latches, local loopback and
+channel/hardware resets. RR0 reports receive availability and transmit-buffer
+empty; RR1 reports all-sent. DCD and CTS stay asserted for the connected virtual
+endpoint. RR3 reports no pending interrupts; RR2B supplies the no-interrupt code.
+An empty receive-data read returns zero as a deterministic emulator choice.
+
+`Serial::receive(channel, byte)` accepts a byte only when reception is enabled
+and its three-byte FIFO has room. A false result means the caller retains the
+byte for later delivery. Data is masked to the configured character length.
+A disabled transmitter holds one byte until enabled. Enabled transmission
+completes immediately into the host output queue, or into the receiver in local
+loopback. Bytes offered to a disabled loopback receiver are discarded.
+
+Each channel's completed-output queue is bounded at 4096 bytes. `take_output`
+drains it. Full output, a full loopback receiver or a second write to a disabled
+transmitter's occupied buffer returns `WouldBlock` before mutation. This is a
+host stop: it neither fabricates a guest hardware exception nor advances the
+faulting instruction. After draining the endpoint, callers can retry. The host
+queue is not an emulated UART FIFO and does not affect RR0's TX-empty status.
+Reset clears receive and pending transmit state but preserves completed output.
+
+Interrupt sources, DMA, synchronous/SDLC operation, transmit break, DPLL
+operation, auto echo and enhanced FIFO modes are unsupported and stop on their
+enabling commands. Framing/parity errors, line bit timing, modem transitions and
+receive overrun from an uncontrolled external source are not modeled. Byte
+delivery uses backpressure, not host scheduling. Accepted baud/parity/stop-bit
+settings do not introduce delays or generate line-level errors. Keyboard/mouse
+serial at `0x71000000` is not installed.
+
+## CLI and validation
+
+`serial-demo` boots [examples/serial.s](../examples/serial.s), verifies IDPROM,
+prints `HELIOS`, echoes `!`, and writes a newline. Its host checks the identity
+and completion marker after 256 steps. It requires no guest toolchain or ROM.
+
+`boot` and `serial-demo` write TTYA bytes to stdout. Trace and stop reports go to
+stderr, so redirecting stdout captures a clean console transcript. `boot
+--serial-in FILE` feeds bytes once the guest enables its receiver and as space
+becomes available. There is no interactive terminal input yet; channel B is
+available through the library. No serial input file is modified.
+
+`boot --nvram FILE` imports raw NVRAM; omitting it creates the deterministic
+default. `--nvram-out NEW_FILE` reserves a new file before execution and saves
+the resulting image at the step budget or an execution error. Existing files
+are never overwritten, including the input image. Invalid inputs are rejected
+before creating the output. An interrupted host process is not a save point.
+
+Regressions exercise guest TX/RX, MMU-translated byte accesses, unsupported
+widths without destructive reads, backpressure/retry, channel reset, clock
+latches and calendar boundaries, identity checksums and CLI file behavior.
+Interrupt delivery and timers are the next platform milestone; no Sun PROM,
+OpenBIOS prompt or OS boot has been demonstrated.

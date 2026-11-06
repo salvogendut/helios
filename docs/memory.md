@@ -3,8 +3,8 @@
 The first memory-system target is microSPARC-II, as used in SPARCstation 5.
 Its physical addresses are **31 bits**, virtual addresses are 32 bits, and the
 context register is eight bits. This is a functional implementation with
-synchronous memory access; cache timing, cache RAM diagnostics and peripherals
-are not implemented.
+synchronous memory access; cache timing and cache RAM diagnostics are not
+implemented. The installed peripheral subset is described in [devices.md](devices.md).
 
 The sources are the Sun **microSPARC-II User's Manual**, revision 1.1, July 1994,
 chapters 5 and 12, and SPARC V8 appendix H. Links and the pinned QEMU comparison
@@ -23,7 +23,7 @@ Alignment is checked before translation and is not suppressed by PCR.NF.
 The public MMU load/store methods assume that the CPU has checked privilege.
 
 `Cpu::new` and `Machine::bare_metal` start with translation and boot mode off.
-`Machine::sun4m` installs RAM and a raw PROM, then resets the CPU/MMU:
+`Machine::sun4m` installs RAM, a raw PROM, serial and NVRAM/RTC, then resets:
 
 - PC=0, nPC=4; PSR.S=PSR.PS=1, ET=0, CWP=0; WIM=1.
 - TBR, Y, general registers and ICC are deterministically zero.
@@ -32,7 +32,8 @@ The public MMU load/store methods assume that the CPU has checked privilege.
 
 The deterministic values for otherwise unspecified state are emulator choices,
 not a claim about power-on RAM/register contents. `Machine::reset` retains RAM
-and ROM and resets the CPU/MMU; peripheral/watchdog reset distinctions are pending.
+and ROM, NVRAM/RTC and completed serial output. It resets the CPU/MMU and serial
+controller; watchdog reset distinctions are pending.
 
 The translation modes follow microSPARC-II table 40:
 
@@ -46,8 +47,8 @@ The translation modes follow microSPARC-II table 40:
 
 `boot FILE` accepts a nonempty raw image of at most 1 MiB. The PROM aperture
 starts at physical `0x70000000`; unused bytes are filled with `0xff`, including
-an incomplete last word. ROM stores fail. No ELF loader, QEMU `fw_cfg`, NVRAM,
-serial port or complete firmware boot environment is implied by this command.
+an incomplete last word. ROM stores fail. Console serial and NVRAM/RTC are also
+installed. An ELF loader, QEMU `fw_cfg` and complete firmware boot remain pending.
 
 ## Doubleword and atomic accesses
 
@@ -57,6 +58,9 @@ odd register pairs. The lower memory address supplies the even register; rd=0
 still transfers the second word through g1. Sources and effective addresses are
 captured before any destination register is written, including overlapping pairs.
 An aligned doubleword fits in one MMU page and uses one translation.
+
+The installed serial and NVRAM devices accept plain byte loads/stores only.
+Wider, masked and atomic MMIO operations stop before touching device state.
 
 SWAP exchanges a word with rd; LDSTUB returns an unsigned byte and stores `0xff`
 into that byte lane. Both operate even when rd=g0. SWAP requires word alignment;
@@ -193,3 +197,10 @@ A suppressed failed read returns zero; a failed store does nothing. Permission
 checks are not relaxed. Unsupported emulator behavior and alignment faults
 remain visible. These choices follow the microSPARC-II NF description rather
 than QEMU's generic SPARC shortcut of suppressing faults when ET=0.
+
+Device `Unsupported` and `WouldBlock` errors are emulator stops rather than
+hardware access faults. Page walks, R/M updates and probes propagate them
+without recording a fabricated translation failure; PCR.NF does not suppress
+them. Earlier translation effects can remain, but the rejected device access
+and instruction do not commit. The owner can drain output and retry after
+backpressure; see [devices.md](devices.md).

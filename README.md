@@ -34,10 +34,12 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
   exchanges; microSPARC-II SRMMU
   translation, access permissions, contexts, fault registers and TLB flush/probe.
 - CPU/MMU reset, boot-mode instruction mapping and a raw PROM runner.
+- Z8530 asynchronous polling on both console channels, bounded byte queues,
+  and an M48T08 NVRAM/RTC with SS-5 IDPROM and explicit clock advancement.
 
 Unsupported emulator behavior remains a host stop, separate from guest traps.
 Implementation-specific ASRs, broader illegal-opcode classification, MMU/cache
-diagnostics, FPU, external interrupts, timers, serial, NVRAM, SCSI, networking
+diagnostics, FPU, external interrupts, timers, SCSI, networking
 and graphics remain to be implemented. There is no firmware or OS compatibility
 claim.
 
@@ -52,6 +54,7 @@ cargo run --locked --offline -- info
 cargo run --locked --offline -- demo
 cargo run --locked --offline -- demo --trace
 cargo run --locked --offline -- trap-demo --trace
+cargo run --locked --offline -- serial-demo
 ```
 
 The demo executes the hand-encoded program in [examples/sum.s](examples/sum.s),
@@ -61,6 +64,11 @@ adds 1 through 10, and verifies that guest RAM at `0x100` contains **55** after
 The [trap demo](examples/trap.s) installs a trap table, enters user mode, executes
 `TA 7`, runs a supervisor handler and returns through `JMPL`/`RETT`. It verifies
 the return state after 14 CPU steps: 13 completed instructions and one trap entry.
+
+The [serial demo](examples/serial.s) runs from a synthetic reset PROM, reads the
+SS-5 machine type and IDPROM checksum, configures TTYA, prints `HELIOS`, and
+echoes the supplied `!` byte followed by a newline. The host checks completion
+and identity after 256 steps. All three demos run without external firmware.
 
 Run your own raw big-endian program with an explicit CPU step budget:
 
@@ -84,19 +92,28 @@ Inspect a raw PROM from CPU/MMU reset with a bounded run:
 
 ```sh
 cargo run --release -- boot local/prom.bin --steps 1000 --trace
+# Optional saved NVRAM and serial input; the output file must not already exist:
+cargo run --release -- boot local/prom.bin --steps 10000 \
+  --serial-in local/input.bin --nvram local/nvram.bin --nvram-out local/nvram-next.bin
 ```
 
 `boot` installs RAM and a read-only 1 MiB PROM aperture at `0x70000000`, starts
 PC/nPC at 0/4, and selects PROM for instruction-space accesses through boot
-mode. Ordinary data accesses still reach RAM. This is a memory-system harness;
-SS-5 peripherals and a working firmware prompt are still pending. See
-[Memory and reset](docs/memory.md) for implemented ASIs and known limits.
+mode. Ordinary data accesses use the physical map, including console serial at
+`0x71100000` and NVRAM/RTC at `0x71200000`. `boot` and `serial-demo` send TTYA
+bytes to stdout and diagnostics/traces to stderr. Input comes from a file;
+interactive terminal input is pending. NVRAM uses an 8192-byte raw image and is
+saved at the step limit or an execution error when `--nvram-out` is supplied.
+The RTC advances only through the library's explicit time API at this stage.
+Interrupts, timers and a working firmware prompt remain pending. See
+[Memory and reset](docs/memory.md) and [Devices](docs/devices.md) for limits.
 
 ## Development
 
 - [HACKING.md](HACKING.md): architecture, invariants and validation commands.
 - [SPARCstation 5](docs/sparcstation5.md): target and reference memory map.
 - [Memory and reset](docs/memory.md): SRMMU, ASIs, fault behavior and PROM mapping.
+- [Devices](docs/devices.md): console serial, IDPROM, NVRAM persistence and RTC.
 - [Roadmap](docs/roadmap.md): milestones from this harness to a usable system.
 - [References](docs/references.md): specific MAME/QEMU sources and provenance.
 

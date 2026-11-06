@@ -284,6 +284,9 @@ impl Cpu {
 
     fn memory_fault(error: MemoryError, fetch: bool) -> FaultKind {
         match error {
+            MemoryError::Bus(error) if error.kind.is_host_stop() => {
+                FaultKind::UnsupportedMemory(MemoryError::Bus(error))
+            }
             MemoryError::Bus(error) if fetch => FaultKind::InstructionAccess(error),
             MemoryError::Bus(error) => FaultKind::DataAccess(error),
             MemoryError::Translation(error) if fetch => FaultKind::InstructionMmu(error),

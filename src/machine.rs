@@ -1,9 +1,11 @@
-//! Bare-metal and sun4m memory harnesses. SS-5 peripherals are still pending;
-//! constructing a reset/PROM mapping does not imply firmware compatibility.
+//! Bare-metal and sun4m harnesses with a polled console and NVRAM/RTC.
+//! Firmware compatibility still requires interrupt delivery and other devices.
 
-use crate::bus::{BusError, MapError, MemoryBus};
+use crate::bus::{BusError, MapError};
 use crate::cpu::{Cpu, CpuFault, Step};
+use crate::devices::nvram::Nvram;
 use crate::mmu::PROM_BASE;
+use crate::system_bus::SystemBus;
 use std::fmt;
 
 pub const TARGET: &str = "SPARCstation 5 (sun4m), SPARC V8 / microSPARC-II";
@@ -37,13 +39,21 @@ impl std::error::Error for MachineError {}
 #[derive(Debug)]
 pub struct Machine {
     pub cpu: Cpu,
-    pub bus: MemoryBus,
+    pub bus: SystemBus,
 }
 
 impl Machine {
     /// Load a raw PROM into a 1 MiB read-only aperture, padded with 0xff.
-    /// Only RAM, PROM, CPU and MMU are installed at this stage.
+    /// Install the polling serial console and a fresh deterministic NVRAM/RTC.
     pub fn sun4m(ram_bytes: usize, prom: &[u8]) -> Result<Self, MachineError> {
+        Self::sun4m_with_nvram(ram_bytes, prom, Nvram::default())
+    }
+
+    pub fn sun4m_with_nvram(
+        ram_bytes: usize,
+        prom: &[u8],
+        nvram: Nvram,
+    ) -> Result<Self, MachineError> {
         if prom.is_empty() || prom.len() > MAX_PROM_BYTES {
             return Err(MachineError::InvalidPromSize);
         }
@@ -54,25 +64,38 @@ impl Machine {
             .bus
             .map_rom(PROM_BASE, &image)
             .map_err(MachineError::Memory)?;
+        machine
+            .bus
+            .install_sun4m(nvram)
+            .map_err(MachineError::Memory)?;
         machine.reset();
         Ok(machine)
     }
 
-    /// Reset CPU/MMU state, retaining the physical memory contents and mappings.
+    /// Reset CPU/MMU and serial state. Retain RAM, ROM, NVRAM/RTC and bytes
+    /// already transmitted to the host endpoint.
     pub fn reset(&mut self) {
         self.cpu.reset_sun4m();
+        self.bus.reset_devices();
     }
 
     pub fn bare_metal(ram_bytes: usize, entry: u32) -> Result<Self, MachineError> {
         if ram_bytes == 0 || ram_bytes % 4 != 0 || ram_bytes > MAX_RAM_BYTES {
             return Err(MachineError::InvalidRamSize);
         }
-        let mut bus = MemoryBus::default();
+        let mut bus = SystemBus::default();
         bus.map_ram(0, ram_bytes).map_err(MachineError::Memory)?;
         Ok(Self {
             cpu: Cpu::new(entry),
             bus,
         })
+    }
+
+    /// RTC time is supplied by the owner until a machine event clock exists.
+    pub fn advance_seconds(&mut self, seconds: u64) {
+        if let Some(devices) = self.bus.devices_mut() {
+            devices.nvram.advance_seconds(seconds);
+        }
     }
 
     pub fn load_image(&mut self, address: u32, bytes: &[u8]) -> Result<(), BusError> {
@@ -125,5 +148,73 @@ pub fn trap_demo_image() -> Vec<u8> {
             slot.copy_from_slice(&word.to_be_bytes());
         }
     }
+    image
+}
+
+/// Synthetic reset PROM from examples/serial.s. Checks IDPROM, writes HELIOS,
+/// echoes one input byte and a newline, then sets g7=1 and loops.
+pub fn serial_demo_image() -> Vec<u8> {
+    let words = [
+        0x031c4400u32, // sethi %hi(0x71100000), %g1
+        0x82106004,    // or %g1, 4, %g1
+        0x84102009,    // or %g0, 0x9, %g2
+        0xc4286000,    // stb %g2, [%g1]
+        0x841020c0,    // or %g0, 0xc0, %g2
+        0xc4286000,    // stb %g2, [%g1]
+        0x84102004,    // or %g0, 0x4, %g2
+        0xc4286000,    // stb %g2, [%g1]
+        0x84102044,    // or %g0, 0x44, %g2
+        0xc4286000,    // stb %g2, [%g1]
+        0x8410200e,    // or %g0, 0xe, %g2
+        0xc4286000,    // stb %g2, [%g1]
+        0x84102003,    // or %g0, 0x3, %g2
+        0xc4286000,    // stb %g2, [%g1]
+        0x84102003,    // or %g0, 0x3, %g2
+        0xc4286000,    // stb %g2, [%g1]
+        0x841020c1,    // or %g0, 0xc1, %g2
+        0xc4286000,    // stb %g2, [%g1]
+        0x84102005,    // or %g0, 0x5, %g2
+        0xc4286000,    // stb %g2, [%g1]
+        0x841020ea,    // or %g0, 0xea, %g2
+        0xc4286000,    // stb %g2, [%g1]
+        0x091c4807,    // sethi %hi(0x71201fd8), %g4
+        0x881123d8,    // or %g4, 0x3d8, %g4
+        0xc6092001,    // ldub [%g4+1], %g3
+        0x8a102000,    // or %g0, 0x0, %g5
+        0x8c102010,    // or %g0, 0x10, %g6
+        0xc4092000,    // ldub [%g4], %g2
+        0x8a194002,    // xor %g5, %g2, %g5
+        0x88012001,    // add %g4, 1, %g4
+        0x8ca1a001,    // subcc %g6, 1, %g6
+        0x12bffffc,    // bne checksum
+        0x01000000,    // nop
+        0x88102200,    // or %g0, 0x200, %g4
+        0x8c102006,    // or %g0, 0x6, %g6
+        0xc4086000,    // ldub [%g1], %g2
+        0x8088a004,    // andcc %g2, 4, %g0
+        0x02bffffe,    // be transmit
+        0x01000000,    // nop
+        0xc4890120,    // lduba [%g4] 0x09, %g2
+        0xc4286002,    // stb %g2, [%g1+2]
+        0x88012001,    // add %g4, 1, %g4
+        0x8ca1a001,    // subcc %g6, 1, %g6
+        0x12bffff8,    // bne transmit
+        0x01000000,    // nop
+        0xc4086000,    // ldub [%g1], %g2
+        0x8088a001,    // andcc %g2, 1, %g0
+        0x02bffffe,    // be receive
+        0x01000000,    // nop
+        0xc4086002,    // ldub [%g1+2], %g2
+        0xc4286002,    // stb %g2, [%g1+2]
+        0x8410200a,    // or %g0, 0xa, %g2
+        0xc4286002,    // stb %g2, [%g1+2]
+        0x8e102001,    // or %g0, 0x1, %g7
+        0x30800000,    // ba,a done
+    ];
+    let mut image = vec![0; 0x206];
+    for (slot, word) in image.chunks_exact_mut(4).zip(words) {
+        slot.copy_from_slice(&word.to_be_bytes());
+    }
+    image[0x200..].copy_from_slice(b"HELIOS");
     image
 }

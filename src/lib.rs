@@ -3,5 +3,7 @@
 
 pub mod bus;
 pub mod cpu;
+pub mod devices;
 pub mod machine;
 pub mod mmu;
+pub mod system_bus;

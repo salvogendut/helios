@@ -8,6 +8,15 @@ pub enum BusErrorKind {
     Unmapped,
     Misaligned,
     ReadOnly,
+    /// Emulator limitation or host backpressure, never a guest bus exception.
+    Unsupported(&'static str),
+    WouldBlock,
+}
+
+impl BusErrorKind {
+    pub fn is_host_stop(self) -> bool {
+        matches!(self, Self::Unsupported(_) | Self::WouldBlock)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +125,9 @@ pub struct MemoryBus {
 }
 
 impl MemoryBus {
+    pub(crate) fn overlaps(&self, start: u64, end: u64) -> bool {
+        self.regions.iter().any(|r| start < r.end && end > r.base)
+    }
     pub fn map_ram(&mut self, base: u64, size: usize) -> Result<(), MapError> {
         self.map(base, size, false)
     }

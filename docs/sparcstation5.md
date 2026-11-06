@@ -4,7 +4,7 @@ The first machine target is a uniprocessor SPARCstation 5, sun4m, with a
 microSPARC-II-compatible SPARC V8 core and eight register windows. This keeps
 the first platform focused while leaving other Sun families for later profiles.
 The executable provides bare-metal and reset/PROM memory harnesses described
-in the README; workstation peripherals are still pending.
+in the README, with a polled console and NVRAM/RTC; other peripherals are pending.
 
 QEMU's SS-5 profile selects `Fujitsu-MB86904` and limits RAM to 256 MiB.
 Helios uses 64 MiB as its default harness allocation. These settings and the
@@ -18,15 +18,16 @@ following addresses are drawn from QEMU's
 | TCX framebuffer | `0x50000000` | Planned |
 | Boot PROM / SLAVIO area | `0x70000000` | 1 MiB raw PROM aperture; remaining SLAVIO devices pending |
 | Keyboard/mouse serial | `0x71000000` | Planned |
-| Console serial | `0x71100000` | Planned |
-| NVRAM / RTC | `0x71200000` | Planned |
+| Console serial | `0x71100000` | Z8530 asynchronous polling, A/B byte ports |
+| NVRAM / RTC | `0x71200000` | 8 KiB M48T08, IDPROM and explicit clock advancement |
 | Timer block | `0x71d00000` | Planned |
 | Interrupt block | `0x71e00000` | Planned |
 | DMA block | `0x78400000` | Planned |
 | ESP SCSI | `0x78800000` | Planned |
 | LANCE Ethernet | `0x78c00000` | Planned |
 
-Only the RAM and PROM mappings are installed from this reference inventory. Devices contain
+RAM, PROM, console serial and NVRAM/RTC are installed from this inventory; see
+[devices.md](devices.md) for exact apertures and limits. Remaining devices contain
 subregions and mirrors that need independent verification before implementation.
 In particular, reset instruction fetch and PROM access depend on CPU/MMU boot
 behavior. Helios starts at virtual PC 0 with PCR.BM set; instruction accesses

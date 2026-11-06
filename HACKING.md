@@ -26,6 +26,8 @@ or assume host scheduling is guest timing.
 | --- | --- |
 | `src/cpu.rs` | Integer interpreter, register windows, privileged state, traps and error state |
 | `src/bus.rs` | Physical bus contract, RAM/ROM mappings and external byte import |
+| `src/system_bus.rs` | Machine physical decoding, direct device byte access and mapping checks |
+| `src/devices/` | M48T08 NVRAM/RTC and Z8530 polling state, independent of host I/O |
 | `src/mmu.rs` | ASI dispatch, SRMMU translation, TLB, permissions and fault registers |
 | `src/machine.rs` | Bare-metal/reset construction, RAM/PROM limits and demo images |
 | `src/main.rs` | CLI parsing, image files, trace printing and CPU step budget |
@@ -35,9 +37,11 @@ or assume host scheduling is guest timing.
 It creates a CPU at a requested entry address and zeroed RAM at address zero.
 It does not perform SS-5 power-on, install a PROM alias or initialize devices.
 The CPU starts with S=PS=1, ET=0, CWP=0, WIM=0, TBR=0 and Y=0. These are
-harness conventions. `Machine::sun4m` installs a raw PROM and selects CPU/MMU
-reset; `Machine::reset` resets those components while retaining RAM and ROM.
-See [memory.md](docs/memory.md) for the reset state and platform limits.
+harness conventions. `Machine::sun4m` installs a raw PROM, console serial and
+NVRAM/RTC, then resets. `Machine::reset` resets CPU/MMU and serial state while
+retaining RAM, ROM, NVRAM/RTC and completed serial output. `sun4m_with_nvram`
+accepts an imported or customized NVRAM device. See [memory.md](docs/memory.md)
+and [devices.md](docs/devices.md) for reset state and platform limits.
 
 ## Data path
 
@@ -54,12 +58,21 @@ without rewriting device interfaces. The microSPARC-II MMU currently drives
 31 physical address bits. CPU accesses pass through ASI dispatch; the physical
 bus remains responsible only for physical mappings and device access.
 
-Mappings are nonempty, word-aligned, nonoverlapping half-open ranges. RAM starts
+RAM/ROM mappings are nonempty, word-aligned, nonoverlapping half-open ranges. RAM starts
 at zero; ROM writes fail. Image loading validates the entire destination within
 one RAM region before modifying it. Unmapped, read-only and misaligned accesses
 are distinct errors. Failed bus accesses must not mutate memory or devices.
 Masked stores do not call the device read path. RAM's default narrow accessors
-are unsuitable for some MMIO registers; those devices must override them.
+are unsuitable for MMIO registers. `SystemBus` dispatches byte accesses directly
+to the selected register; it rejects wider, masked and atomic device accesses
+before any effects. It also prevents image loads and RAM/ROM mappings from
+overlapping installed devices.
+
+`BusErrorKind::Unsupported` and `WouldBlock` describe emulator limitations and
+host backpressure. They produce retryable host stops, without guest bus traps,
+CPU error state or MMU fault-register changes, including under PCR.NF and during
+table walks/probes. Translation R/M updates and TLB changes may precede a stop.
+An endpoint owner can drain output and retry the same instruction.
 
 The bus requires explicit doubleword read/write, word exchange and byte
 load-store operations. Doublewords use `[u32; 2]`, ordered by increasing guest
@@ -158,8 +171,8 @@ The implemented trap types are:
 
 Physical access errors include unmapped memory and rejected ROM stores. MMU
 access exceptions use distinct fault types and vectors `0x01`/`0x09`. A bus
-failure while accessing a page table becomes an MMU translation fault; a bus
-failure at the translated target remains a physical access error. Deferred store
+hardware failure while accessing a page table becomes an MMU translation fault;
+a hardware failure at the translated target remains a physical access error. Deferred store
 errors, external interrupts, FPU traps and general illegal-opcode classification are
 not implemented. Missing emulator instructions, including unimplemented ASRs,
 still produce an `UnsupportedInstruction` host stop. Unimplemented control
@@ -168,8 +181,8 @@ spaces produce `UnsupportedMemory`; neither is converted into a guest trap.
 With ET=0, a precise exception latches error state without ordinary trap entry:
 no window rotation or saved locals, and no change to TBR.TT except for a failing
 RETT. Further steps return the same fault without fetching. Reconstructing the
-bare-metal CPU or performing CPU/MMU reset clears that latch. Device reset
-will be added as devices are implemented.
+bare-metal CPU or performing CPU/MMU reset clears that latch. Machine reset also
+resets the serial controller; retained device state is documented above.
 
 RETT checks privilege, ET, the destination WIM bit, then target alignment before
 mutating state. On success it increments CWP, restores S from PS, sets ET and
@@ -191,6 +204,7 @@ cargo clippy --locked --offline --all-targets -- -D warnings
 cargo test --locked --offline
 cargo run --locked --offline -- demo
 cargo run --locked --offline -- trap-demo --trace
+cargo run --locked --offline -- serial-demo
 ```
 
 Tests cover big-endian lanes, mapping bounds, ROM protection, register windows,
@@ -208,6 +222,12 @@ Integer tests cover signed/unsigned product halves, saturating division and the
 microSPARC-II negative boundary, precise arithmetic traps, 33-step MULScc
 products, tagged arithmetic, register-pair aliases, indivisible bus accesses,
 permission checks before atomic target access and self-modifying code with FLUSH.
+Device tests cover RTC latches, calendar rollover and stop, IDPROM checksum,
+NVRAM file persistence, SCC register selection and aliases, channel isolation,
+reset, bounded queues and retry after backpressure. A synthetic PROM exercises
+identity reads and serial TX/RX from reset; translated MMIO tests verify that
+byte operations do not consume adjacent registers. CLI tests separate console
+bytes from diagnostics and preserve source files, including on guest errors.
 These are local regression checks, not a SPARC conformance suite or a completed
 QEMU/MAME differential comparison.
 
