@@ -2,10 +2,10 @@
 
 Helios implements the initial FPU state and transfer subset: 32 word registers,
 LDF/LDDF/LDFSR, STF/STDF/STFSR, FMOVs/FNEGs/FABSs and all FBfcc conditions.
-Single/double comparisons and division, deferred IEEE exceptions, sequence
-errors and STDFQ queue draining are implemented. Conversions, other arithmetic,
-quad-operation traps and unfinished operations remain explicit emulator stops
-when the FPU is enabled.
+Single/double comparisons, division and addition/subtraction, deferred IEEE
+exceptions, sequence errors and STDFQ queue draining are implemented. Conversions,
+other arithmetic, quad-operation traps and unfinished operations remain explicit
+emulator stops when the FPU is enabled.
 
 The primary sources are SPARC V8 sections 4.4, 5.1.7 and 7, appendices B.2,
 B.5, B.22, B.34 and N.3–N.6, and the microSPARC-II User's Manual sections
@@ -43,8 +43,8 @@ bits 19:17. LDFSR accepts mask `0xcf800fff`:
 
 | Bits | Field | Behavior |
 | --- | --- | --- |
-| 31:30 | RD | Division: nearest/even, toward zero, +infinity, -infinity |
-| 27:23 | TEM | IEEE trap enables; implemented for comparisons/division |
+| 31:30 | RD | Arithmetic: nearest/even, toward zero, +infinity, -infinity |
+| 27:23 | TEM | IEEE trap enables; implemented for comparisons/arithmetic |
 | 22 | NS | Always zero on microSPARC-II |
 | 19:17 | VER | Always 4 |
 | 16:14 | FTT | Retained across LDFSR/STFSR; 1 for IEEE exceptions, 4 for sequence errors |
@@ -122,8 +122,8 @@ negative infinity. Finite exact results retain every bit; signed zero and
 infinity use the XOR of operand signs. Quiet NaNs follow the rules below.
 
 The five CEXC/AEXC bits are NX=1, DZ=2, UF=4, OF=8 and NV=16. A completed,
-nontrapping division sets CEXC to its flags, ORs them into AEXC, clears FTT and
-preserves FCC/RD/TEM. An exact ordinary result therefore clears stale CEXC
+nontrapping arithmetic operation sets CEXC to its flags, ORs them into AEXC,
+clears FTT and preserves FCC/RD/TEM. An exact ordinary result therefore clears stale CEXC
 without losing accrued exceptions. If an exception is enabled, no destination,
 FCC or AEXC changes: only the highest-priority enabled cause enters CEXC
 (NV, OF, UF, DZ, NX), FTT becomes 1 and the original instruction is deferred.
@@ -152,11 +152,43 @@ microSPARC-II figure 4.8 defines the Meiko NaN behavior. A quiet NaN preserves
 its payload and clears its sign; if both operands are quiet NaNs, rs1 wins.
 Any signaling NaN raises NV and yields positive `ME_NaN`: `0x7fff0000` for
 single or `0x7fffe00000000000` for double when masked. For invalid numeric inputs
-(0/0 and infinity/infinity), Helios uses V8 N.4's recommended positive quiet NaN
-with all fraction bits set (`0x7fffffff` / `0x7fffffffffffffff`). The chip's table
+(0/0, infinity/infinity and infinity minus itself), Helios uses V8 N.4's
+recommended positive quiet NaN with all fraction bits set (`0x7fffffff` / `0x7fffffffffffffff`). The chip's table
 labels numeric/numeric results as IEEE 754 but does not specify this payload;
 that choice has not been verified against silicon. These rules deliberately
 follow the chip manual where generic QEMU NaN propagation differs.
+
+## Addition and subtraction
+
+FADDs/FADDd (`opf=0x41/0x42`) add rs1 and rs2; FSUBs/FSUBd (`0x45/0x46`)
+subtract rs2 from rs1. They share division's register-pair choices, rounding,
+NaN propagation, status updates and deferred traps. Operand order for NaN
+selection is preserved even when the numeric computation orders magnitudes.
+
+Integer significands are aligned with three low guard/round/sticky bits. A
+right shift folds discarded nonzero bits into the sticky bit, including shifts
+of 64 or more. Opposite signs subtract magnitudes; close operands cancel exactly
+before normalization. When alignment discards bits, cancellation needs at most
+one left shift, retaining enough information for the final rounding decision.
+All intermediates fit in `u64`; the largest sum occupies 57 bits for double
+precision. No host floating-point operations or rounding state are used.
+
+Exact cancellation produces positive zero except under rounding toward negative
+infinity, which produces negative zero. Equal-sign zero operands retain their
+sign after applying subtraction's sign change: for example, `-0 - +0 = -0`.
+A finite same-format sum/difference below minimum normal is an exact multiple of
+the minimum subnormal. These tiny results raise UF when UFM is enabled, but do
+not raise UF or NX when UFM is masked. Exact zero raises neither exception.
+
+Infinity plus its opposite, or infinity minus itself, raises NV and uses the
+same documented numeric-invalid NaN default as division. Other infinite results
+retain the appropriate sign. Addition/subtraction never raises DZ.
+
+Overflow is checked after rounding, not merely because the exact magnitude
+exceeds maximum finite. For example, maximum finite plus a minimum subnormal
+rounds back to maximum finite with NX alone under nearest rounding; toward
+positive infinity it yields infinity with OF and NX. Tests also cover the
+halfway overflow boundary, negative results and enabled OF versus NX traps.
 
 ## Deferred exceptions and queue
 
@@ -197,7 +229,7 @@ There is no fabricated pipeline occupancy or host-dependent completion order.
 An unsupported FPop in execution state remains a retryable
 `UnsupportedInstruction` host stop. In pending/exception state the architectural
 state checks take precedence, just as they do for supported FP instructions.
-Arithmetic other than division, conversions, quad-operation traps and unfinished
+Multiplication, square roots, conversions, quad-operation traps and unfinished
 operations remain pending; this is not a complete IEEE arithmetic implementation.
 
 ## Validation and firmware
@@ -215,12 +247,18 @@ sequence errors, queue writes/retries, NF, interrupts, delay slots and reset.
 Division tests cover both precisions, all rounding modes/signs, destination
 aliases, gradual underflow, halfway cases, exact-tiny traps, overflow, NaN
 payload/sign rules, all five exceptions, inhibited results and deferred recovery.
+Addition/subtraction tests cover destination aliases, cancellation, signed zero,
+halfway rounding and adjacent values, discarded operands, subnormal sums,
+overflow boundaries, NaN rules and deferred exception recovery.
 The independent exact-fraction oracle described in [HACKING.md](../HACKING.md)
-passes 48000 guest divisions with seed `0x535335` and 2048 random operand pairs
-per precision, plus targeted boundary vectors. It validates result words, FSR
-and queue presence; this is not exhaustive or a silicon comparison.
+passes 158336 guest operations: 48000 divisions, 55168 additions and 55168
+subtractions. Seed `0x535335` and 2048 sampled operand pairs per precision and
+operation, plus targeted boundary vectors, reproduce the run. The add/sub
+samples include nearby magnitudes to expose cancellation. The checker validates
+result words, FSR and queue presence; this is not exhaustive or a silicon comparison.
 
-Original OBP now passes the two FCMPs, following floating branches and its first
-FDIVs (`100 / 4 = 25`), reaching unsupported FADDs at `0x70002864`.
+Original OBP now passes the two FCMPs, following floating branches, its first
+FDIVs (`100 / 4 = 25`) and FADDs (`20 + 5 = 25`). After another LDF it reaches
+unsupported FMULs at `0x7000286c`. This run has not exercised subtraction.
 It has no serial output or firmware prompt.
 [Firmware records](firmware.md) retain the bounded checkpoint and exact limits.

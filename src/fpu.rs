@@ -1,12 +1,14 @@
-//! microSPARC-II floating-point state, comparisons, division and deferred exceptions.
+//! microSPARC-II floating-point state, arithmetic, comparisons and deferred exceptions.
 //! See docs/fpu.md for the serialized execution model and remaining limits.
 
 const FSR_VERSION: u32 = 4 << 17; // Meiko, microSPARC-II table 6
 const FSR_WRITABLE: u32 = 0xcf80_0fff; // RD, TEM, FCC, AEXC, CEXC; NS is zero
 const FSR_FTT: u32 = 7 << 14;
 const FSR_FCC: u32 = 3 << 10;
+mod addition;
 mod division;
-use division::NV;
+mod ieee;
+use ieee::NV;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FpuState {
@@ -135,7 +137,7 @@ impl Fpu {
         }
     }
 
-    pub(crate) fn divide(
+    pub(crate) fn binary(
         &mut self,
         opf: u32,
         rd: u8,
@@ -145,8 +147,8 @@ impl Fpu {
         instruction: u32,
     ) -> bool {
         let double = match opf {
-            0x4d => false,
-            0x4e => true,
+            0x41 | 0x45 | 0x4d => false,
+            0x42 | 0x46 | 0x4e => true,
             _ => return false,
         };
         let (a, b) = if double {
@@ -154,13 +156,13 @@ impl Fpu {
         } else {
             (u64::from(self.read_reg(rs1)), u64::from(self.read_reg(rs2)))
         };
-        let (result, flags) = division::divide(
-            a,
-            b,
-            double,
-            self.status >> 30,
-            self.status & (division::UF << 23) != 0,
-        );
+        let rounding = self.status >> 30;
+        let trap_underflow = self.status & (ieee::UF << 23) != 0;
+        let (result, flags) = if matches!(opf, 0x4d | 0x4e) {
+            division::divide(a, b, double, rounding, trap_underflow)
+        } else {
+            addition::add(a, b, double, opf & 4 != 0, rounding, trap_underflow)
+        };
         if self.complete_exceptions(flags, pc, instruction) {
             if double {
                 self.write_reg(rd & !1, (result >> 32) as u32);

@@ -114,6 +114,6 @@ permissions, arbitration, bypass, reserved bits, stale mappings, CPU/I/O
 partitioning, diagnostic injection, selective flushes, reset and error isolation.
 The original ROM now passes IOCR enable writes and both bus-error diagnostics
 without the previous warning/reset. It then passes floating-point transfers,
-comparisons and division before stopping on unimplemented FADDs.
+comparisons, division and addition before stopping on unimplemented FMULs.
 See [firmware.md](firmware.md).
 This does not establish working SCSI/Ethernet DMA or a firmware prompt.

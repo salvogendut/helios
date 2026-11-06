@@ -307,7 +307,7 @@ fn sequence_error_ftt_survives_status_load_store_and_clears_on_a_completed_fpop(
 #[test]
 fn unsupported_fpops_remain_retryable_host_stops_when_enabled() {
     for word in [
-        fpop(0x34, 0x41, 4, 0, 2),
+        fpop(0x34, 0x47, 4, 0, 2), // quad subtraction remains unsupported
         fpop(0x35, 0x53, 0, 0, 4), // quad comparison trap support is pending
         fpop(0x34, 0x43, 0, 0, 4),
     ] {

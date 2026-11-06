@@ -269,7 +269,7 @@ counts. The empty serial transcripts match. This run exercises successful
 comparisons; deferred invalid exceptions and queue recovery are validated by
 focused tests. This checkpoint identified division as the next FPU work.
 
-With [single/double division](fpu.md) implemented, the same original ROM completes
+At the [single/double division](fpu.md) milestone, the same original ROM completed
 **25374279 instructions**, with **two diagnostic bus traps**, **zero interrupts**,
 **zero resets** and **zero serial bytes**. The hash, 128 MiB machine, default NVRAM,
 no serial input, 100 ns quantum and 30000000-step budget remain unchanged.
@@ -287,8 +287,30 @@ trace, CLI stop and both matching empty serial transcripts. Instruction counts
 are the previous checkpoint's counts plus one FDIVs. The run exercises an exact
 single-precision result; double division, rounding and deferred exceptions are
 covered by tests and the independent exact-fraction oracle (48000 guest cases,
-seed `0x535335`). Addition/subtraction is the next FPU work. POST completion and
-an OBP prompt remain unproved.
+seed `0x535335`). This checkpoint identified addition/subtraction as the next work.
+
+With [single/double addition and subtraction](fpu.md) implemented, original OBP
+completes **25374281 instructions**, with the same **two diagnostic bus traps**,
+**zero interrupts**, **zero resets** and **zero serial bytes**. The firmware hash,
+128 MiB layout, default NVRAM, no input, 100 ns quantum and 30000000-step budget
+are unchanged.
+
+The FADDs at `0x70002864` computes `20.0 + 5.0`, leaving `%f20=0x41c80000`
+(25.0) and FSR=`0x00080000`. A following LDF completes. Attempt **25374284**
+stops at PC=`0x7000286c`, nPC=`0x70002870`, instruction=`0x9da3092d`:
+`FMULs %f12, %f13, %f14`. Both source registers contain `0x40a00000` (5.0),
+while `%f14=0`. PCR=`0x04004000`, PSR=`0x044010e6`; the FPU remains in
+execution state with no deferred entry. Multiplication is an unsupported host
+stop with CPU error clear; the CLI exits 1.
+
+`local/probes/fpu-addition-ss5/` retains configuration, source, bounded library
+trace, CLI stop and matching empty serial transcripts. FP counts are the prior
+checkpoint plus one FADDs and one LDF. This firmware run has not exercised
+subtraction or double arithmetic; focused regressions and the independent
+fraction oracle cover them. Seed `0x535335`, with 2048 sampled operand pairs
+per precision/operation plus boundary cases, checks 48000 divisions and 55168
+each of addition and subtraction (158336 total). Multiplication is the next
+observed blocker. POST completion and a firmware prompt remain unproved.
 
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)

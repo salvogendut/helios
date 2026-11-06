@@ -1,5 +1,10 @@
 # Division, IEEE flags and the OBP addition stop
 
+Historical checkpoint; [fpu-addition.md](fpu-addition.md) records the subsequent
+addition/subtraction implementation and FMULs stop. The probe/checker were later
+renamed to `fp_arithmetic_probe` / `check_fp_arithmetic.py`; current commands are
+in HACKING.md.
+
 - FDIVs/d (`opf=4d/4e`) now execute; other arithmetic/conversions/quad traps
   remain explicit host stops. `src/fpu/division.rs` uses integer significands,
   exact u128 quotient/remainder and one rounding onto the normal/subnormal grid.

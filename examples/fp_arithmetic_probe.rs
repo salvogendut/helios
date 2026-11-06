@@ -1,10 +1,16 @@
-//! Line-based guest division probe for tools/check_fp_division.py.
+//! Line-based guest arithmetic probe for tools/check_fp_arithmetic.py.
 use helios::bus::Bus;
 use helios::cpu::{PSR_EF, PSR_ET, PSR_S};
 use helios::machine::Machine;
 use std::io::{self, BufRead, Write};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let single_opf = match std::env::args().nth(1).as_deref().unwrap_or("div") {
+        "add" => 0x41,
+        "sub" => 0x45,
+        "div" => 0x4d,
+        _ => return Err("operation must be add, sub or div".into()),
+    };
     let mut output = io::BufWriter::new(io::stdout().lock());
     for line in io::stdin().lock().lines() {
         let line = line?;
@@ -25,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("input outside the selected field/format".into());
         }
         let mut machine = Machine::bare_metal(4096, 0)?;
-        let opf = if double { 0x4e } else { 0x4d };
+        let opf = single_opf + u32::from(double);
         let program = [
             0x8188_6000u32,
             0x0100_0000,

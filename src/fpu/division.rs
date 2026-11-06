@@ -1,11 +1,7 @@
 //! Exact quotient/remainder division for binary32/binary64. No host FP state.
 //! SPARC V8 B.34/N.4-N.6 and microSPARC-II 4.3; see docs/fpu.md.
 
-pub(super) const NX: u32 = 1;
-pub(super) const DZ: u32 = 2;
-pub(super) const UF: u32 = 4;
-pub(super) const OF: u32 = 8;
-pub(super) const NV: u32 = 16;
+use super::ieee::{overflow, propagate_nan, DZ, NV, NX, UF};
 
 /// Returns raw result bits and the five CEXC bits. Exact tiny results signal
 /// underflow only when UFM is enabled (V8 N.5/N.6).
@@ -24,23 +20,8 @@ pub(super) fn divide(
     let result_sign = (a ^ b) & sign;
     let magnitude_a = a & !sign;
     let magnitude_b = b & !sign;
-    let nan_a = magnitude_a > infinity;
-    let nan_b = magnitude_b > infinity;
-    if nan_a || nan_b {
-        let quiet = hidden >> 1;
-        if (nan_a && a & quiet == 0) || (nan_b && b & quiet == 0) {
-            // Meiko replaces any SNaN with its canonical positive quiet NaN.
-            return (
-                if double {
-                    0x7fff_e000_0000_0000
-                } else {
-                    0x7fff_0000
-                },
-                NV,
-            );
-        }
-        // Figure 4.8 prefers rs1 when both are quiet; clear the sign.
-        return (if nan_a { magnitude_a } else { magnitude_b }, 0);
+    if let Some(result) = propagate_nan(a, b, double) {
+        return result;
     }
     if (magnitude_a == 0 && magnitude_b == 0)
         || (magnitude_a == infinity && magnitude_b == infinity)
@@ -116,13 +97,7 @@ pub(super) fn divide(
     }
     if exponent > bias {
         // Overflow is detected after rounding with an unbounded exponent.
-        let to_infinity = rounding == 0
-            || (rounding == 2 && result_sign == 0)
-            || (rounding == 3 && result_sign != 0);
-        return (
-            result_sign | if to_infinity { infinity } else { infinity - 1 },
-            OF | NX,
-        );
+        return overflow(infinity, result_sign, rounding);
     }
     let bits = if tiny {
         // Includes rounding up to minimum normal (encoded as hidden).
