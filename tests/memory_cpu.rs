@@ -107,7 +107,7 @@ fn alternate_privilege_and_encoding_checks_precede_control_space_side_effects() 
 
 #[test]
 fn unsupported_control_spaces_stop_without_cpu_error_state() {
-    let mut m = setup(&[alternate(0x10, 1, 0, 0, 6)]);
+    let mut m = setup(&[alternate(0x10, 1, 0, 0, 7)]);
     let before = m.cpu.clone();
     assert!(matches!(
         m.step().unwrap_err().kind,

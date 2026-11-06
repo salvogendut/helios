@@ -134,6 +134,31 @@ CLI and library console output match exactly. Firmware, RAM, NVRAM and step
 quantum are unchanged. This establishes progress beyond tag initialization,
 not a firmware prompt, working cache POST or OS compatibility.
 
+With the SS-5 DRAM bank model and live TLB diagnostics/replacement controls,
+the same 30000000-step probe completes **20543176 instructions** with zero
+traps, interrupts or resets and no serial output. `boot` and the library probe
+now use `Machine::ss5`: four 32 MiB modules in slots 0–3, four empty slots.
+Physical memory beyond 128 MiB completes as empty-bank accesses, so OBP passes
+the previous memory-probe fault. The synthetic `sun4m` harness retains its old
+strict contiguous mapping for small tests; it is no longer used for this probe.
+
+The firmware also passes its accesses to TRCR (`ASI 04`, address `1000`) and
+TLB diagnostic data/tags (`ASI 06`). The next stop is attempt **20543177**,
+PC=`0x70005b68`, nPC=`0x70005b6c`, instruction=`0xe6a58400`: an ASI `20`
+store of the test pattern `0xa5a5a5a5` to physical `0x10000000`. This attempts
+to set IOCR.EN during an IOMMU register test. DVMA translation is not yet
+implemented, so the device rejects the write before mutation. The CPU error
+latch remains clear and the CLI exits 1. This does not demonstrate any DMA
+transfer or working firmware prompt.
+
+Records under `local/probes/dram-tlb-ss5/` retain configuration, CLI console/stop
+and bounded library trace/source. Console outputs match (both empty). The CLI
+stderr record also contains the newly embedded `sun_ascii.txt` startup logo;
+it is host output, separate from the guest serial transcript. The firmware
+hash, 128 MiB capacity, default NVRAM, no input and 100 ns step quantum are unchanged.
+See [DRAM and TLB diagnostics](dram-tlb.md) for functional limits, including
+parity, fill-driven replacement timing, injected PTP walks and M-bit rewalks.
+
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)
 provide the bring-up workflow; register semantics still require chip-level

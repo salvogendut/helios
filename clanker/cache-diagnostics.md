@@ -3,6 +3,7 @@
 Checked 2026-11-06. Contract: docs/cache.md. src/cache.rs models independent
 diagnostic arrays behind Srmmu. Normal memory still bypasses them; do not claim
 cache fills/hits, injected-code execution or cache POST from this slice.
+The later checkpoint in dram-tlb.md supersedes the memory-probe/reset-path stop below.
 
 - Primary /tmp/helios-ms2.pdf/.txt, revision 1.1 July 1994: chapters 6/7,
   table 55. Visually inspected figures 6.1/7.1 at printed 127/135, PDF125/133.

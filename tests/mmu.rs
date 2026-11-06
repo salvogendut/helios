@@ -432,11 +432,11 @@ fn register_masks_diagnostic_aliases_and_unimplemented_features() {
     ));
     assert_eq!(mmu, before);
     assert!(matches!(
-        mmu.load(&mut bus, 0x1000, 4, Width::Word),
+        mmu.load(&mut bus, 0x1100, 4, Width::Word),
         Err(MemoryError::UnsupportedRegister(_))
     ));
     assert!(matches!(
-        mmu.load(&mut bus, 0, 6, Width::Word),
+        mmu.load(&mut bus, 0, 7, Width::Word),
         Err(MemoryError::UnsupportedAsi { .. })
     ));
     assert!(matches!(

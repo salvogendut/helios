@@ -9,6 +9,7 @@ use crate::devices::{
     serial::Serial,
     timer::Timers,
 };
+use crate::dram::{Ss5Dram, APERTURE_BYTES};
 
 pub const IO_CONTROL_BASE: u64 = 0x1000_0000;
 pub const KEYBOARD_SERIAL_BASE: u64 = 0x7100_0000;
@@ -73,9 +74,30 @@ impl Sun4mDevices {
 pub struct SystemBus {
     memory: MemoryBus,
     devices: Option<Sun4mDevices>,
+    dram: Option<Ss5Dram>,
 }
 
 impl SystemBus {
+    pub fn install_ss5_dram(&mut self, dram: Ss5Dram) -> Result<(), MapError> {
+        if self.dram.is_some() || self.memory.overlaps(0, APERTURE_BYTES) {
+            return Err(MapError::Overlap);
+        }
+        self.dram = Some(dram);
+        Ok(())
+    }
+
+    pub fn dram(&self) -> Option<&Ss5Dram> {
+        self.dram.as_ref()
+    }
+
+    fn dram_at(&mut self, address: u64) -> Option<&mut Ss5Dram> {
+        if address < APERTURE_BYTES {
+            self.dram.as_mut()
+        } else {
+            None
+        }
+    }
+
     pub fn install_sun4m(&mut self, nvram: Nvram) -> Result<(), MapError> {
         if self.devices.is_some()
             || DEVICE_RANGES
@@ -179,7 +201,9 @@ impl SystemBus {
         if address.checked_add(size as u64).is_none() {
             return Err(MapError::InvalidRange);
         }
-        if self.overlaps_device(address, size as u64) {
+        if self.overlaps_device(address, size as u64)
+            || (self.dram.is_some() && size != 0 && address < APERTURE_BYTES)
+        {
             Err(MapError::Overlap)
         } else {
             Ok(())
@@ -194,6 +218,9 @@ impl SystemBus {
         self.memory.map_rom(address, bytes)
     }
     pub fn load_image(&mut self, address: u64, bytes: &[u8]) -> Result<(), BusError> {
+        if let Some(dram) = self.dram_at(address) {
+            return dram.load_image(address, bytes);
+        }
         if self.overlaps_device(address, bytes.len() as u64) {
             return Err(BusError {
                 address,
@@ -223,6 +250,9 @@ impl SystemBus {
 
 impl Bus for SystemBus {
     fn read8(&mut self, address: u64) -> Result<u8, BusError> {
+        if let Some(dram) = self.dram_at(address) {
+            return dram.read8(address);
+        }
         self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
             if (KEYBOARD_SERIAL_BASE..KEYBOARD_SERIAL_BASE + 8).contains(&address) {
@@ -247,6 +277,9 @@ impl Bus for SystemBus {
         self.memory.read8(address)
     }
     fn write8(&mut self, address: u64, value: u8) -> Result<(), BusError> {
+        if let Some(dram) = self.dram_at(address) {
+            return dram.write8(address, value);
+        }
         self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
             if (KEYBOARD_SERIAL_BASE..KEYBOARD_SERIAL_BASE + 8).contains(&address) {
@@ -271,14 +304,23 @@ impl Bus for SystemBus {
         self.memory.write8(address, value)
     }
     fn read16(&mut self, address: u64) -> Result<u16, BusError> {
+        if let Some(dram) = self.dram_at(address) {
+            return dram.read16(address);
+        }
         self.memory_only(address, 2)?;
         self.memory.read16(address)
     }
     fn write16(&mut self, address: u64, value: u16) -> Result<(), BusError> {
+        if let Some(dram) = self.dram_at(address) {
+            return dram.write16(address, value);
+        }
         self.memory_only(address, 2)?;
         self.memory.write16(address, value)
     }
     fn read32(&mut self, address: u64) -> Result<u32, BusError> {
+        if let Some(dram) = self.dram_at(address) {
+            return dram.read32(address);
+        }
         if address & 3 != 0 {
             return Err(BusError {
                 address,
@@ -301,6 +343,9 @@ impl Bus for SystemBus {
         self.memory.read32(address)
     }
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError> {
+        if let Some(dram) = self.dram_at(address) {
+            return dram.write32_masked(address, value, mask);
+        }
         if address & 3 != 0 {
             return Err(BusError {
                 address,
@@ -331,6 +376,9 @@ impl Bus for SystemBus {
         self.memory.write32_masked(address, value, mask)
     }
     fn read_doubleword(&mut self, address: u64) -> Result<[u32; 2], BusError> {
+        if let Some(dram) = self.dram_at(address) {
+            return dram.read_doubleword(address);
+        }
         if address == CPU_TIMER_BASE {
             if let Some(devices) = &self.devices {
                 return devices
@@ -343,6 +391,9 @@ impl Bus for SystemBus {
         self.memory.read_doubleword(address)
     }
     fn write_doubleword(&mut self, address: u64, words: [u32; 2]) -> Result<(), BusError> {
+        if let Some(dram) = self.dram_at(address) {
+            return dram.write_doubleword(address, words);
+        }
         if address == CPU_TIMER_BASE {
             if let Some(devices) = &mut self.devices {
                 return devices
@@ -355,10 +406,16 @@ impl Bus for SystemBus {
         self.memory.write_doubleword(address, words)
     }
     fn swap32(&mut self, address: u64, value: u32) -> Result<u32, BusError> {
+        if let Some(dram) = self.dram_at(address) {
+            return dram.swap32(address, value);
+        }
         self.memory_only(address, 4)?;
         self.memory.swap32(address, value)
     }
     fn ldstub8(&mut self, address: u64) -> Result<u8, BusError> {
+        if let Some(dram) = self.dram_at(address) {
+            return dram.ldstub8(address);
+        }
         self.memory_only(address, 1)?;
         self.memory.ldstub8(address)
     }

@@ -71,6 +71,13 @@ pub enum MemoryError {
     UnsupportedRegister(u32),
     UnsupportedControl(u32),
     UnsupportedRootPte,
+    UnsupportedTlbDiagnostic {
+        address: u32,
+        value: u32,
+    },
+    /// A diagnostic entry without a page-table origin needs a hardware rewalk
+    /// to set M; that path is not implemented yet.
+    UnsupportedTlbModifiedUpdate,
     UnsupportedOperation {
         asi: u8,
         operation: MemoryOperation,
@@ -105,21 +112,37 @@ impl Access {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Entry {
     virtual_base: u32,
     offset_mask: u32,
     context: u8,
     level: u8,
-    pte_address: u64,
+    pte_address: Option<u64>,
     pte: u32,
+    upper: u32,
+    lower: u32,
 }
 
 impl Entry {
     fn matches(self, address: u32, context: u8, supervisor: bool) -> bool {
-        let global = (self.pte >> 2) & 7 >= 6;
-        address & !self.offset_mask == self.virtual_base
+        let global = self.lower & 8 != 0;
+        self.upper & 0xc == 8
+            && self.lower & 6 == 0
+            && address & !self.offset_mask == self.virtual_base
             && (context == self.context || (supervisor && global))
+    }
+
+    fn retag(&mut self, upper: u32) {
+        self.upper = upper;
+        self.context = (upper >> 4) as u8;
+        (self.level, self.offset_mask) = match upper & 7 {
+            3 => (1, 0x00ff_ffff),
+            1 => (2, 0x0003_ffff),
+            0 => (3, 0xfff),
+            _ => (0, u32::MAX),
+        };
+        self.virtual_base = upper & !self.offset_mask;
     }
 }
 
@@ -130,8 +153,8 @@ pub struct Srmmu {
     context: u8,
     fault_status: u32,
     fault_address: u32,
-    tlb: [Option<Entry>; TLB_ENTRIES],
-    replacement: usize,
+    tlb: [Entry; TLB_ENTRIES],
+    trcr: u32,
     caches: CacheDiagnostics,
 }
 
@@ -144,8 +167,9 @@ impl Default for Srmmu {
             context: 0,
             fault_status: 0,
             fault_address: 0,
-            tlb: [None; TLB_ENTRIES],
-            replacement: 0,
+            tlb: [Entry::default(); TLB_ENTRIES],
+            // Functional reset choice: all 64 entries initially replaceable.
+            trcr: 63 << 7,
             caches: CacheDiagnostics::default(),
         }
     }
@@ -178,13 +202,73 @@ impl Srmmu {
     }
 
     fn flush(&mut self) {
-        self.tlb.fill(None);
-        self.replacement = 0;
+        for entry in &mut self.tlb {
+            entry.upper &= !8;
+        }
     }
 
     fn insert(&mut self, entry: Entry) {
-        self.tlb[self.replacement] = Some(entry);
-        self.replacement = (self.replacement + 1) % TLB_ENTRIES;
+        let wrap = ((self.trcr >> 7) & 63) as usize;
+        let limit = if self.trcr & (1 << 13) != 0 {
+            wrap.min(47)
+        } else {
+            wrap
+        };
+        let counter = (self.trcr & 63) as usize;
+        let mut index = counter % (limit + 1);
+        // Locked PTP slots have alternate CPU PTE locations 3, 4 and 5.
+        if index < 3 && self.trcr & (1 << (14 + index)) != 0 {
+            index += 3;
+        }
+        self.tlb[index] = entry;
+        // Functional scheduling: advance on fills, not on individual CPU clocks.
+        if self.trcr & (1 << 6) == 0 {
+            self.trcr = (self.trcr & !63) | ((counter + 1) % (limit + 1)) as u32;
+        }
+    }
+
+    fn diagnostic_read(&self, address: u32) -> Result<u32, MemoryError> {
+        let entry = self.tlb[((address >> 2) & 63) as usize];
+        match address >> 8 {
+            0 => Ok(if entry.lower & 2 != 0 {
+                (entry.pte & 0xe7ff_fff0) | 1
+            } else if entry.lower & 4 != 0 {
+                (entry.pte & 0xe7ff_ff04) | 2
+            } else {
+                (entry.pte & 0xe7ff_ffdc) | 0x22
+            }),
+            1 => Ok(entry.lower),
+            3 => Ok(entry.upper),
+            _ => Err(MemoryError::UnsupportedRegister(address)),
+        }
+    }
+
+    fn diagnostic_write(&mut self, address: u32, value: u32) -> Result<(), MemoryError> {
+        let slot = &mut self.tlb[((address >> 2) & 63) as usize];
+        let mut entry = *slot;
+        match address >> 8 {
+            0 => entry.pte = value & 0xe7ff_fffc,
+            1 => entry.lower = value & 0x3ff,
+            3 => entry.retag(value),
+            _ => return Err(MemoryError::UnsupportedRegister(address)),
+        }
+        // RAM tests can install arbitrary patterns with translation disabled.
+        // Unsupported active types are checked at lookup, not on diagnostic writes.
+        entry.pte_address = None;
+        *slot = entry;
+        Ok(())
+    }
+
+    fn validate_tlb_lookup(&self) -> Result<(), MemoryError> {
+        for (index, entry) in self.tlb.iter().enumerate() {
+            if entry.upper & 8 != 0 && (entry.lower & 2 != 0 || entry.upper & 7 == 2) {
+                return Err(MemoryError::UnsupportedTlbDiagnostic {
+                    address: 0x300 | (index as u32 * 4),
+                    value: entry.upper,
+                });
+            }
+        }
+        Ok(())
     }
 
     fn record(&mut self, fault: MmuFault) {
@@ -249,6 +333,7 @@ impl Srmmu {
         match asi {
             3 if width == Width::Word => return self.probe(bus, address),
             4 if width == Width::Word => return self.read_register(address),
+            6 if width == Width::Word => return self.diagnostic_read(address),
             0x0c..=0x0e if width == Width::Word => {
                 return Ok(self.caches.read(address, asi, width));
             }
@@ -295,6 +380,7 @@ impl Srmmu {
                 return Ok(());
             }
             4 if width == Width::Word => return self.write_register(address, value),
+            6 if width == Width::Word => return self.diagnostic_write(address, value),
             0x0c..=0x0e if width == Width::Word => {
                 self.caches.write(address, asi, width, value);
                 return Ok(());
@@ -466,6 +552,7 @@ impl Srmmu {
             2 => u32::from(self.context),
             3 => std::mem::take(&mut self.fault_status),
             4 => std::mem::take(&mut self.fault_address),
+            0x10 => self.trcr,
             0x13 => self.fault_status,
             0x14 => self.fault_address,
             _ => return Err(MemoryError::UnsupportedRegister(address)),
@@ -492,6 +579,7 @@ impl Srmmu {
             }
             2 => self.context = value as u8,
             3 | 4 => {}
+            0x10 => self.trcr = value & 0x01f1_ffff,
             0x13 => self.fault_status = value & 0x0001_6fff,
             0x14 => self.fault_address = value,
             _ => return Err(MemoryError::UnsupportedRegister(address)),
@@ -506,20 +594,20 @@ impl Srmmu {
         if access.asi == 0x20 || self.control & PCR_EN == 0 {
             return Ok(u64::from(access.address) & PHYSICAL_MASK);
         }
-        let hit = self.tlb.iter().position(|slot| {
-            slot.is_some_and(|entry| {
-                entry.matches(access.address, self.context, access.supervisor())
-            })
-        });
+        self.validate_tlb_lookup()?;
+        let hit = self
+            .tlb
+            .iter()
+            .position(|entry| entry.matches(access.address, self.context, access.supervisor()));
         let mut entry = if let Some(index) = hit {
-            self.tlb[index].expect("matched TLB entry")
+            self.tlb[index]
         } else {
             self.walk(bus, access)?
         };
         Self::permission(access, entry)?;
         Self::touch(bus, access, &mut entry)?;
         if let Some(index) = hit {
-            self.tlb[index] = Some(entry);
+            self.tlb[index] = entry;
         } else {
             self.insert(entry);
         }
@@ -530,16 +618,16 @@ impl Srmmu {
     }
 
     fn permission(access: Access, entry: Entry) -> Result<(), MemoryError> {
-        let acc = (entry.pte >> 2) & 7;
         let supervisor = access.supervisor();
-        if !supervisor && acc >= 6 {
+        if !supervisor && entry.lower & 8 != 0 {
             return Err(MemoryError::Translation(
                 access.fault(FaultType::Privilege, entry.level),
             ));
         }
-        let executable = matches!(acc, 2 | 3 | 4 | 6 | 7);
-        let writable = matches!(acc, 1 | 3 | 7) || (supervisor && acc == 5);
-        let readable = acc != 4;
+        let rights = entry.lower >> if supervisor { 4 } else { 7 };
+        let executable = rights & 4 != 0;
+        let writable = rights & 1 != 0;
+        let readable = rights & 2 != 0;
         let allowed = if access.instruction() {
             executable
         } else if access.write {
@@ -556,12 +644,30 @@ impl Srmmu {
     }
 
     fn touch(bus: &mut impl Bus, access: Access, entry: &mut Entry) -> Result<(), MemoryError> {
-        let bits = REFERENCED | if access.write { MODIFIED } else { 0 };
+        if entry.pte_address.is_none() {
+            return if access.write && entry.lower & 1 == 0 {
+                Err(MemoryError::UnsupportedTlbModifiedUpdate)
+            } else {
+                Ok(())
+            };
+        }
+        let bits = REFERENCED
+            | if access.write && entry.lower & 1 == 0 {
+                MODIFIED
+            } else {
+                0
+            };
         let missing = bits & !entry.pte;
-        if missing != 0 {
-            bus.write32_masked(entry.pte_address, missing, missing)
+        if missing != 0 || (access.write && entry.lower & 1 == 0) {
+            let address = entry
+                .pte_address
+                .ok_or(MemoryError::UnsupportedTlbModifiedUpdate)?;
+            bus.write32_masked(address, bits, bits)
                 .map_err(|error| Self::table_error(access, entry.level, error))?;
-            entry.pte |= missing;
+            entry.pte |= bits;
+            if access.write {
+                entry.lower |= 1;
+            }
         }
         Ok(())
     }
@@ -596,13 +702,24 @@ impl Srmmu {
             3 => 0xfff,
             _ => unreachable!(),
         };
+        let acc = ((pte >> 2) & 7) as usize;
+        // UE/UR/UW/SE/SR/SW at bits9:4, supervisor-global at bit3, M at bit0.
+        let permissions = [0x120, 0x1b0, 0x360, 0x3f0, 0x240, 0x130, 0x068, 0x078];
+        let level_tag = match level {
+            1 => 3,
+            2 => 1,
+            3 => 0,
+            _ => 7,
+        };
         Entry {
             virtual_base: address & !mask,
             offset_mask: mask,
             context: self.context,
             level,
-            pte_address,
-            pte,
+            pte_address: Some(pte_address),
+            pte: (pte & 0x07ff_ffff) | ((!level_tag & 7) << 29),
+            upper: (address & !0xfff) | (u32::from(self.context) << 4) | 8 | level_tag,
+            lower: permissions[acc] | u32::from(pte & MODIFIED != 0),
         }
     }
 
@@ -642,13 +759,13 @@ impl Srmmu {
             write: false,
         };
         if kind == 4 {
+            self.validate_tlb_lookup()?;
             if let Some(entry) = self
                 .tlb
                 .iter()
-                .flatten()
                 .find(|entry| entry.matches(access.address, self.context, true))
             {
-                return Ok(entry.pte);
+                return Ok((entry.pte & 0x07ff_ffdc) | 0x22);
             }
         } else {
             // Conservative invalidation also removes any cached intermediate
@@ -690,7 +807,7 @@ impl Srmmu {
                     if level != 0 {
                         self.insert(entry);
                     }
-                    return Ok(entry.pte);
+                    return Ok(entry.pte & 0x07ff_ffff);
                 }
                 _ => return Ok(0),
             }

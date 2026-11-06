@@ -47,10 +47,13 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
   configuration registers; DVMA translation is pending.
 - microSPARC-II instruction/data cache diagnostic storage and indexed
   invalidation; normal accesses still use coherent memory without cache fills.
+- SS-5 DRAM banks, smaller-module mirrors and empty-bank access behavior.
+- TLB diagnostic ports backed by live translation entries and functional replacement
+  controls; injected PTP walks and M-bit rewalks remain pending.
 
 Unsupported emulator behavior remains a host stop, separate from guest traps.
-Implementation-specific ASRs, broader illegal-opcode classification, TLB
-diagnostics, cache hit/fill behavior, FPU, serial interrupt generation, SCSI, networking
+Implementation-specific ASRs, broader illegal-opcode classification, remaining TLB
+diagnostic modes, cache hit/fill behavior, FPU, serial interrupt generation, SCSI, networking
 and graphics remain to be implemented. There is no firmware or OS compatibility
 claim.
 
@@ -58,6 +61,8 @@ claim.
 
 Use Rust 1.74 or newer with Cargo. The core needs no host GUI libraries or
 downloaded crates; nightly features are not required.
+The executable embeds [sun_ascii.txt](sun_ascii.txt) and prints its Sun logo and
+the HELIOS name on stderr at startup, keeping guest serial bytes on stdout.
 
 ```sh
 cargo test --locked --offline
@@ -117,7 +122,7 @@ cargo run --release -- boot local/prom.bin --steps 10000 \
   --serial-in local/input.bin --nvram local/nvram.bin --nvram-out local/nvram-next.bin
 ```
 
-`boot` installs RAM and a read-only 1 MiB PROM aperture at `0x70000000`, starts
+`boot` installs the SS-5 bank layout and a read-only 1 MiB PROM aperture at `0x70000000`, starts
 PC/nPC at 0/4, and selects PROM for instruction-space accesses through boot
 mode. Ordinary data accesses use the physical map, including console serial at
 `0x71100000` and NVRAM/RTC at `0x71200000`. `boot` and `serial-demo` send TTYA
@@ -130,6 +135,10 @@ timing. The library also exposes explicit time advancement. A working firmware
 prompt remains pending. See [Memory and reset](docs/memory.md),
 [Devices](docs/devices.md) and [Interrupts and timers](docs/interrupts-timers.md).
 Guest reset behavior and current watchdog limits are in [System reset](docs/reset.md).
+For `boot`, RAM must fit eight 8 MiB or 32 MiB DSIMMs; larger modules occupy
+low slots first. The default is four 32 MiB modules and four empty slots.
+See [DRAM and TLB diagnostics](docs/dram-tlb.md) for mirrors, empty-bank reads
+and the distinction from the contiguous RAM used by synthetic harnesses.
 
 ## Development
 
@@ -137,6 +146,7 @@ Guest reset behavior and current watchdog limits are in [System reset](docs/rese
 - [SPARCstation 5](docs/sparcstation5.md): target and reference memory map.
 - [Memory and reset](docs/memory.md): SRMMU, ASIs, fault behavior and PROM mapping.
 - [Cache diagnostics](docs/cache.md): diagnostic storage, invalidation and functional limits.
+- [DRAM and TLB diagnostics](docs/dram-tlb.md): DSIMM layout, diagnostic entries and replacement controls.
 - [System reset](docs/reset.md): reset-status register, guest reset and watchdog limits.
 - [Devices](docs/devices.md): console serial, IDPROM, NVRAM persistence and RTC.
 - [Interrupts and timers](docs/interrupts-timers.md): register maps, masking and guest time.
@@ -157,11 +167,11 @@ cargo run --locked --offline -- boot local/firmware/sun-ss5.bin --steps 10000 --
 ```
 
 This short probe now reaches its 10000-step budget in OBP's timed keyboard
-polling loop. With a 30000000-step budget, OBP passes cache-tag initialization
-and reaches memory probing. A store at `0x08000000`, beyond the configured RAM,
-traps; OBP prints a diagnostic and resets, then stops on ASI `0x06` TLB
-diagnostics at PC `0x0000be7c`. That run completes 20044378 instructions,
-one trap and one reset. Memory-bank behavior needs investigation; no prompt yet.
+polling loop. With a 30000000-step budget, OBP passes the former memory-bank
+fault and exercises TLB diagnostics. It completes 20543176 instructions without
+a trap, interrupt or reset, then stops at PC `0x70005b68` when an IOMMU register
+test attempts to set translation-enable. DVMA translation is the next gap;
+there is no serial output or firmware prompt yet.
 The fetched image is hash-verified and stays ignored.
 OpenBIOS remains a separate compatibility test until it is proved working.
 

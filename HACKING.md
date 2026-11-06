@@ -30,6 +30,7 @@ or assume host scheduling is guest timing.
 | `src/devices/` | NVRAM/RTC, two polled SCCs, interrupt control, timers, reset/status and I/O configuration |
 | `src/mmu.rs` | ASI dispatch, SRMMU translation, TLB, permissions and fault registers |
 | `src/cache.rs` | Cache diagnostic arrays and indexed invalidation; ordinary cache hits/fills pending |
+| `src/dram.rs` | SS-5 DSIMM layout, mirrors and empty-bank behavior |
 | `src/machine.rs` | Bare-metal/reset construction, RAM/PROM limits and demo images |
 | `src/main.rs` | CLI parsing, image files, trace printing and CPU step budget |
 | `tests/` | Architectural and boundary behavior through the public library |
@@ -49,6 +50,11 @@ see [reset.md](docs/reset.md) for retained state, trace outcomes and watchdog li
 The machine also installs the microSPARC-II [I/O control subset](docs/io-control.md).
 Its SBus/disabled-IOMMU configuration resets with the rest of I/O. DVMA translation
 is not implemented; enabling it stops before changing the register.
+`Machine::ss5` and `ss5_with_nvram` install physical DSIMM banks and are used
+by CLI `boot`. The older `sun4m` constructors retain contiguous RAM for small
+synthetic tests. Firmware probes must use `ss5`; see [dram-tlb.md](docs/dram-tlb.md).
+The CLI embeds `sun_ascii.txt` for its startup banner on stderr. Core library
+construction remains silent and guest TTYA bytes remain on stdout.
 
 ## Data path
 

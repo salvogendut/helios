@@ -5,6 +5,7 @@ pub mod bus;
 mod cache;
 pub mod cpu;
 pub mod devices;
+pub mod dram;
 pub mod machine;
 pub mod mmu;
 pub mod system_bus;

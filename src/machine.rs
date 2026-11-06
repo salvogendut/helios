@@ -4,6 +4,7 @@
 use crate::bus::{BusError, MapError};
 use crate::cpu::{Cpu, CpuFault, Step};
 use crate::devices::nvram::Nvram;
+use crate::dram::Ss5Dram;
 use crate::mmu::PROM_BASE;
 use crate::system_bus::SystemBus;
 use std::fmt;
@@ -20,6 +21,7 @@ pub const STEP_NS: u64 = 100;
 #[derive(Debug)]
 pub enum MachineError {
     InvalidRamSize,
+    InvalidDramSize,
     InvalidPromSize,
     Memory(MapError),
 }
@@ -29,6 +31,9 @@ impl fmt::Display for MachineError {
         match self {
             Self::InvalidRamSize => {
                 f.write_str("RAM must be a nonzero multiple of 4 bytes, at most 256 MiB")
+            }
+            Self::InvalidDramSize => {
+                f.write_str("SS-5 RAM must fit in eight 8 MiB or 32 MiB DSIMMs (8–256 MiB)")
             }
             Self::Memory(error) => error.fmt(f),
             Self::InvalidPromSize => {
@@ -47,6 +52,30 @@ pub struct Machine {
 }
 
 impl Machine {
+    /// Hardware SS-5 memory layout; low slots receive 32 MiB then 8 MiB DSIMMs.
+    pub fn ss5(ram_bytes: usize, prom: &[u8]) -> Result<Self, MachineError> {
+        Self::ss5_with_nvram(ram_bytes, prom, Nvram::default())
+    }
+
+    pub fn ss5_with_nvram(
+        ram_bytes: usize,
+        prom: &[u8],
+        nvram: Nvram,
+    ) -> Result<Self, MachineError> {
+        let dram = Ss5Dram::from_total(ram_bytes).map_err(|error| match error {
+            MapError::InvalidRange => MachineError::InvalidDramSize,
+            error => MachineError::Memory(error),
+        })?;
+        let mut bus = SystemBus::default();
+        bus.install_ss5_dram(dram).map_err(MachineError::Memory)?;
+        let mut machine = Self {
+            cpu: Cpu::new(0),
+            bus,
+        };
+        machine.install_prom(prom, nvram)?;
+        Ok(machine)
+    }
+
     /// Load a raw PROM into a 1 MiB read-only aperture, padded with 0xff.
     /// Install the polling serial console and a fresh deterministic NVRAM/RTC.
     pub fn sun4m(ram_bytes: usize, prom: &[u8]) -> Result<Self, MachineError> {
@@ -58,22 +87,25 @@ impl Machine {
         prom: &[u8],
         nvram: Nvram,
     ) -> Result<Self, MachineError> {
+        let mut machine = Self::bare_metal(ram_bytes, 0)?;
+        machine.install_prom(prom, nvram)?;
+        Ok(machine)
+    }
+
+    fn install_prom(&mut self, prom: &[u8], nvram: Nvram) -> Result<(), MachineError> {
         if prom.is_empty() || prom.len() > MAX_PROM_BYTES {
             return Err(MachineError::InvalidPromSize);
         }
-        let mut machine = Self::bare_metal(ram_bytes, 0)?;
         let mut image = vec![0xff; MAX_PROM_BYTES];
         image[..prom.len()].copy_from_slice(prom);
-        machine
-            .bus
+        self.bus
             .map_rom(PROM_BASE, &image)
             .map_err(MachineError::Memory)?;
-        machine
-            .bus
+        self.bus
             .install_sun4m(nvram)
             .map_err(MachineError::Memory)?;
-        machine.reset();
-        Ok(machine)
+        self.reset();
+        Ok(())
     }
 
     /// Apply the power-on reset baseline, clearing reset-cause status.

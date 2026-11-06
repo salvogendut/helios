@@ -20,13 +20,15 @@ planned; only the implemented devices listed below are currently installed.
 `CPU_CLOCK_HZ` records the nominal 85 MHz clock. The interpreter's 100 ns step
 quantum is a separate functional scheduling convention, not 85 MHz cycle timing.
 QEMU's SS-5 profile selects `Fujitsu-MB86904` and limits RAM to 256 MiB; Helios
-uses 128 MiB by default within that limit. Common platform addresses below
+uses 128 MiB by default within that limit, with hardware bank decode in
+`Machine::ss5`/CLI `boot`. [DRAM and TLB diagnostics](dram-tlb.md) describes
+module mirrors, empty-bank behavior and the remaining memory-model limits. Common platform addresses below
 were compared against QEMU's
 [sun4m machine definition](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/sparc/sun4m.c).
 
 | Component | Reference physical base | Helios status |
 | --- | --- | --- |
-| RAM | `0x00000000` | Implemented in harness |
+| DRAM | `0x00000000` | Eight 32 MiB apertures; default four 32 MiB DSIMMs, four empty slots |
 | SBus / IOMMU controls | `0x10000000` | Configuration subset; arbitration at `+0x2000`; DVMA translation pending |
 | CGsix / TurboGX framebuffer | SBus slot aperture, to be selected | Planned; no mapping installed |
 | Boot PROM / SLAVIO area | `0x70000000` | 1 MiB raw PROM aperture; remaining SLAVIO devices pending |

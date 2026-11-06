@@ -141,7 +141,7 @@ fn guest_software_reset_is_traced_and_execution_continues_within_the_budget() {
         "9",
         "--trace",
         "--ram-mib",
-        "1",
+        "16",
     ]);
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
@@ -185,7 +185,7 @@ fn boot_runner_uses_reset_prom_fetch_and_an_explicit_step_budget() {
         "--steps",
         "2",
         "--ram-mib",
-        "1",
+        "16",
         "--trace",
     ]);
     assert!(
@@ -201,6 +201,8 @@ fn boot_runner_uses_reset_prom_fetch_and_an_explicit_step_budget() {
         vec!["boot", image.path(), "--entry", "0"],
         vec!["boot", image.path(), "--load-address", "0"],
         vec!["boot", image.path(), "--steps", "0"],
+        vec!["boot", image.path(), "--ram-mib", "1"],
+        vec!["boot", image.path(), "--ram-mib", "240"],
         vec!["boot", image.path(), "--serial-in"],
         vec!["boot", image.path(), "--nvram"],
         vec!["boot", image.path(), "--nvram-out"],
@@ -276,7 +278,7 @@ fn boot_feeds_serial_input_after_guest_initialization_and_saves_nvram() {
         "--steps",
         "256",
         "--ram-mib",
-        "1",
+        "16",
         "--serial-in",
         input.path(),
         "--nvram",

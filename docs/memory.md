@@ -25,7 +25,11 @@ The public MMU load/store methods assume that the CPU has checked privilege.
 
 `Cpu::new` and `Machine::bare_metal` start with translation and boot mode off.
 `Machine::sun4m` installs RAM, PROM, serial, NVRAM/RTC, interrupt control and timers,
-then resets:
+then resets. `Machine::ss5` provides the same peripherals and reset state with
+physical DSIMM banks and empty-bank decode; CLI `boot` uses this constructor.
+The `sun4m` constructors remain contiguous-RAM synthetic harnesses. See
+[DRAM and TLB diagnostics](dram-tlb.md) for layouts and API differences.
+The reset baseline is:
 
 - PC=0, nPC=4; PSR.S=PSR.PS=1, ET=0, CWP=0; WIM=1.
 - TBR, Y, general registers and ICC are deterministically zero.
@@ -102,6 +106,7 @@ turns a read-only mapping into a writable one.
 | --- | --- |
 | `03` | Word load: probe; word store: TLB flush |
 | `04` | Word reads/writes of the registers below |
+| `06` | Word TLB diagnostic data and tag ports; see [diagnostic contract](dram-tlb.md) |
 | `08` / `09` | User / supervisor instruction space, byte/halfword/word/doubleword and atomics |
 | `0a` / `0b` | User / supervisor data space, byte/halfword/word/doubleword and atomics |
 | `0c` / `0e` | Word instruction/data cache diagnostic tag loads/stores |
@@ -120,6 +125,7 @@ checking. Bits 31:13 must be zero.
 | `0200` | Context register, writable mask `0xff` |
 | `0300` | Synchronous Fault Status Register (SFSR), read clears; writes ignored |
 | `0400` | Synchronous Fault Address Register (SFAR), read clears; writes ignored |
+| `1000` | TLB Replacement Control Register, mask `0x01f1ffff`; functional fill-driven counter |
 | `1300` | SFSR diagnostic alias: reads retain state, writes masked by `0x00016fff` |
 | `1400` | SFAR diagnostic alias: reads retain state, writes retain all 32 bits |
 
@@ -134,7 +140,7 @@ PCR diagnostics need hardware confirmation before claiming full compatibility.
 Other ASIs, unsupported widths in control spaces, unimplemented registers and
 unsupported controls produce an explicit emulator stop. Hardware control-space
 fault synthesis is pending. In particular, generic 36-bit bypass ASIs `21`–`2f`
-are not implemented as microSPARC-II extensions. TLB diagnostics, ASI `39`, TRCR,
+are not implemented as microSPARC-II extensions. injected PTP walks, diagnostic M-bit rewalks, ASI `39`,
 software table walks and watchpoints are still pending.
 
 ## Page tables and TLB
@@ -165,16 +171,20 @@ Updates use masked physical stores so unrelated PTE bits are preserved. Failure
 to read a descriptor or update R/M is a translation fault at that table level.
 A later target bus failure can therefore leave R/M set.
 
-The TLB caches 64 leaf entries with round-robin replacement, context tags and
-supervisor-global matching for ACC 6/7. Permissions are checked on every access.
-It does not cache intermediate table pointers or implement TRCR replacement
-controls. Changes to cached page mappings require a flush. Context switches
+The TLB caches 64 leaf entries with context tags, supervisor-global matching
+and decoded tag permissions checked on every access. Normal fills derive these
+from ACC; diagnostic writes can edit them independently. ASI `06` shares the
+actual entries. TRCR controls wrapping, counter freeze and reserved slots, using
+a functional counter advanced on fills. Intermediate PTP caching, injected PTP
+walks and detached M-bit rewalks remain pending; see [dram-tlb.md](dram-tlb.md).
+Changes to cached page mappings require a flush. Context switches
 retain tagged entries; PCR and CTPR writes conservatively flush all entries.
 
 ASI 3 uses address bits 11:8 for the operation type and bits 31:12 for the
 virtual page. Flush types 0–4 (page, segment, region, context, entire) currently
 flush the entire TLB. V8 permits conservative over-flushing. Types 5–15 do
-nothing. Cache flush ASIs do not invalidate translations.
+nothing. Flushes clear tag Valid while retaining diagnostic contents and the
+replacement counter. Cache flush ASIs do not invalidate translations.
 
 Probe types 0–3 request level 3/2/1/0 respectively. An earlier leaf returns zero
 rather than satisfying a request for a deeper level. These probes invalidate

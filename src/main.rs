@@ -31,6 +31,7 @@ state exit with status 1.
 Reaching the step budget exits successfully; it does not mean guest halt.
 
 boot loads a raw PROM (up to 1 MiB) and starts the CPU/MMU at reset.
+Its RAM must fit eight 8 MiB or 32 MiB DSIMMs; low slots receive larger modules first.
 boot and serial-demo send TTYA bytes to stdout and diagnostics to stderr.
 --serial-in supplies bytes as the guest enables and drains its receiver.
 NVRAM images contain 8192 bytes; --nvram-out creates a new file without overwriting.
@@ -329,7 +330,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 } else {
                     Nvram::default()
                 };
-                Machine::sun4m_with_nvram(ram_bytes, &bytes, nvram)?
+                Machine::ss5_with_nvram(ram_bytes, &bytes, nvram)?
             } else {
                 let mut machine = Machine::bare_metal(ram_bytes, entry)?;
                 machine.load_image(load, &bytes)?;
@@ -371,6 +372,8 @@ fn run() -> Result<(), Box<dyn Error>> {
 }
 
 fn main() -> ExitCode {
+    eprint!("{}", include_str!("../sun_ascii.txt"));
+    eprintln!("HELIOS — Hardware Emulator for Legacy Implementations Of SPARC\n");
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
