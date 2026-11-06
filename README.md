@@ -45,6 +45,8 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
   masks, and system/processor counter timers on a deterministic timebase.
 - The processor's 64-bit user-timer register: a 54-bit count, overflow flag,
   start/stop control and consistent doubleword reads/writes.
+- NCR89C105 auxiliary LED/link/mux output latches, floppy density input and
+  terminal-count pulse events; the floppy controller remains pending.
 - SS-5 system reset/status, guest software reset and watchdog status latching;
   a second polled SCC for the keyboard/mouse ports (input protocols pending).
 - microSPARC-II IOMMU page translation, I/O TLB flushes, SBus arbitration and

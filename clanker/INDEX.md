@@ -20,3 +20,4 @@
 - [fpu-multiplication.md](fpu-multiplication.md) — reference: exact products, full arithmetic POST coverage, processor-timer diagnostic and breakpoint-register stop.
 
 - [chip-revision.md](chip-revision.md) — reference: mask identity, comparison configuration and continuing OBP initialization.
+- [auxiliary-port.md](auxiliary-port.md) — reference: NCR auxiliary pin state, terminal-count events and original-ROM initialization.

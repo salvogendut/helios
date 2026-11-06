@@ -353,6 +353,16 @@ nPC=`0xffd162a0`, with **199998745 instructions, 17 synchronous traps,
 and NVRAM checksum/default messages remain. This is ongoing firmware execution,
 not a prompt or successful POST. Records are in `local/probes/chip-revision-ss5/`.
 
+With both NCR auxiliary ports implemented, the caught byte-access faults at
+`0x71900000` and `0x71910000` are gone. A 100-million-step CLI budget instead
+stops at the floppy controller's DOR, physical `0x71400002`, before the budget
+is exhausted. A library probe identifies attempt **80936336**, PC=`0xffd16898`,
+nPC=`0xffd1689c`, instruction=`0xe0292000` (STB). This is an explicit unsupported
+floppy access, with the CPU error latch clear. Serial output remains 225 bytes
+through `Probing CPU FMI,MB86904`; no prompt yet. Records are under
+`local/probes/auxiliary-ss5/`. This checkpoint supersedes the apparent prolonged
+Forth initialization seen when the auxiliary ports were absent.
+
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)
 provide the bring-up workflow; register semantics still require chip-level

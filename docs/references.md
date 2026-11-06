@@ -95,6 +95,10 @@ test rather than assuming either emulator defines the hardware.
   referenced by QEMU: table 6-7 maps both SCC instances and reset/status;
   figure 6-6 defines SR/RS/WD. Tables 6-21 through 6-25 and figures 6-8 through 6-18
   define interrupt pending/masks, source levels, reset and counter timers.
+  Figures 6-21/6-22 define AuxIO1 writable output latches, read-only density and
+  self-clearing terminal-count pulses; [devices.md](devices.md) records the
+  functional event interface, AuxIO2 scratch/clear behavior and missing external
+  device connections and power-state handling.
   The archived text has no revision header. Its explicit zero-limit overflow
   interrupt rule differs from QEMU. Mask All's treatment of software requests
   is less explicit; [interrupts-timers.md](interrupts-timers.md) records the choice.

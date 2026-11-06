@@ -2,6 +2,7 @@
 //! word-based narrow-access defaults or a speculative read-modify-write.
 use crate::bus::{Bus, BusError, BusErrorKind, IoTlbFlush, MapError, MemoryBus, MemoryRequest};
 use crate::devices::{
+    auxiliary::Auxiliary,
     interrupt::{InterruptController, Source},
     io_control::{IoControl, IO_CONTROL_SIZE},
     nvram::{Nvram, NVRAM_SIZE},
@@ -16,17 +17,21 @@ pub const KEYBOARD_SERIAL_BASE: u64 = 0x7100_0000;
 pub const SERIAL_BASE: u64 = 0x7110_0000;
 pub const NVRAM_BASE: u64 = 0x7120_0000;
 pub const FLOPPY_BASE: u64 = 0x7140_0000;
+pub const AUXILIARY_BASE: u64 = 0x7190_0000;
+pub const AUXILIARY_POWER_BASE: u64 = 0x7191_0000;
 pub const CPU_TIMER_BASE: u64 = 0x71d0_0000;
 pub const SYSTEM_TIMER_BASE: u64 = 0x71d1_0000;
 pub const CPU_INTERRUPT_BASE: u64 = 0x71e0_0000;
 pub const SYSTEM_INTERRUPT_BASE: u64 = 0x71e1_0000;
 pub const RESET_BASE: u64 = 0x71f0_0000;
-const DEVICE_RANGES: [(u64, u64); 10] = [
+const DEVICE_RANGES: [(u64, u64); 12] = [
     (IO_CONTROL_BASE, IO_CONTROL_BASE + IO_CONTROL_SIZE),
     (KEYBOARD_SERIAL_BASE, KEYBOARD_SERIAL_BASE + 8),
     (SERIAL_BASE, SERIAL_BASE + 8),
     (NVRAM_BASE, NVRAM_BASE + NVRAM_SIZE as u64),
     (FLOPPY_BASE, FLOPPY_BASE + 0x10_0000),
+    (AUXILIARY_BASE, AUXILIARY_BASE + 1),
+    (AUXILIARY_POWER_BASE, AUXILIARY_POWER_BASE + 1),
     (CPU_TIMER_BASE, CPU_TIMER_BASE + 0x10),
     (SYSTEM_TIMER_BASE, SYSTEM_TIMER_BASE + 0x14),
     (CPU_INTERRUPT_BASE, CPU_INTERRUPT_BASE + 0x10),
@@ -44,6 +49,7 @@ enum WordDevice {
 
 #[derive(Debug)]
 pub struct Sun4mDevices {
+    pub auxiliary: Auxiliary,
     pub io_control: IoControl,
     pub nvram: Nvram,
     pub serial: Serial,
@@ -157,6 +163,7 @@ impl SystemBus {
             return Err(MapError::Overlap);
         }
         self.devices = Some(Sun4mDevices {
+            auxiliary: Auxiliary::default(),
             io_control: IoControl::default(),
             nvram,
             serial: Serial::default(),
@@ -190,6 +197,7 @@ impl SystemBus {
         self.cpu_user = false;
         if let Some(devices) = &mut self.devices {
             devices.io_control.reset();
+            devices.auxiliary.reset();
             devices.serial.reset();
             devices.keyboard_serial.reset();
             devices.interrupts.reset();
@@ -343,6 +351,12 @@ impl Bus for SystemBus {
         }
         self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
+            if address == AUXILIARY_BASE {
+                return Ok(devices.auxiliary.read());
+            }
+            if address == AUXILIARY_POWER_BASE {
+                return Ok(devices.auxiliary.read_power());
+            }
             if (KEYBOARD_SERIAL_BASE..KEYBOARD_SERIAL_BASE + 8).contains(&address) {
                 return devices
                     .keyboard_serial
@@ -373,6 +387,16 @@ impl Bus for SystemBus {
         }
         self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
+            if address == AUXILIARY_BASE {
+                devices.auxiliary.write(value);
+                return Ok(());
+            }
+            if address == AUXILIARY_POWER_BASE {
+                return devices
+                    .auxiliary
+                    .write_power(value)
+                    .map_err(|kind| BusError { address, kind });
+            }
             if (KEYBOARD_SERIAL_BASE..KEYBOARD_SERIAL_BASE + 8).contains(&address) {
                 return devices
                     .keyboard_serial

@@ -128,3 +128,31 @@ latches and calendar boundaries, identity checksums and CLI file behavior.
 CPU interrupt delivery and counter timers have a separate synthetic PROM demo.
 Serial interrupt generation is still pending; no Sun PROM, OpenBIOS prompt or
 OS boot has been demonstrated.
+
+## NCR89C105 auxiliary ports
+
+AuxIO1 at physical `0x71900000` accepts plain byte reads and writes. Figure 6-21
+of the NCR specification defines writable link-test enable (bit 3), monitor/mouse
+mux (bit 2), and front-panel LED (bit 0). Bit 5 reflects the external floppy
+high-density input and ignores writes; its default disconnected value is zero.
+Reserved bits 7:6 and 4 always read zero. The input can be supplied through
+`Auxiliary::set_floppy_high_density` and survives reset; output latches reset zero.
+
+Each write with bit 1 set emits a terminal-count pulse event; zero emits none.
+The bit always reads zero. `take_terminal_count_pulses` drains these events for a
+future floppy controller. The hardware's four-SBus-clock pulse width is not
+modeled. Reads do not consume pulses, and writes replace the output bits.
+
+Wrong widths, atomics, masked stores and image loads stop before device effects.
+This implements the documented base registers only; address mirrors,
+modem/configuration registers, an actual floppy controller and
+Ethernet link-test behavior remain pending. Pin-state storage and TC events do
+not establish functioning floppy or Ethernet devices.
+
+AuxIO2 at `0x71910000` also requires byte accesses. Its otherwise unused bits
+3:2 retain writes. The power-failure input is not asserted in this model; bit 5
+therefore reads zero, and writing the clear bit (1) has no pending failure to
+acknowledge. Reserved bits 7:6 and 4 read zero. A write requesting power-off
+(bit 0) stops explicitly before changing device state: powered-down machine
+execution is not implemented. External power-failure detection and its
+configuration/interrupt wiring remain pending. Reset clears the scratch bits.
