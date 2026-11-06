@@ -308,7 +308,7 @@ fn sequence_error_ftt_survives_status_load_store_and_clears_on_a_completed_fpop(
 fn unsupported_fpops_remain_retryable_host_stops_when_enabled() {
     for word in [
         fpop(0x34, 0x41, 4, 0, 2),
-        fpop(0x35, 0x51, 0, 0, 2),
+        fpop(0x35, 0x53, 0, 0, 4), // quad comparison trap support is pending
         fpop(0x34, 0x43, 0, 0, 4),
     ] {
         let mut m = setup(&[word], ENABLED);

@@ -29,8 +29,9 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
 - PSR/WIM/TBR/Y reads and writes, supervisor checks, Ticc, RETT, UNIMP and
   synchronous STBAR. Precise traps save PC/nPC, rotate windows and enter a guest
   handler; faults with traps disabled latch CPU error state.
-- Initial FPU state, single/double transfers, FSR, moves, floating-point branches
-  and disabled/empty-queue traps; comparisons, arithmetic and deferred exceptions pending.
+- Initial FPU state, single/double transfers, FSR, moves, comparisons and
+  floating-point branches, plus disabled/deferred traps and queue draining;
+  arithmetic and conversions remain pending.
 - Word-backed RAM and ROM, big-endian byte lanes, checked mappings and accesses,
   raw image loading, instruction tracing, and focused CPU/bus tests.
 - Alternate-space byte, halfword, word and doubleword loads/stores and atomic
@@ -57,8 +58,8 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
 
 Unsupported emulator behavior remains a host stop, separate from guest traps.
 Implementation-specific ASRs, broader illegal-opcode classification, remaining TLB
-diagnostic modes, cache hit/fill behavior, FPU comparisons/arithmetic and deferred
-exceptions, serial interrupt generation, SCSI, networking
+diagnostic modes, cache hit/fill behavior, FPU arithmetic/conversions, quad-operation traps,
+serial interrupt generation, SCSI, networking
 and graphics remain to be implemented. There is no firmware or OS compatibility
 claim.
 
@@ -150,7 +151,7 @@ and the distinction from the contiguous RAM used by synthetic harnesses.
 - [HACKING.md](HACKING.md): architecture, invariants and validation commands.
 - [SPARCstation 5](docs/sparcstation5.md): target and reference memory map.
 - [Memory and reset](docs/memory.md): SRMMU, ASIs, fault behavior and PROM mapping.
-- [Floating point](docs/fpu.md): FPU state, transfers, branches and trap limits.
+- [Floating point](docs/fpu.md): FPU state, transfers, comparisons, branches and deferred traps.
 - [Fault capture](docs/fault-capture.md): SBus errors, asynchronous stores and memory-request capture.
 - [Cache diagnostics](docs/cache.md): diagnostic storage, invalidation and functional limits.
 - [DRAM and TLB diagnostics](docs/dram-tlb.md): DSIMM layout, diagnostic entries and replacement controls.
@@ -175,12 +176,12 @@ cargo run --locked --offline -- boot local/firmware/sun-ss5.bin --steps 10000 --
 
 This short probe now reaches its 10000-step budget in OBP's timed keyboard
 polling loop. With a 30000000-step budget, OBP passes the former memory-bank,
-TLB-diagnostic and IOMMU-enable stops. It completes 25374200 instructions with
+TLB-diagnostic and IOMMU-enable stops. It completes 25374278 instructions with
 two diagnostic bus traps, no interrupts and no resets. The earlier fault-status
-warning is gone. After 66 floating-point double loads and 66 double stores, it
-stops at PC `0x70002728` on `FCMPs`. IEEE comparisons and deferred exception
-handling are the next FPU boundary. There is no serial output or firmware prompt
-in this run.
+warning is gone. Floating-point transfers, comparisons and branches now pass
+the earlier stops. It reaches PC `0x70002860` on `FDIVs`; IEEE arithmetic and
+rounding/exception behavior are the next FPU boundary. There is no serial output
+or firmware prompt in this run.
 The fetched image is hash-verified and stays ignored.
 OpenBIOS remains a separate compatibility test until it is proved working.
 

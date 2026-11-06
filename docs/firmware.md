@@ -225,8 +225,8 @@ and module interrupts are validated separately by focused tests. This run also
 executes cache diagnostic data/tag stores, without establishing working ordinary
 cache hits/fills or real memory parity checking.
 
-With [FPU state and transfers](fpu.md) implemented, the same original ROM now
-completes **25374200 instructions**, with **two synchronous traps**, **zero
+At the [FPU state and transfers](fpu.md) milestone, the same original ROM
+completed **25374200 instructions**, with **two synchronous traps**, **zero
 interrupts**, **zero software resets** and **zero serial bytes**. The firmware
 hash and all machine/probe settings above are unchanged. The two traps are the
 same intentional bus-error diagnostics, at attempts 20588909 and 20588995.
@@ -236,9 +236,10 @@ earlier `LDDF` stop. Attempt **25374203** stops at PC=`0x70002728`,
 nPC=`0x7000272c`, instruction=`0x81a80a22`: `FCMPs %f0, %f2`.
 Both operands contain `0x01234567`; `%f1` and `%f3` contain `0xfedcba98`.
 PCR=`0x04004000`, PSR=`0x044010e6` (EF set) and FSR=`0x00080000`.
-Comparison execution is still unsupported; it does not update FCC, generate
-a floating-point exception or latch CPU error. The CLI exits 1. The next work
-is IEEE comparisons and microSPARC-II deferred-exception state/queue behavior.
+Comparison execution was still unsupported; it did not update FCC, generate
+a floating-point exception or latch CPU error. The CLI exited 1. This identified
+IEEE comparisons and microSPARC-II deferred-exception state/queue behavior as
+the next work.
 
 Records under `local/probes/fpu-transfers-ss5/` retain configuration, CLI
 console/stop and bounded library trace/source, including FPU registers and
@@ -246,6 +247,28 @@ instruction counts. The empty serial transcripts match. FSR transfers, moves,
 branches and FPU traps are exercised by focused tests; this ROM run reaches the
 comparison before executing those operations. Neither a completed POST nor a
 firmware prompt has been demonstrated.
+
+With [comparisons and deferred exceptions](fpu.md) implemented, the unchanged ROM
+completes **25374278 instructions**, with the same **two diagnostic bus traps**,
+**zero interrupts**, **zero resets** and **zero serial bytes**. The firmware hash,
+128 MiB configuration, default NVRAM, no input, 100 ns step quantum and
+30000000-step budget remain unchanged.
+
+The run completes two FCMPs, two FBfcc branches and eight FMOVs, in addition to
+66 LDDF, 66 STDF, 12 LDF and one STF. Attempt **25374281** stops at
+PC=`0x70002860`, nPC=`0x70002864`, instruction=`0x91a189a7`:
+`FDIVs %f6, %f7, %f8`. `%f6=0x42c80000` (100.0), `%f7=0x40800000` (4.0)
+and `%f8=0`. PCR=`0x04004000`, PSR=`0x044010e6` and FSR=`0x00080000`.
+The FPU is in execution state with no deferred entry. Division is an
+`UnsupportedInstruction` host stop, preserving the destination and leaving the
+CPU error latch clear; the CLI exits 1.
+
+Records under `local/probes/fpu-compare-ss5/` retain configuration, CLI
+console/stop and bounded library trace/source, including FPU state and instruction
+counts. The empty serial transcripts match. This run exercises successful
+comparisons; deferred invalid exceptions and queue recovery are validated by
+focused tests. IEEE arithmetic, rounding and exception flags are the next FPU
+work. POST completion and an OBP prompt remain unproved.
 
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)

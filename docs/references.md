@@ -24,6 +24,9 @@ test rather than assuming either emulator defines the hardware.
   memory transfers, moves, branches and trap priority. V8 reserves odd double
   register encodings; its recommended invalid-register trap is optional.
   [fpu.md](fpu.md) records the implemented subset and explicit choices.
+  B.34 and N.3–N.4 define FCMP versus FCMPE NaN behavior and inhibited
+  FCC/AEXC updates for enabled invalid exceptions. Table 7-1 puts privilege,
+  EF and alignment ahead of an FP exception, ahead of data-access faults.
 - [Sun microSPARC-II User's Manual, revision 1.1, July 1994](https://temlib.org/pub/SparcStation/Hardware/Sparc32/microSPARC-II-UsersManual2.pdf):
   primary hardware manual hosted by Temlib. Chapter 5 (tables 9, 18, 19, 23–28
   and 40) and chapter 12 define the target's 31-bit addressing, contexts,
@@ -56,8 +59,10 @@ test rather than assuming either emulator defines the hardware.
   requests/capture from pending parity, late errors and bus-cycle timing.
   Sections 4.3–4.5 and table 6 define the Meiko FPU identity, read-only FSR
   fields, NS=0, FTT lifetime, three deferred-exception states and empty-STDFQ
-  behavior. Table 6 was checked visually. Only the non-arithmetic subset and
-  empty-queue trap are implemented; deferred exceptions remain pending.
+  behavior. Table 6 and figure 4.10 were checked visually. Comparisons now
+  implement deferred invalid exceptions and queue recovery using those states.
+  Execution is serialized, so only one faulting entry remains; the hardware's
+  three-entry pipeline timing is not modeled.
 - [ST M48T08/M48T08Y/M48T18 datasheet](https://www.st.com/resource/en/datasheet/m48t18.pdf),
   DocID2411 Rev 11, June 2011: table 5 and sections 3.1–3.3 define the 8 KiB
   register layout, BCD calendar, R/W transfer latches and oscillator stop.
@@ -170,6 +175,12 @@ word order and EF checks. Its generic LDFSR mask does not establish microSPARC-I
 read-only status fields; the chip's table 6 takes precedence. QEMU's empty-FQ
 check precedes the actual memory store; Helios explicitly checks STDFQ alignment
 before the empty-queue exception, following V8's priority and pseudocode.
+QEMU's `gen_trap_iffpexception` explicitly documents its immediate-trap shortcut.
+Helios instead keeps the microSPARC-II pending state until the next floating
+instruction, including stores and branches. The chip's section 4.4 permits
+branches in exception state and defers a new sequence error for loads/FPops.
+MAME's comparison dispatch was inspected, but the primary V8 rules define quiet
+versus signaling NaN behavior and preservation of FCC when invalid traps are enabled.
 
 ## Provenance
 

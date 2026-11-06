@@ -1,5 +1,8 @@
 # FPU state/transfers and the first OBP comparison
 
+Historical checkpoint: [fpu-compare.md](fpu-compare.md) records the comparison
+and deferred-exception milestone that advances OBP to FDIVs.
+
 - V8 sections4.4/5.1.7/7, B.2/5/22/34 and C.7/9: EF gates FP instructions,
   word/pair transfers, FCC branch conditions/delay/annul, moves clear CEXC but
   retain AEXC. microSPARC-II4.3–5/table6: Meiko version4, NS=0, read-only

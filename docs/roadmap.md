@@ -9,9 +9,9 @@ observable acceptance criteria before its status can advance.
 | 0 — Foundation | Library/CLI, integer subset, word bus, runnable bare-metal demo and regression tests | Implemented |
 | 1 — CPU baseline | Complete V8 integer/privileged behavior, PSR/WIM/TBR/Y, precise traps/RETT, ASI dispatch, multiply/divide and atomics; independently checked bare-metal tests | In progress: core integer instruction groups, privileged state, synchronous traps, ASIs, doublewords and atomics implemented; implementation-specific ASRs and broader illegal-opcode classification pending |
 | 2 — Memory system | microSPARC-II reset/boot behavior and SRMMU, permissions, contexts, faults, TLB invalidation and required cache controls; translation/fault tests | In progress: translation, TLB flush/probe and cache diagnostic storage/invalidation implemented; DRAM banks and live TLB diagnostics implemented; injected PTP walks, M-bit rewalks and cache hits/fills pending |
-| 3 — Serial firmware | Original Sun OBP loading, NVRAM/IDPROM, Z8530, interrupt controller and timers; reproducible OBP prompt transcript | In progress: OBP passes IOMMU/bus-error diagnostics and FPU transfers, then stops at FCMPs; FPU comparison/exception support and working prompt pending |
+| 3 — Serial firmware | Original Sun OBP loading, NVRAM/IDPROM, Z8530, interrupt controller and timers; reproducible OBP prompt transcript | In progress: OBP passes IOMMU/bus-error diagnostics and FPU transfers, then passes comparisons/branches and stops at FDIVs; arithmetic support and working prompt pending |
 | 4 — Storage and kernel | IOMMU, DMA, ESP SCSI, disk/CD-ROM targets and safe image writes; installer/kernel reaches serial userspace | In progress: IOMMU translation/flushes and RAM DMA API implemented; SCSI/Ethernet DMA engines and storage pending |
-| 5 — Usable workstation | Required FPU behavior, LANCE networking, CGsix/TurboGX framebuffer, keyboard/mouse and host frontend; documented guest compatibility matrix | Initial FPU state/transfers/branches implemented for POST; comparisons/arithmetic, deferred exceptions and remaining devices pending |
+| 5 — Usable workstation | Required FPU behavior, LANCE networking, CGsix/TurboGX framebuffer, keyboard/mouse and host frontend; documented guest compatibility matrix | FPU state/transfers/comparisons/branches and deferred invalid exceptions implemented; arithmetic and remaining devices pending |
 | 6 — Performance and tooling | Profiling-driven optimization, optional JIT checked against interpreter, monitor/GDB, snapshots and automated guest runs | Planned |
 
 FPU implementation can move earlier when firmware or a selected guest requires
@@ -39,11 +39,12 @@ initialization/tests. IOMMU page translation, selective I/O flushes, shared TLB
 replacement and RAM DMA transfers now have focused tests. SBus timeout versus
 slave-error classification, asynchronous CPU store capture and module interrupts,
 and memory-request capture now have regressions. Original OBP completes
-25374200 instructions with two diagnostic traps, no interrupts, no reset and no
+25374278 instructions with two diagnostic traps, no interrupts, no reset and no
 serial output. It passes the earlier fault-status checks and stops at
-PC `0x70002728`, instruction `0x81a80a22` (`FCMPs`). FPU state, word/pair
-transfers, FSR, bit moves, branches and disabled/empty-queue traps are implemented.
-Implement IEEE comparisons and microSPARC-II deferred exceptions next.
+PC `0x70002860`, instruction `0x91a189a7` (`FDIVs`). FPU state, transfers,
+FSR, moves, comparisons, branches and deferred invalid/sequence exceptions
+with queue draining are implemented. Implement IEEE arithmetic next, including
+rounding and exception flags; the current ROM operation is single-precision division.
 No firmware prompt or storage DMA engine is working yet.
 Ordinary cache hits/fills, injected PTP walks and diagnostic M-bit rewalks
 remain explicit gaps; diagnostic storage alone is not a complete cache model.

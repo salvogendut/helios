@@ -2,7 +2,7 @@
 //! precise traps, external interrupts and microSPARC-II memory access.
 
 use crate::bus::{Bus, BusError, BusErrorKind};
-use crate::fpu::Fpu;
+use crate::fpu::{Action as FpAction, Fpu, Operation as FpOperation};
 use crate::mmu::{MemoryError, MmuFault, Srmmu, Width};
 use std::fmt;
 
@@ -440,6 +440,14 @@ impl Cpu {
         }
     }
 
+    fn prepare_fp(&mut self, operation: FpOperation) -> Result<bool, FaultKind> {
+        match self.fpu.prepare(operation) {
+            FpAction::Execute => Ok(true),
+            FpAction::Skip => Ok(false),
+            FpAction::Trap => Err(FaultKind::FpException),
+        }
+    }
+
     fn fp_memory(
         &mut self,
         bus: &mut impl Bus,
@@ -451,6 +459,27 @@ impl Cpu {
             self.require_supervisor()?;
         }
         self.require_fpu()?;
+        // Alignment has priority over a pending FP exception, which in turn
+        // precedes data translation/access faults (V8 table 7-1).
+        let alignment = if matches!(op3, 0x23 | 0x26 | 0x27) {
+            8
+        } else {
+            4
+        };
+        if address % alignment != 0 {
+            return Err(FaultKind::DataAccess(BusError {
+                address: u64::from(address),
+                kind: BusErrorKind::Misaligned,
+            }));
+        }
+        let operation = if matches!(op3, 0x20 | 0x21 | 0x23) {
+            FpOperation::Load
+        } else {
+            FpOperation::Store
+        };
+        if !self.prepare_fp(operation)? {
+            return Ok(());
+        }
         let asi = if self.psr_control & PSR_S != 0 {
             11
         } else {
@@ -495,16 +524,16 @@ impl Cpu {
                     .map_err(|error| Self::memory_fault(error, false))?;
             }
             0x26 => {
-                // V8 priority: privilege, EF, alignment, then empty FQ. No
-                // translation or memory write occurs for a sequence error.
-                if address & 7 != 0 {
-                    return Err(FaultKind::DataAccess(BusError {
-                        address: u64::from(address),
-                        kind: BusErrorKind::Misaligned,
-                    }));
+                if let Some(entry) = self.fpu.deferred_entry() {
+                    self.mmu
+                        .store_doubleword(bus, address, asi, [entry.pc, entry.instruction])
+                        .map_err(|error| Self::memory_fault(error, false))?;
+                    self.fpu.finish_queue_store();
+                } else {
+                    // An empty queue traps immediately without a memory access.
+                    self.fpu.empty_queue_error();
+                    return Err(FaultKind::FpException);
                 }
-                self.fpu.empty_queue_error();
-                return Err(FaultKind::FpException);
             }
             _ => unreachable!("floating-point memory opcode"),
         }
@@ -531,6 +560,7 @@ impl Cpu {
                     let condition = (word >> 25) & 15;
                     let taken = if (word >> 22) & 7 == 6 {
                         self.require_fpu()?;
+                        self.prepare_fp(FpOperation::Branch)?;
                         self.fpu.matches(condition)
                     } else {
                         self.icc.matches(condition)
@@ -554,12 +584,17 @@ impl Cpu {
             2 => match op3 {
                 0x34 | 0x35 => {
                     self.require_fpu()?;
-                    if op3 != 0x34
-                        || !self
-                            .fpu
-                            .move_word((word >> 5) & 0x1ff, rd, (word & 31) as u8)
-                    {
-                        return Err(FaultKind::UnsupportedInstruction);
+                    if self.prepare_fp(FpOperation::Operate)? {
+                        let opf = (word >> 5) & 0x1ff;
+                        let rs2 = (word & 31) as u8;
+                        let implemented = if op3 == 0x34 {
+                            self.fpu.move_word(opf, rd, rs2)
+                        } else {
+                            self.fpu.compare(opf, rs1, rs2, self.pc, word)
+                        };
+                        if !implemented {
+                            return Err(FaultKind::UnsupportedInstruction);
+                        }
                     }
                 }
                 0x00..=0x08 | 0x0c | 0x10..=0x18 | 0x1c => {

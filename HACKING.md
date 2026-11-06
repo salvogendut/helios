@@ -25,7 +25,7 @@ or assume host scheduling is guest timing.
 | File | Responsibility |
 | --- | --- |
 | `src/cpu.rs` | Interpreter, windows, FPU transfers, privileged state, traps and interrupts |
-| `src/fpu.rs` | Floating registers, FSR masks, bit moves and branch conditions; arithmetic/queue pending |
+| `src/fpu.rs` | Floating registers, FSR, moves/comparisons, branch conditions and deferred exceptions |
 | `src/bus.rs` | Physical bus contract, RAM/ROM mappings and external byte import |
 | `src/system_bus.rs` | Physical decoding, device widths, clock advancement and IRQ wiring |
 | `src/devices/` | NVRAM/RTC, two polled SCCs, interrupt control, timers, reset/status and I/O configuration |
@@ -162,8 +162,9 @@ PSR reads combine the canonical ICC and CWP with supervisor/trap control, PIL
 and EF. MB86904 implementation/version bits are fixed at `0x04000000`.
 Reserved bits and EC read zero; there is no auxiliary coprocessor. EF gates
 floating-point execution; recognized FPU instructions trap with TT=4 when clear.
-The [FPU subset](docs/fpu.md) supports word/pair transfers, FSR, bit moves and
-branches. Arithmetic/comparisons and deferred exception handling remain pending.
+The [FPU subset](docs/fpu.md) supports transfers, FSR, moves, comparisons,
+branches and deferred invalid/sequence exceptions with queue draining.
+Arithmetic, conversions and quad-operation traps remain pending.
 PIL is used to mask external interrupt levels. With ET=1, an interrupt above PIL is
 eligible; level 15 bypasses PIL. With ET=0, every interrupt is ignored, including
 15, without entering error state. Entry preserves PIL and uses TT=`0x10 | level`.
@@ -195,7 +196,7 @@ The implemented trap types are:
 | UNIMP, odd LDD/STD register pair, invalid WRPSR CWP or alternate-space `i=1`; supervisor RETT with ET=1 | `0x02` |
 | Privileged instruction in user mode | `0x03` |
 | Disabled FPU | `0x04` |
-| Empty floating-point queue store (FTT=4) | `0x08` |
+| Deferred FP invalid/sequence error or empty queue store | `0x08` |
 | Window overflow / underflow | `0x05` / `0x06` |
 | Misaligned memory access or jump | `0x07` |
 | Tagged arithmetic overflow (`TV` forms) | `0x0a` |
@@ -213,8 +214,8 @@ capture AFSR/AFAR plus the NCR module-error latch, independently of PCR.NF.
 The next step can take interrupt 15; CPU SFSR/SFAR remain unchanged.
 MFSR/MFAR record CPU/DMA memory-request attributes through explicit bus hooks;
 raw host accesses do not overwrite them. See [fault-capture.md](docs/fault-capture.md).
-Parity checking, late errors, doubleword SBus store fault completion, deferred
-FPU exceptions and general illegal-opcode classification remain pending. Missing
+Parity checking, late errors, doubleword SBus store fault completion, additional
+FPU exception causes and general illegal-opcode classification remain pending. Missing
 emulator instructions, including unimplemented ASRs, still produce an
 `UnsupportedInstruction` host stop. Unimplemented control
 spaces produce `UnsupportedMemory`; neither is converted into a guest trap.
@@ -297,6 +298,8 @@ cover TO/BE and walk/probe propagation, asynchronous stores, first/multiple
 errors, module interrupt acknowledgement, capture metadata/locks and resets.
 FPU tests cover raw transfer bits, FSR masks, moves, all branch conditions,
 trap priority, delay slots, MMU failures, unsupported operations and resets.
+Comparison/queue tests cover NaN classes, TEM, inhibited results, delayed traps,
+sequence errors, faulting queue stores, interrupts and queue reset.
 These are local regression checks, not a SPARC conformance suite or a completed
 QEMU/MAME differential comparison.
 
