@@ -25,7 +25,8 @@ or assume host scheduling is guest timing.
 | File | Responsibility |
 | --- | --- |
 | `src/cpu.rs` | Interpreter, windows, FPU transfers, privileged state, traps and interrupts |
-| `src/fpu.rs` | Floating registers, FSR, moves/comparisons, branch conditions and deferred exceptions |
+| `src/fpu.rs` | Floating registers, FSR, moves/comparisons/division, branch conditions and deferred exceptions |
+| `src/fpu/division.rs` | Integer quotient/remainder IEEE division, rounding and exception flags |
 | `src/bus.rs` | Physical bus contract, RAM/ROM mappings and external byte import |
 | `src/system_bus.rs` | Physical decoding, device widths, clock advancement and IRQ wiring |
 | `src/devices/` | NVRAM/RTC, two polled SCCs, interrupt control, timers, reset/status and I/O configuration |
@@ -163,8 +164,11 @@ and EF. MB86904 implementation/version bits are fixed at `0x04000000`.
 Reserved bits and EC read zero; there is no auxiliary coprocessor. EF gates
 floating-point execution; recognized FPU instructions trap with TT=4 when clear.
 The [FPU subset](docs/fpu.md) supports transfers, FSR, moves, comparisons,
-branches and deferred invalid/sequence exceptions with queue draining.
-Arithmetic, conversions and quad-operation traps remain pending.
+single/double division, branches and deferred IEEE/sequence exceptions with
+queue draining. Division uses integer quotient/remainder calculations for all
+rounding modes, gradual underflow and five IEEE exception flags. Enabled
+exceptions inhibit destinations and AEXC; only the highest enabled cause enters
+CEXC. Other arithmetic, conversions and quad-operation traps remain pending.
 PIL is used to mask external interrupt levels. With ET=1, an interrupt above PIL is
 eligible; level 15 bypasses PIL. With ET=0, every interrupt is ignored, including
 15, without entering error state. Entry preserves PIL and uses TT=`0x10 | level`.
@@ -214,8 +218,9 @@ capture AFSR/AFAR plus the NCR module-error latch, independently of PCR.NF.
 The next step can take interrupt 15; CPU SFSR/SFAR remain unchanged.
 MFSR/MFAR record CPU/DMA memory-request attributes through explicit bus hooks;
 raw host accesses do not overwrite them. See [fault-capture.md](docs/fault-capture.md).
-Parity checking, late errors, doubleword SBus store fault completion, additional
-FPU exception causes and general illegal-opcode classification remain pending. Missing
+Parity checking, late errors, doubleword SBus store fault completion,
+unimplemented/unfinished FPU traps and general illegal-opcode classification
+remain pending. Missing
 emulator instructions, including unimplemented ASRs, still produce an
 `UnsupportedInstruction` host stop. Unimplemented control
 spaces produce `UnsupportedMemory`; neither is converted into a guest trap.
@@ -299,7 +304,19 @@ errors, module interrupt acknowledgement, capture metadata/locks and resets.
 FPU tests cover raw transfer bits, FSR masks, moves, all branch conditions,
 trap priority, delay slots, MMU failures, unsupported operations and resets.
 Comparison/queue tests cover NaN classes, TEM, inhibited results, delayed traps,
-sequence errors, faulting queue stores, interrupts and queue reset.
+sequence errors, faulting queue stores, interrupts and queue reset. Division
+regressions cover both precisions, all rounding modes, signs, subnormals, NaNs,
+all five IEEE exceptions, enabled-cause priority and destination preservation.
+An optional independent Python oracle uses exact fractions and a binary search
+for adjacent representable values, without host FP or additional packages:
+
+```sh
+cargo build --locked --offline --example fp_division_probe
+python3 tools/check_fp_division.py target/debug/examples/fp_division_probe --samples 2048
+```
+
+The fixed seed checks 48000 guest divisions, including boundary vectors and
+random operands; it reports the seed and case count for reproduction.
 These are local regression checks, not a SPARC conformance suite or a completed
 QEMU/MAME differential comparison.
 

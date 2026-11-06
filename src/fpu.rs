@@ -1,11 +1,12 @@
-//! microSPARC-II floating-point state, comparisons and deferred exceptions.
+//! microSPARC-II floating-point state, comparisons, division and deferred exceptions.
 //! See docs/fpu.md for the serialized execution model and remaining limits.
 
 const FSR_VERSION: u32 = 4 << 17; // Meiko, microSPARC-II table 6
 const FSR_WRITABLE: u32 = 0xcf80_0fff; // RD, TEM, FCC, AEXC, CEXC; NS is zero
 const FSR_FTT: u32 = 7 << 14;
 const FSR_FCC: u32 = 3 << 10;
-const NV: u32 = 1 << 4;
+mod division;
+use division::NV;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FpuState {
@@ -118,6 +119,59 @@ impl Fpu {
         true
     }
 
+    /// Apply flags before committing results. Only the highest-priority enabled
+    /// exception enters CEXC on a trap; FCC, AEXC and destinations stay intact.
+    fn complete_exceptions(&mut self, flags: u32, pc: u32, instruction: u32) -> bool {
+        let enabled = flags & (self.status >> 23) & 0x1f;
+        if enabled != 0 {
+            let cause = 1 << (31 - enabled.leading_zeros());
+            self.status = (self.status & !(FSR_FTT | 0x1f)) | (1 << 14) | cause;
+            self.deferred = Some(DeferredEntry { pc, instruction });
+            self.state = FpuState::ExceptionPending;
+            false
+        } else {
+            self.status = (self.status & !(FSR_FTT | 0x1f)) | flags | (flags << 5);
+            true
+        }
+    }
+
+    pub(crate) fn divide(
+        &mut self,
+        opf: u32,
+        rd: u8,
+        rs1: u8,
+        rs2: u8,
+        pc: u32,
+        instruction: u32,
+    ) -> bool {
+        let double = match opf {
+            0x4d => false,
+            0x4e => true,
+            _ => return false,
+        };
+        let (a, b) = if double {
+            (self.pair(rs1), self.pair(rs2))
+        } else {
+            (u64::from(self.read_reg(rs1)), u64::from(self.read_reg(rs2)))
+        };
+        let (result, flags) = division::divide(
+            a,
+            b,
+            double,
+            self.status >> 30,
+            self.status & (division::UF << 23) != 0,
+        );
+        if self.complete_exceptions(flags, pc, instruction) {
+            if double {
+                self.write_reg(rd & !1, (result >> 32) as u32);
+                self.write_reg(rd | 1, result as u32);
+            } else {
+                self.write_reg(rd, result as u32);
+            }
+        }
+        true
+    }
+
     pub(crate) fn compare(
         &mut self,
         opf: u32,
@@ -149,12 +203,7 @@ impl Fpu {
         let unordered = nan_a || nan_b;
         let invalid =
             (nan_a && a & quiet == 0) || (nan_b && b & quiet == 0) || (opf & 4 != 0 && unordered);
-        if invalid && self.status & (NV << 23) != 0 {
-            // Trap inhibits FCC and AEXC updates; only CEXC/FTT change.
-            self.status = (self.status & !(FSR_FTT | 0x1f)) | (1 << 14) | NV;
-            self.deferred = Some(DeferredEntry { pc, instruction });
-            self.state = FpuState::ExceptionPending;
-        } else {
+        if self.complete_exceptions(if invalid { NV } else { 0 }, pc, instruction) {
             let fcc = if unordered {
                 3
             } else if a == b || (a & !sign == 0 && b & !sign == 0) {
@@ -173,9 +222,7 @@ impl Fpu {
                     2
                 }
             };
-            self.status = (self.status & !(FSR_FTT | FSR_FCC | 0x1f))
-                | (fcc << 10)
-                | if invalid { NV | (NV << 5) } else { 0 };
+            self.status = (self.status & !FSR_FCC) | (fcc << 10);
         }
         true
     }

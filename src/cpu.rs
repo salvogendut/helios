@@ -589,6 +589,7 @@ impl Cpu {
                         let rs2 = (word & 31) as u8;
                         let implemented = if op3 == 0x34 {
                             self.fpu.move_word(opf, rd, rs2)
+                                || self.fpu.divide(opf, rd, rs1, rs2, self.pc, word)
                         } else {
                             self.fpu.compare(opf, rs1, rs2, self.pc, word)
                         };

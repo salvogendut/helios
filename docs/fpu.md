@@ -1,15 +1,15 @@
-# microSPARC-II floating-point state and comparisons
+# microSPARC-II floating-point state and execution
 
 Helios implements the initial FPU state and transfer subset: 32 word registers,
 LDF/LDDF/LDFSR, STF/STDF/STFSR, FMOVs/FNEGs/FABSs and all FBfcc conditions.
-Single/double comparisons, deferred invalid-operation exceptions, sequence
-errors and STDFQ queue draining are implemented. Conversions, arithmetic,
+Single/double comparisons and division, deferred IEEE exceptions, sequence
+errors and STDFQ queue draining are implemented. Conversions, other arithmetic,
 quad-operation traps and unfinished operations remain explicit emulator stops
 when the FPU is enabled.
 
 The primary sources are SPARC V8 sections 4.4, 5.1.7 and 7, appendices B.2,
-B.5, B.22 and B.34, and the microSPARC-II User's Manual sections 4.3–4.5,
-especially table 6. [References](references.md) records the manual and pinned
+B.5, B.22, B.34 and N.3–N.6, and the microSPARC-II User's Manual sections
+4.3–4.5, especially figure 4.8 and table 6. [References](references.md) records the manual and pinned
 QEMU/MAME comparisons.
 
 ## Register state and transfers
@@ -43,11 +43,11 @@ bits 19:17. LDFSR accepts mask `0xcf800fff`:
 
 | Bits | Field | Behavior |
 | --- | --- | --- |
-| 31:30 | RD | Stored rounding direction; arithmetic is pending |
-| 27:23 | TEM | Stored IEEE trap enables; arithmetic is pending |
+| 31:30 | RD | Division: nearest/even, toward zero, +infinity, -infinity |
+| 27:23 | TEM | IEEE trap enables; implemented for comparisons/division |
 | 22 | NS | Always zero on microSPARC-II |
 | 19:17 | VER | Always 4 |
-| 16:14 | FTT | Retained across LDFSR/STFSR; 1 for IEEE invalid, 4 for sequence errors |
+| 16:14 | FTT | Retained across LDFSR/STFSR; 1 for IEEE exceptions, 4 for sequence errors |
 | 13 | QNE | One while a deferred entry awaits STDFQ |
 | 11:10 | FCC | E/L/G/U encoded as 0/1/2/3 |
 | 9:5 | AEXC | Stored accrued exceptions |
@@ -107,6 +107,57 @@ exception-pending state. The integer instruction stream advances without an
 immediate trap. These status rules follow V8's inhibited-result requirements;
 the deferred timing follows microSPARC-II section 4.4.
 
+## Division
+
+FDIVs (`opf=0x4d`) and FDIVd (`opf=0x4e`) divide rs1 by rs2. Double operands
+and destinations use both words of the containing even/odd pair, ignoring the
+reserved low register bits as with transfers and comparisons. Both sources are
+read before writing the destination, including overlapping pairs and f0.
+
+The implementation uses normalized integer significands and an exact `u128`
+quotient/remainder, never host floating-point arithmetic or host rounding state.
+It rounds once onto the destination's normal or subnormal grid. RD selects
+nearest with ties to even, toward zero, toward positive infinity or toward
+negative infinity. Finite exact results retain every bit; signed zero and
+infinity use the XOR of operand signs. Quiet NaNs follow the rules below.
+
+The five CEXC/AEXC bits are NX=1, DZ=2, UF=4, OF=8 and NV=16. A completed,
+nontrapping division sets CEXC to its flags, ORs them into AEXC, clears FTT and
+preserves FCC/RD/TEM. An exact ordinary result therefore clears stale CEXC
+without losing accrued exceptions. If an exception is enabled, no destination,
+FCC or AEXC changes: only the highest-priority enabled cause enters CEXC
+(NV, OF, UF, DZ, NX), FTT becomes 1 and the original instruction is deferred.
+For example, masked underflow with enabled inexact reports NX alone on the trap.
+
+| Case | Result with the relevant exception masked | Flags |
+| --- | --- | --- |
+| Nonzero finite / signed zero | Signed infinity | DZ |
+| Infinity / zero or finite | Signed infinity | None |
+| Finite / infinity | Signed zero | None |
+| Zero / zero or infinity / infinity | Positive default quiet NaN | NV |
+| Rounded overflow | Infinity or maximum finite, according to RD/sign | OF and NX |
+| Tiny, inexact result | Gradually rounded subnormal or zero; may round up to minimum normal | UF and NX |
+| Tiny, exact result | Exact subnormal | None when UFM=0; UF trap when UFM=1 |
+| Other inexact finite result | Rounded quotient | NX |
+
+Tininess is detected **before rounding**, as required by V8 N.5/N.6. Underflow
+therefore survives rounding up to minimum normal. Enabled UFM also detects
+exact nonzero tiny results. Overflow is detected after rounding with an
+unbounded exponent; directed rounding chooses infinity only when its direction
+agrees with the result's sign, otherwise maximum finite. Nearest uses infinity
+for overflow. Results too small even for half a minimum subnormal still obey
+all directed rounding modes, without oversized integer shifts.
+
+microSPARC-II figure 4.8 defines the Meiko NaN behavior. A quiet NaN preserves
+its payload and clears its sign; if both operands are quiet NaNs, rs1 wins.
+Any signaling NaN raises NV and yields positive `ME_NaN`: `0x7fff0000` for
+single or `0x7fffe00000000000` for double when masked. For invalid numeric inputs
+(0/0 and infinity/infinity), Helios uses V8 N.4's recommended positive quiet NaN
+with all fraction bits set (`0x7fffffff` / `0x7fffffffffffffff`). The chip's table
+labels numeric/numeric results as IEEE 754 but does not specify this payload;
+that choice has not been verified against silicon. These rules deliberately
+follow the chip manual where generic QEMU NaN propagation differs.
+
 ## Deferred exceptions and queue
 
 `Fpu::state()` exposes execution, exception-pending and exception states.
@@ -116,7 +167,7 @@ checks, and before data translation or any FP instruction effects:
 
 | Current state | Floating instruction | Result |
 | --- | --- | --- |
-| Execute | Enabled invalid comparison | Capture original FPop, enter pending; advance integer PC |
+| Execute | Enabled IEEE exception from comparison/division | Capture original FPop, enter pending; advance integer PC |
 | Pending | Any FP operation, load, store or branch | Enter exception state and take TT `0x08`; detecting instruction does not execute |
 | Exception | FPop or FP load, including LDFSR | Set FTT=4, return to pending; skip instruction effects and retain the original queue entry |
 | Exception | FP branch, STF/STDF/STFSR | Execute normally, preserving the queue |
@@ -126,7 +177,7 @@ Integer instructions and interrupts leave FPU state pending until another FP
 instruction is attempted. Trap entry saves the detecting instruction's PC/nPC,
 including a branch target for a delay-slot fault. The queue retains the original
 exception-causing FPop's address and instruction. With ET=0, CPU error state is
-latched when the deferred exception is detected, not when the comparison issues.
+latched when the deferred exception is detected, not when the FPop issues.
 The issuing or sequence-error instruction is counted as an executed integer
 instruction even though its FP result is inhibited.
 
@@ -146,8 +197,8 @@ There is no fabricated pipeline occupancy or host-dependent completion order.
 An unsupported FPop in execution state remains a retryable
 `UnsupportedInstruction` host stop. In pending/exception state the architectural
 state checks take precedence, just as they do for supported FP instructions.
-Arithmetic, conversions, quad-operation traps and unfinished operations remain
-pending; this is not a complete IEEE arithmetic implementation.
+Arithmetic other than division, conversions, quad-operation traps and unfinished
+operations remain pending; this is not a complete IEEE arithmetic implementation.
 
 ## Validation and firmware
 
@@ -161,6 +212,15 @@ Comparison tests cover ordered/subnormal/infinite values, signed zeros, NaN
 classes and TEM settings, inhibited results, delayed detection, priority,
 sequence errors, queue writes/retries, NF, interrupts, delay slots and reset.
 
-Original OBP now passes the two FCMPs and following floating branches, reaching
-an unsupported FDIVs at `0x70002860`. It has no serial output or firmware prompt.
+Division tests cover both precisions, all rounding modes/signs, destination
+aliases, gradual underflow, halfway cases, exact-tiny traps, overflow, NaN
+payload/sign rules, all five exceptions, inhibited results and deferred recovery.
+The independent exact-fraction oracle described in [HACKING.md](../HACKING.md)
+passes 48000 guest divisions with seed `0x535335` and 2048 random operand pairs
+per precision, plus targeted boundary vectors. It validates result words, FSR
+and queue presence; this is not exhaustive or a silicon comparison.
+
+Original OBP now passes the two FCMPs, following floating branches and its first
+FDIVs (`100 / 4 = 25`), reaching unsupported FADDs at `0x70002864`.
+It has no serial output or firmware prompt.
 [Firmware records](firmware.md) retain the bounded checkpoint and exact limits.

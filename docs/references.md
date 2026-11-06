@@ -25,7 +25,9 @@ test rather than assuming either emulator defines the hardware.
   register encodings; its recommended invalid-register trap is optional.
   [fpu.md](fpu.md) records the implemented subset and explicit choices.
   B.34 and N.3–N.4 define FCMP versus FCMPE NaN behavior and inhibited
-  FCC/AEXC updates for enabled invalid exceptions. Table 7-1 puts privilege,
+  FCC/AEXC updates for enabled invalid exceptions. B.34 defines FDIVs/d encodings;
+  N.4–N.6 define default NaNs, overflow after rounding, tininess before rounding,
+  exact-tiny traps with UFM enabled and the UF/NX priority table. Table 7-1 puts privilege,
   EF and alignment ahead of an FP exception, ahead of data-access faults.
 - [Sun microSPARC-II User's Manual, revision 1.1, July 1994](https://temlib.org/pub/SparcStation/Hardware/Sparc32/microSPARC-II-UsersManual2.pdf):
   primary hardware manual hosted by Temlib. Chapter 5 (tables 9, 18, 19, 23–28
@@ -62,7 +64,12 @@ test rather than assuming either emulator defines the hardware.
   behavior. Table 6 and figure 4.10 were checked visually. Comparisons now
   implement deferred invalid exceptions and queue recovery using those states.
   Execution is serialized, so only one faulting entry remains; the hardware's
-  three-entry pipeline timing is not modeled.
+  three-entry pipeline timing is not modeled. Section 4.3 figure 4.8 was checked
+  visually for division's NaN propagation: first quiet operand wins, quiet NaN
+  results have sign zero, and signaling operands produce ME_NaN (`0x7fff0000`
+  single, `0x7fffe00000000000` double). The numeric/numeric cell does not specify
+  an invalid-result payload; Helios chooses V8 N.4's positive all-fraction-ones
+  default, pending silicon evidence.
 - [ST M48T08/M48T08Y/M48T18 datasheet](https://www.st.com/resource/en/datasheet/m48t18.pdf),
   DocID2411 Rev 11, June 2011: table 5 and sections 3.1–3.3 define the 8 KiB
   register layout, BCD calendar, R/W transfer latches and oscillator stop.
@@ -123,7 +130,7 @@ Reference revision: `f71afb409a87c4ecd0f9d63a5963eb645dfab780` (inspected 2026-1
 | [SPARC system overview](https://www.qemu.org/docs/master/system/target-sparc.html) | Machine/peripheral inventory and firmware context |
 | [hw/sparc/sun4m.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/sparc/sun4m.c) | SS-5 profile, physical addresses, wiring and firmware interfaces |
 | [target/sparc/cpu.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/cpu.c) | MB86904 identity, window count and reset state |
-| [target/sparc/translate.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/translate.c) | Integer operations, control flow, FPU transfers, EF guards, status operations and STDFQ comparison |
+| [target/sparc/translate.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/translate.c) | Integer operations, control flow, FPU transfers/division dispatch, EF guards, status operations and STDFQ comparison |
 | [target/sparc/win_helper.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/win_helper.c) | Window management and privileged state |
 | [target/sparc/mmu_helper.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/mmu_helper.c) | Independent SRMMU walk, permissions, R/M and fault comparison |
 | [target/sparc/ldst_helper.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/ldst_helper.c) | ASI dispatch, control registers, cache/TLB flush and bypass comparison |
@@ -181,6 +188,14 @@ instruction, including stores and branches. The chip's section 4.4 permits
 branches in exception state and defers a new sequence error for loads/FPops.
 MAME's comparison dispatch was inspected, but the primary V8 rules define quiet
 versus signaling NaN behavior and preservation of FCC when invalid traps are enabled.
+For division, the same MAME source delegates to SoftFloat but checks a raw zero
+word before FDIVs; that special path does not cover negative zero. QEMU's pinned
+[target/sparc/cpu.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/cpu.c)
+uses generic SPARC NaN defaults and a signaling-first, rs2-before-rs1 propagation
+rule. Helios instead follows microSPARC-II figure 4.8 for quiet-operand priority
+and ME_NaN. Neither emulator is used as the golden oracle for these chip details;
+the independent fraction-based division checker and directed tests are described
+in [fpu.md](fpu.md).
 
 ## Provenance
 

@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Check the guest division probe using exact Fractions and adjacent IEEE values.
+
+Build: cargo build --locked --offline --example fp_division_probe
+Run:   python3 tools/check_fp_division.py target/debug/examples/fp_division_probe
+No host floating-point arithmetic, third-party packages or firmware are needed.
+This oracle searches representable neighbors instead of normalizing/dividing
+significands as the Rust implementation does. Seed and sample count are recorded.
+"""
+import argparse
+from fractions import Fraction
+import json
+import random
+import subprocess
+
+
+class Format:
+    def __init__(self, width):
+        self.width = width
+        self.fraction = 23 if width == 32 else 52
+        self.bias = 127 if width == 32 else 1023
+        self.sign = 1 << (width - 1)
+        self.inf = self.sign - (1 << self.fraction)
+        self.quiet = 1 << (self.fraction - 1)
+        self.meiko_nan = 0x7FFF0000 if width == 32 else 0x7FFFE00000000000
+        self.minimum = self.value(1 << self.fraction)
+        self.limit = Fraction(1 << (self.bias + 1))
+
+    def value(self, bits):
+        """Positive encoding, with infinity used as the finite rounding boundary."""
+        exponent, fraction = divmod(bits, 1 << self.fraction)
+        significand = fraction if exponent == 0 else fraction + (1 << self.fraction)
+        power = max(exponent, 1) - self.bias - self.fraction
+        return Fraction(significand << power) if power >= 0 else Fraction(significand, 1 << -power)
+
+    def result(self, a, b, rounding, uf_enabled):
+        sign = (a ^ b) & self.sign
+        a, b = a & (self.sign - 1), b & (self.sign - 1)
+        if a > self.inf or b > self.inf:
+            if (a > self.inf and not a & self.quiet) or (b > self.inf and not b & self.quiet):
+                return self.meiko_nan, 16
+            return (a if a > self.inf else b), 0
+        if (a == b == 0) or (a == b == self.inf):
+            return self.sign - 1, 16
+        if a == self.inf:
+            return sign | self.inf, 0
+        if b == self.inf:
+            return sign, 0
+        if b == 0:
+            return sign | self.inf, 2
+        if a == 0:
+            return sign, 0
+        exact = self.value(a) / self.value(b)
+        directed_up = (rounding == 2 and not sign) or (rounding == 3 and bool(sign))
+        if exact >= self.limit:
+            return sign | (self.inf if rounding == 0 or directed_up else self.inf - 1), 9
+        # Binary search all positive encodings, including subnormals. The upper
+        # infinity encoding denotes 2^(emax+1), the next unbounded-exponent value.
+        low, high = 0, self.inf
+        while low + 1 < high:
+            middle = (low + high) // 2
+            if self.value(middle) <= exact:
+                low = middle
+            else:
+                high = middle
+        lower, upper = self.value(low), self.value(high)
+        inexact = lower != exact
+        rounded = low
+        if inexact:
+            if rounding == 0:
+                below, above = exact - lower, upper - exact
+                if above < below or (above == below and low & 1):
+                    rounded = high
+            elif directed_up:
+                rounded = high
+        if rounded == self.inf:
+            return sign | self.inf, 9
+        tiny = 0 < exact < self.minimum
+        flags = int(inexact) | (4 if tiny and (inexact or uf_enabled) else 0)
+        return sign | rounded, flags
+
+    def expected(self, a, b, rounding, mask):
+        result, flags = self.result(a, b, rounding, bool(mask & 4))
+        enabled = flags & mask
+        status = (rounding << 30) | (mask << 23) | 0x80000 | 0xC60
+        if enabled:
+            return (0xDEC0ADDE, 0xA5A55A5A, status | 0x6000 | (1 << (enabled.bit_length() - 1)), 1)
+        first, second = (result >> 32, result & 0xFFFFFFFF) if self.width == 64 else (result, 0xA5A55A5A)
+        return first, second, status | flags | (flags << 5), 0
+
+    def cases(self, rng, samples):
+        hidden = 1 << self.fraction
+        one, two, three = self.bias * hidden, (self.bias + 1) * hidden, (self.bias + 1) * hidden + hidden // 2
+        specials = [0, self.sign, 1, hidden, one, self.inf, self.sign | self.inf,
+                    self.inf | self.quiet | 7, self.sign | self.inf | self.quiet | 17,
+                    self.inf | 1, self.sign | self.inf | 3]
+        pairs = [(a, b) for a in specials for b in specials]
+        # Rounding ties, very tiny quotients, min-normal crossover, overflow edges.
+        pairs += [(1,two),(3,two),(hidden,three),(hidden,one+1),(hidden-1,one-1),
+                  (hidden*2-1,two),(self.inf-1,one-1),(self.inf-1,one),
+                  (self.inf-1,two),(self.inf-1,1),(1,self.inf-1),
+                  (one,three),(two,three),(one,one+1),(one+1,one-1)]
+        for a,b in pairs:
+            for sign in [0,self.sign]:
+                for rounding in range(4):
+                    for mask in [0,1,2,4,8,16,31]:
+                        yield a ^ sign, b, rounding, mask
+        for _ in range(samples):
+            a,b = rng.getrandbits(self.width), rng.getrandbits(self.width)
+            for rounding in range(4):
+                for mask in [0,31]:
+                    yield a,b,rounding,mask
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('probe', help='built fp_division_probe executable')
+    parser.add_argument('--samples', type=int, default=1024, help='random operand pairs per precision')
+    parser.add_argument('--seed', type=lambda s: int(s,0), default=0x535335)
+    args = parser.parse_args()
+    if args.samples < 0:
+        parser.error('samples must be nonnegative')
+    rng = random.Random(args.seed)
+    inputs, expected = [], []
+    for width in [32,64]:
+        fmt = Format(width)
+        for a,b,rounding,mask in fmt.cases(rng,args.samples):
+            inputs.append(f'{width} {a:x} {b:x} {rounding:x} {mask:x}')
+            expected.append(fmt.expected(a,b,rounding,mask))
+    process = subprocess.run([args.probe], input='\n'.join(inputs)+'\n', text=True,
+                             capture_output=True, check=True)
+    outputs = process.stdout.splitlines()
+    if len(outputs) != len(expected):
+        raise AssertionError(f'expected {len(expected)} results, got {len(outputs)}')
+    for case, want, line in zip(inputs, expected, outputs):
+        actual = tuple(int(field,16) for field in line.split())
+        if actual != want:
+            raise AssertionError(f'{case}: expected {want!r}, got {actual!r}')
+    print(json.dumps({'seed':hex(args.seed),'random_pairs_per_precision':args.samples,
+                      'checked_guest_divisions':len(expected),'result':'pass'}))
+
+
+if __name__ == '__main__':
+    main()

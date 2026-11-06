@@ -1,5 +1,8 @@
 # Comparisons, deferred exceptions and the OBP divide stop
 
+Historical checkpoint; [fpu-division.md](fpu-division.md) records the subsequent
+division implementation and current FADDs stop.
+
 - Primary V8 B.34, N.3/N.4 and table7-1: FCMP invalid for SNaN only, FCMPE
   invalid for any NaN; enabled traps inhibit FCC/AEXC/register results, CEXC
   records NV alone. Priority: privilege, EF, alignment, FP exception, data faults.

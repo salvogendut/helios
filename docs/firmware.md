@@ -248,8 +248,8 @@ branches and FPU traps are exercised by focused tests; this ROM run reaches the
 comparison before executing those operations. Neither a completed POST nor a
 firmware prompt has been demonstrated.
 
-With [comparisons and deferred exceptions](fpu.md) implemented, the unchanged ROM
-completes **25374278 instructions**, with the same **two diagnostic bus traps**,
+At the [comparisons and deferred exceptions](fpu.md) milestone, the unchanged ROM
+completed **25374278 instructions**, with the same **two diagnostic bus traps**,
 **zero interrupts**, **zero resets** and **zero serial bytes**. The firmware hash,
 128 MiB configuration, default NVRAM, no input, 100 ns step quantum and
 30000000-step budget remain unchanged.
@@ -267,8 +267,28 @@ Records under `local/probes/fpu-compare-ss5/` retain configuration, CLI
 console/stop and bounded library trace/source, including FPU state and instruction
 counts. The empty serial transcripts match. This run exercises successful
 comparisons; deferred invalid exceptions and queue recovery are validated by
-focused tests. IEEE arithmetic, rounding and exception flags are the next FPU
-work. POST completion and an OBP prompt remain unproved.
+focused tests. This checkpoint identified division as the next FPU work.
+
+With [single/double division](fpu.md) implemented, the same original ROM completes
+**25374279 instructions**, with **two diagnostic bus traps**, **zero interrupts**,
+**zero resets** and **zero serial bytes**. The hash, 128 MiB machine, default NVRAM,
+no serial input, 100 ns quantum and 30000000-step budget remain unchanged.
+
+The FDIVs at `0x70002860` completes `100.0 / 4.0`, writing `%f8=0x41c80000`
+(25.0) and leaving FSR=`0x00080000`. Attempt **25374282** stops at
+PC=`0x70002864`, nPC=`0x70002868`, instruction=`0xa9a48833`:
+`FADDs %f18, %f19, %f20`. `%f18=0x41a00000` (20.0), `%f19=0x40a00000`
+(5.0) and `%f20=0`. PCR=`0x04004000`, PSR=`0x044010e6`; the FPU remains in
+execution state with no deferred entry. The unsupported addition leaves its
+destination and CPU error latch unchanged; the CLI exits 1.
+
+`local/probes/fpu-division-ss5/` retains configuration, source, bounded library
+trace, CLI stop and both matching empty serial transcripts. Instruction counts
+are the previous checkpoint's counts plus one FDIVs. The run exercises an exact
+single-precision result; double division, rounding and deferred exceptions are
+covered by tests and the independent exact-fraction oracle (48000 guest cases,
+seed `0x535335`). Addition/subtraction is the next FPU work. POST completion and
+an OBP prompt remain unproved.
 
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)
