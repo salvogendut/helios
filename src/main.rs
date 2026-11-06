@@ -25,7 +25,9 @@ FILE is a raw big-endian SPARC instruction/data image, loaded into RAM.
 Addresses accept decimal or 0x-prefixed hexadecimal. Entry defaults to the load
 address (default 0). Defaults: 1000 CPU steps, 128 MiB RAM. Each completed
 instruction, synchronous trap or interrupt entry counts as one step. --trace
-prints all three separately. Unsupported behavior and CPU error state exit with status 1.
+prints all three separately. Software resets have their own trace/count; their
+triggering stores also count as instructions. Unsupported behavior and CPU error
+state exit with status 1.
 Reaching the step budget exits successfully; it does not mean guest halt.
 
 boot loads a raw PROM (up to 1 MiB) and starts the CPU/MMU at reset.
@@ -34,7 +36,8 @@ boot and serial-demo send TTYA bytes to stdout and diagnostics to stderr.
 NVRAM images contain 8192 bytes; --nvram-out creates a new file without overwriting.
 sun4m clocks advance 100 ns per completed step, a functional scheduling convention.
 The library can also advance device time explicitly. Polled serial, NVRAM/RTC,
-counter timers and interrupt control are installed; firmware/OS boot is not yet supported.";
+both SCCs, counter timers, interrupt control and reset/status are installed;
+firmware/OS boot is not yet supported.";
 
 fn number(value: &str) -> Result<u64, Box<dyn Error>> {
     Ok(if let Some(hex) = value.strip_prefix("0x") {
@@ -61,6 +64,7 @@ fn execute(
     let mut instructions = 0u64;
     let mut traps = 0u64;
     let mut interrupts = 0u64;
+    let mut resets = 0u64;
     let mut input_position = 0;
     let console = console_input.is_some();
     for _ in 0..steps {
@@ -92,6 +96,26 @@ fn execute(
             format!("{reason}: {fault}")
         })?;
         match step {
+            Step::SoftwareReset {
+                pc,
+                npc,
+                instruction,
+            } => {
+                resets += 1;
+                if instruction.is_some() {
+                    instructions += 1;
+                }
+                if trace {
+                    let trigger = instruction.map_or_else(
+                        || "bus-request".to_owned(),
+                        |word| format!("instruction={word:08x}"),
+                    );
+                    report(
+                        console,
+                        format_args!("reset=software pc={pc:08x} npc={npc:08x} {trigger}"),
+                    );
+                }
+            }
             Step::Executed {
                 pc,
                 npc,
@@ -137,7 +161,7 @@ fn execute(
         }
     }
     report(console, format_args!(
-        "Step budget reached ({steps}: {instructions} instructions, {traps} traps, {interrupts} interrupts); PC={:#010x}, nPC={:#010x}",
+        "Step budget reached ({steps}: {instructions} instructions, {traps} traps, {interrupts} interrupts, {resets} resets); PC={:#010x}, nPC={:#010x}",
         machine.cpu.pc(),
         machine.cpu.npc()
     ));

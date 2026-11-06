@@ -265,7 +265,8 @@ fn unsupported_serial_modes_stop_before_register_or_pointer_changes() {
         (4, 0),
         (5, 0x10),
         (10, 0x20),
-        (14, 0x80),
+        (14, 0x20),
+        (14, 0x08),
         (15, 4),
     ] {
         let mut s = Serial::default();
@@ -277,6 +278,89 @@ fn unsupported_serial_modes_stop_before_register_or_pointer_changes() {
         ));
         assert_eq!(s, before);
     }
+}
+
+#[test]
+fn serial_disabled_dpll_configuration_keeps_async_io_working() {
+    for channel in [Channel::A, Channel::B] {
+        let control = if channel == Channel::A { 4 } else { 0 };
+        let mut s = Serial::default();
+        configure(&mut s, channel);
+        for command in [0x80, 0xa0, 0xc0, 0xe0, 0x40, 0x60, 0] {
+            wr(&mut s, channel, 14, command | 3);
+            assert_eq!(rr(&mut s, channel, 10), 0); // no missing-clock latches
+            assert!(s.receive(channel, b'R'));
+            assert_eq!(s.read(control + 2).unwrap(), b'R');
+            s.write(control + 2, b'T').unwrap();
+            assert_eq!(s.take_output(channel), b"T");
+        }
+        s.write(control, 14).unwrap();
+        let before = s.clone();
+        assert!(s.write(control, 0x23).is_err()); // starting DPLL remains unsupported
+        assert_eq!(s, before);
+        s.write(control, 0x83).unwrap(); // retry still addresses WR14
+        assert_eq!(s.read(control).unwrap() & 4, 4); // then RR0
+    }
+}
+
+#[test]
+fn keyboard_mouse_scc_has_independent_state_and_resets_with_the_machine() {
+    use helios::system_bus::KEYBOARD_SERIAL_BASE;
+    let mut m = Machine::sun4m(8192, &0x0100_0000u32.to_be_bytes()).unwrap();
+    // Each chip has its own pointer; within a chip it is shared by A and B.
+    m.bus.write8(KEYBOARD_SERIAL_BASE, 12).unwrap();
+    m.bus.write8(SERIAL_BASE, 13).unwrap();
+    m.bus.write8(KEYBOARD_SERIAL_BASE + 4, 0x55).unwrap();
+    m.bus.write8(SERIAL_BASE + 4, 0xaa).unwrap();
+    for (base, reg, value) in [(KEYBOARD_SERIAL_BASE, 12, 0x55), (SERIAL_BASE, 13, 0xaa)] {
+        m.bus.write8(base + 4, reg).unwrap();
+        assert_eq!(m.bus.read8(base + 4).unwrap(), value);
+    }
+    let devices = m.bus.devices_mut().unwrap();
+    configure(&mut devices.keyboard_serial, Channel::A);
+    configure(&mut devices.keyboard_serial, Channel::B);
+    assert!(devices.keyboard_serial.receive(Channel::A, b'K'));
+    assert!(devices.keyboard_serial.receive(Channel::B, b'M'));
+    assert_eq!(m.bus.read8(KEYBOARD_SERIAL_BASE + 6).unwrap(), b'K');
+    assert_eq!(m.bus.read8(KEYBOARD_SERIAL_BASE + 2).unwrap(), b'M');
+    assert_eq!(m.bus.read8(SERIAL_BASE + 4).unwrap() & 1, 0);
+    assert!(m
+        .bus
+        .devices_mut()
+        .unwrap()
+        .keyboard_serial
+        .receive(Channel::A, b'R'));
+    assert!(m
+        .bus
+        .read32(KEYBOARD_SERIAL_BASE)
+        .unwrap_err()
+        .kind
+        .is_host_stop());
+    assert!(m
+        .bus
+        .ldstub8(KEYBOARD_SERIAL_BASE + 6)
+        .unwrap_err()
+        .kind
+        .is_host_stop());
+    assert_eq!(m.bus.read8(KEYBOARD_SERIAL_BASE + 6).unwrap(), b'R');
+    assert_eq!(
+        m.bus.map_ram(KEYBOARD_SERIAL_BASE, 8),
+        Err(MapError::Overlap)
+    );
+    assert!(m.bus.load_image(KEYBOARD_SERIAL_BASE, &[0; 8]).is_err());
+    m.reset();
+    assert!(!m
+        .bus
+        .devices_mut()
+        .unwrap()
+        .keyboard_serial
+        .receive(Channel::A, b'K'));
+    assert!(!m
+        .bus
+        .devices_mut()
+        .unwrap()
+        .keyboard_serial
+        .receive(Channel::B, b'M'));
 }
 
 #[test]

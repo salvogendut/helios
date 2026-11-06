@@ -128,7 +128,7 @@ impl fmt::Display for CpuFault {
 
 impl std::error::Error for CpuFault {}
 
-/// One CPU step either completes an instruction or enters a guest trap handler.
+/// An execution outcome: CPU instruction/trap/interrupt, or machine-owned reset.
 /// Trap entry does not execute the first handler instruction in the same step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
@@ -147,6 +147,13 @@ pub enum Step {
         npc: u32,
         level: u8,
         vector: u32,
+    },
+    /// Emitted by Machine, never by Cpu alone. A guest store may complete and
+    /// request reset in this step; None denotes a request already on the bus.
+    SoftwareReset {
+        pc: u32,
+        npc: u32,
+        instruction: Option<u32>,
     },
 }
 
@@ -198,6 +205,22 @@ impl Cpu {
         *self = Self::new(0);
         self.wim = 1;
         self.mmu = Srmmu::reset();
+    }
+
+    /// Non-power-up reset retains the register file, PS, CWP and TT (microSPARC-II
+    /// sections 3.11.3 and 10.2). Other state uses our deterministic reset baseline.
+    pub fn software_reset_sun4m(&mut self) {
+        let globals = self.globals;
+        let windows = self.windows;
+        let cwp = self.cwp;
+        let ps = self.psr_control & PSR_PS;
+        let tt = self.tbr & 0xff0;
+        self.reset_sun4m();
+        self.globals = globals;
+        self.windows = windows;
+        self.cwp = cwp;
+        self.psr_control = (self.psr_control & !PSR_PS) | ps;
+        self.tbr = tt;
     }
 
     pub fn pc(&self) -> u32 {

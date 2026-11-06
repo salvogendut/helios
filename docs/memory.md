@@ -34,8 +34,11 @@ then resets:
 The deterministic values for otherwise unspecified state are emulator choices,
 not a claim about power-on RAM/register contents. `Machine::reset` retains RAM
 and ROM, NVRAM/RTC (including fractional time) and completed serial output.
-It resets CPU/MMU, serial, interrupt control and timers; watchdog reset
-distinctions are pending.
+It resets CPU/MMU, both SCCs, interrupt control and timers, and clears reset
+status. Guest software reset retains the register file, PSR.PS/CWP and TBR.TT,
+sets the software-reset status bit and otherwise uses this baseline.
+[System reset](reset.md) describes the register and the still-pending automatic
+watchdog recovery sequence.
 
 The translation modes follow microSPARC-II table 40:
 
@@ -63,7 +66,7 @@ captured before any destination register is written, including overlapping pairs
 An aligned doubleword fits in one MMU page and uses one translation.
 
 The installed serial and NVRAM devices accept plain byte loads/stores only.
-Interrupt and timer registers require aligned word loads/stores. Other widths,
+Interrupt, timer and reset/status registers require aligned word loads/stores. Other widths,
 partial masked stores and atomic MMIO operations stop before device effects.
 
 SWAP exchanges a word with rd; LDSTUB returns an unsigned byte and stores `0xff`

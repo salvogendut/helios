@@ -45,7 +45,24 @@ no serial input, 10000-step maximum, deterministic 100 ns successful-step quantu
 - That system reset/status register is unmapped. The data-access error with
   ET=0 latches CPU error state, and the CLI exits with status 1.
 
-This identifies the next hardware block to implement. The service manual's
+After reset/status and serial-initialization work, a second probe on 2026-11-06
+with the same configuration produces:
+
+- 304 completed instructions, zero traps, interrupts or software resets, and
+  zero console bytes.
+- PC=`0x0000bbb4`, nPC=`0x0000bbb8`, instruction=`0xd2a20400`.
+- OBP writes `1` through ASI `0x20` to the system timer configuration register
+  at physical `0x71d10010`, selecting the 64-bit processor user timer.
+- This mode remains unsupported. The CLI exits with status 1 as an emulator
+  stop, without a guest trap, CPU error latch or timer-configuration change.
+
+The reset register and both SCC instances now let OBP pass the earlier reset
+and serial initialization accesses. WR14 DPLL source configuration is accepted
+without enabling DPLL operation. The next hardware work is the processor's
+64-bit timer mode. Local records are retained under
+`local/probes/reset-ss5/`; the initial records remain separate.
+
+The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)
 provide the bring-up workflow; register semantics still require chip-level
 documentation. Future probes should retain hashes, configuration, trace,

@@ -26,6 +26,8 @@ test rather than assuming either emulator defines the hardware.
   permissions, probe/flush, fault state, NF, boot mapping and ASIs. The PCR
   figure/reserved-bit wording and root PTE descriptions have inconsistencies;
   [memory.md](memory.md) states the implemented choices and limits. Sections
+  3.11.3 and 10.2 distinguish power-up, non-power-up and watchdog reset;
+  [reset.md](reset.md) describes the functional subset and recovery limit. Sections
   3.5–3.6 define integer multiply/divide, including negative division-overflow
   method B on printed page 41. Sections 6.9 and 7.8 describe FLUSH/cache behavior.
 - [ST M48T08/M48T08Y/M48T18 datasheet](https://www.st.com/resource/en/datasheet/m48t18.pdf),
@@ -39,9 +41,12 @@ test rather than assuming either emulator defines the hardware.
   SCC control/status registers. The pointer is shared across channels and a
   direct data-port access does not reset it. MAME agrees; the inspected QEMU
   model instead keeps a per-channel pointer. Helios uses the manual's behavior.
+  Section 5.2.16 distinguishes WR14's disabled-DPLL configuration commands from
+  Enter Search Mode, which enables the DPLL. OBP uses the former during setup.
 - [NCR89C105 Chip Specification](https://www.ibiblio.org/pub/historic-linux/early-ports/Sparc/NCR/NCR89C105.txt),
   primary chip documentation preserved in the historic Linux/SPARC archive and
-  referenced by QEMU: tables 6-21 through 6-25 and figures 6-8 through 6-18
+  referenced by QEMU: table 6-7 maps both SCC instances and reset/status;
+  figure 6-6 defines SR/RS/WD. Tables 6-21 through 6-25 and figures 6-8 through 6-18
   define interrupt pending/masks, source levels, reset and counter timers.
   The archived text has no revision header. Its explicit zero-limit overflow
   interrupt rule differs from QEMU. Mask All's treatment of software requests
@@ -85,6 +90,7 @@ Reference revision: `f71afb409a87c4ecd0f9d63a5963eb645dfab780` (inspected 2026-1
 | [include/hw/nvram/sun_nvram.h](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/include/hw/nvram/sun_nvram.h) | IDPROM layout, XOR checksum and distinction from OpenBIOS configuration partitions |
 | [hw/intc/slavio_intctl.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/intc/slavio_intctl.c) | Source bits/levels, soft requests, mask aliases and generic multiprocessor comparison |
 | [hw/timer/slavio_timer.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/timer/slavio_timer.c) | Counter field layout, 500 ns ticks, acknowledgement and system/local IRQ wiring comparison |
+| [hw/misc/slavio_misc.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/misc/slavio_misc.c) | Word-only system control, software-reset request and reset-status comparison |
 
 For memory behavior, prefer the microSPARC-II manual where the generic QEMU
 implementation differs: 31-bit physical bypass, BM overriding EN for ASI 8/9,

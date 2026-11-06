@@ -76,6 +76,7 @@ impl Machine {
         Ok(machine)
     }
 
+    /// Apply the power-on reset baseline, clearing reset-cause status.
     /// Reset CPU/MMU, timers, interrupt controller and serial. Retain RAM, ROM, NVRAM/RTC and bytes
     /// already transmitted to the host endpoint.
     pub fn reset(&mut self) {
@@ -110,10 +111,46 @@ impl Machine {
     }
 
     pub fn step(&mut self) -> Result<Step, CpuFault> {
+        if self.software_reset_requested() {
+            return Ok(self.software_reset(self.cpu.pc(), self.cpu.npc(), None));
+        }
         let pending = self.bus.interrupt_levels();
-        let step = self.cpu.step_with_interrupts(&mut self.bus, pending)?;
+        let was_error = self.cpu.error_state().is_some();
+        let result = self.cpu.step_with_interrupts(&mut self.bus, pending);
+        if !was_error && self.cpu.error_state().is_some() {
+            if let Some(devices) = self.bus.devices_mut() {
+                devices.reset.latch_watchdog();
+            }
+        }
+        let step = result?;
         self.bus.advance_ns(STEP_NS);
+        if self.software_reset_requested() {
+            if let Step::Executed {
+                pc,
+                npc,
+                instruction,
+            } = step
+            {
+                return Ok(self.software_reset(pc, npc, Some(instruction)));
+            }
+        }
         Ok(step)
+    }
+
+    fn software_reset_requested(&self) -> bool {
+        self.bus
+            .devices()
+            .is_some_and(|devices| devices.reset.requested())
+    }
+
+    fn software_reset(&mut self, pc: u32, npc: u32, instruction: Option<u32>) -> Step {
+        self.cpu.software_reset_sun4m();
+        self.bus.software_reset_devices();
+        Step::SoftwareReset {
+            pc,
+            npc,
+            instruction,
+        }
     }
 }
 

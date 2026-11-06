@@ -27,7 +27,7 @@ or assume host scheduling is guest timing.
 | `src/cpu.rs` | Integer interpreter, windows, privileged state, traps, interrupts and error state |
 | `src/bus.rs` | Physical bus contract, RAM/ROM mappings and external byte import |
 | `src/system_bus.rs` | Physical decoding, device widths, clock advancement and IRQ wiring |
-| `src/devices/` | NVRAM/RTC, polled serial, interrupt control and counter timers |
+| `src/devices/` | NVRAM/RTC, two polled SCCs, interrupt control, timers and reset/status |
 | `src/mmu.rs` | ASI dispatch, SRMMU translation, TLB, permissions and fault registers |
 | `src/machine.rs` | Bare-metal/reset construction, RAM/PROM limits and demo images |
 | `src/main.rs` | CLI parsing, image files, trace printing and CPU step budget |
@@ -39,10 +39,12 @@ It does not perform SS-5 power-on, install a PROM alias or initialize devices.
 The CPU starts with S=PS=1, ET=0, CWP=0, WIM=0, TBR=0 and Y=0. These are
 harness conventions. `Machine::sun4m` installs a raw PROM, console serial and
 NVRAM/RTC, timers and interrupt control, then resets. `Machine::reset` resets
-CPU/MMU, serial, timers and interrupt control while
+CPU/MMU, both SCCs, timers, interrupt control and reset/status while
 retaining RAM, ROM, NVRAM/RTC and completed serial output. `sun4m_with_nvram`
 accepts an imported or customized NVRAM device. See [memory.md](docs/memory.md)
 and [devices.md](docs/devices.md) for reset state and platform limits.
+Guest software reset is serviced by the machine owner at a step boundary;
+see [reset.md](docs/reset.md) for retained state, trace outcomes and watchdog limits.
 
 ## Data path
 
@@ -66,7 +68,7 @@ are distinct errors. Failed bus accesses must not mutate memory or devices.
 Masked stores do not call the device read path. RAM's default narrow accessors
 are unsuitable for MMIO registers. `SystemBus` dispatches device accesses at
 their required width: bytes for serial/NVRAM, aligned words for timers/interrupt
-control. Other widths, partial masked writes and atomics stop before any effects.
+control/reset status. Other widths, partial masked writes and atomics stop before any effects.
 It also prevents image loads and RAM/ROM mappings from
 overlapping installed devices.
 
@@ -208,6 +210,10 @@ advance time. This fixed quantum is a functional scheduling choice; no cycle
 accuracy is claimed. `advance_ns` and `advance_seconds` advance devices without
 executing the CPU. Fractional ticks and RTC seconds are retained. The CLI bounds
 and reports instructions, synchronous traps and interrupts separately.
+`Machine::step` can also return `Step::SoftwareReset`; `Cpu` alone never does.
+A completed reset store advances time before I/O reset and counts as an
+instruction. A request already on the bus is serviced before CPU execution
+without time advancement. Reset counts are additional to instruction totals.
 
 ## Validation
 

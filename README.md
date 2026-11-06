@@ -39,6 +39,8 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
   and an M48T08 NVRAM/RTC with SS-5 IDPROM and explicit clock advancement.
 - CPU interrupt entry with ET/PIL masking, sun4m software interrupts and source
   masks, and system/processor counter timers on a deterministic timebase.
+- SS-5 system reset/status, guest software reset and watchdog status latching;
+  a second polled SCC for the keyboard/mouse ports (input protocols pending).
 
 Unsupported emulator behavior remains a host stop, separate from guest traps.
 Implementation-specific ASRs, broader illegal-opcode classification, MMU/cache
@@ -92,7 +94,9 @@ and boot mode disabled. microSPARC-II physical addresses are 31 bits wide.
 `run` accepts raw bytes, not ELF executables or workstation firmware images.
 Reaching the budget is a successful host stop, not a guest halt instruction.
 Each completed instruction, synchronous trap or interrupt entry counts as one
-step, with separate trace records and totals. With `PSR.ET=1`,
+step, with separate trace records and totals. Guest software resets are traced
+and counted too; their triggering stores count as completed instructions.
+With `PSR.ET=1`,
 implemented exceptions enter the guest handler; with `PSR.ET=0`, they enter CPU
 error state and exit with status 1. Unsupported instructions also exit with
 status 1, without a guest trap. The harness starts in supervisor mode with traps
@@ -119,12 +123,14 @@ trap/interrupt entry. This is a functional scheduling convention, not CPU cycle
 timing. The library also exposes explicit time advancement. A working firmware
 prompt remains pending. See [Memory and reset](docs/memory.md),
 [Devices](docs/devices.md) and [Interrupts and timers](docs/interrupts-timers.md).
+Guest reset behavior and current watchdog limits are in [System reset](docs/reset.md).
 
 ## Development
 
 - [HACKING.md](HACKING.md): architecture, invariants and validation commands.
 - [SPARCstation 5](docs/sparcstation5.md): target and reference memory map.
 - [Memory and reset](docs/memory.md): SRMMU, ASIs, fault behavior and PROM mapping.
+- [System reset](docs/reset.md): reset-status register, guest reset and watchdog limits.
 - [Devices](docs/devices.md): console serial, IDPROM, NVRAM persistence and RTC.
 - [Interrupts and timers](docs/interrupts-timers.md): register maps, masking and guest time.
 - [Firmware](docs/firmware.md): original Sun OBP development baseline, pinned downloads and probe results.
@@ -142,7 +148,8 @@ python3 tools/fetch_firmware.py sun-ss5
 cargo run --locked --offline -- boot local/firmware/sun-ss5.bin --steps 10000 --trace
 ```
 
-This bounded probe currently stops at the unimplemented system reset/status
-register at `0x71f00000`. The fetched image is hash-verified and stays ignored.
+This bounded probe currently completes 304 instructions, then stops when OBP
+selects the unimplemented 64-bit processor timer mode at `0x71d10010`.
+The fetched image is hash-verified and stays ignored.
 OpenBIOS remains a separate compatibility test until it is proved working.
 

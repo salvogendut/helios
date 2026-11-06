@@ -4,37 +4,46 @@ use crate::bus::{Bus, BusError, BusErrorKind, MapError, MemoryBus};
 use crate::devices::{
     interrupt::{InterruptController, Source},
     nvram::{Nvram, NVRAM_SIZE},
+    reset::ResetControl,
     serial::Serial,
     timer::Timers,
 };
 
+pub const KEYBOARD_SERIAL_BASE: u64 = 0x7100_0000;
 pub const SERIAL_BASE: u64 = 0x7110_0000;
 pub const NVRAM_BASE: u64 = 0x7120_0000;
 pub const CPU_TIMER_BASE: u64 = 0x71d0_0000;
 pub const SYSTEM_TIMER_BASE: u64 = 0x71d1_0000;
 pub const CPU_INTERRUPT_BASE: u64 = 0x71e0_0000;
 pub const SYSTEM_INTERRUPT_BASE: u64 = 0x71e1_0000;
-const DEVICE_RANGES: [(u64, u64); 6] = [
+pub const RESET_BASE: u64 = 0x71f0_0000;
+const DEVICE_RANGES: [(u64, u64); 8] = [
+    (KEYBOARD_SERIAL_BASE, KEYBOARD_SERIAL_BASE + 8),
     (SERIAL_BASE, SERIAL_BASE + 8),
     (NVRAM_BASE, NVRAM_BASE + NVRAM_SIZE as u64),
     (CPU_TIMER_BASE, CPU_TIMER_BASE + 0x10),
     (SYSTEM_TIMER_BASE, SYSTEM_TIMER_BASE + 0x14),
     (CPU_INTERRUPT_BASE, CPU_INTERRUPT_BASE + 0x10),
     (SYSTEM_INTERRUPT_BASE, SYSTEM_INTERRUPT_BASE + 0x14),
+    (RESET_BASE, RESET_BASE + 4),
 ];
 
 #[derive(Clone, Copy)]
 enum WordDevice {
     Timer(bool),
     Interrupt(bool),
+    Reset,
 }
 
 #[derive(Debug)]
 pub struct Sun4mDevices {
     pub nvram: Nvram,
     pub serial: Serial,
+    /// SCC channels A (keyboard) and B (mouse). Input protocols are pending.
+    pub keyboard_serial: Serial,
     pub interrupts: InterruptController,
     pub timers: Timers,
+    pub reset: ResetControl,
     rtc_phase_ns: u32,
 }
 
@@ -73,8 +82,10 @@ impl SystemBus {
         self.devices = Some(Sun4mDevices {
             nvram,
             serial: Serial::default(),
+            keyboard_serial: Serial::default(),
             interrupts: InterruptController::default(),
             timers: Timers::default(),
+            reset: ResetControl::default(),
             rtc_phase_ns: 0,
         });
         Ok(())
@@ -86,8 +97,21 @@ impl SystemBus {
         self.devices.as_mut()
     }
     pub fn reset_devices(&mut self) {
+        self.reset_io();
+        if let Some(devices) = &mut self.devices {
+            devices.reset.power_on_reset();
+        }
+    }
+    pub(crate) fn software_reset_devices(&mut self) {
+        self.reset_io();
+        if let Some(devices) = &mut self.devices {
+            devices.reset.software_reset();
+        }
+    }
+    fn reset_io(&mut self) {
         if let Some(devices) = &mut self.devices {
             devices.serial.reset();
+            devices.keyboard_serial.reset();
             devices.interrupts.reset();
             devices.timers.reset();
         }
@@ -119,6 +143,7 @@ impl SystemBus {
             (SYSTEM_TIMER_BASE, 0x14, WordDevice::Timer(true)),
             (CPU_INTERRUPT_BASE, 0x10, WordDevice::Interrupt(false)),
             (SYSTEM_INTERRUPT_BASE, 0x14, WordDevice::Interrupt(true)),
+            (RESET_BASE, 4, WordDevice::Reset),
         ] {
             if (base..base + size).contains(&address) {
                 return Some((device, address - base));
@@ -192,6 +217,12 @@ impl Bus for SystemBus {
     fn read8(&mut self, address: u64) -> Result<u8, BusError> {
         self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
+            if (KEYBOARD_SERIAL_BASE..KEYBOARD_SERIAL_BASE + 8).contains(&address) {
+                return devices
+                    .keyboard_serial
+                    .read(address - KEYBOARD_SERIAL_BASE)
+                    .map_err(|kind| BusError { address, kind });
+            }
             if (SERIAL_BASE..SERIAL_BASE + 8).contains(&address) {
                 return devices
                     .serial
@@ -210,6 +241,12 @@ impl Bus for SystemBus {
     fn write8(&mut self, address: u64, value: u8) -> Result<(), BusError> {
         self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
+            if (KEYBOARD_SERIAL_BASE..KEYBOARD_SERIAL_BASE + 8).contains(&address) {
+                return devices
+                    .keyboard_serial
+                    .write(address - KEYBOARD_SERIAL_BASE, value)
+                    .map_err(|kind| BusError { address, kind });
+            }
             if (SERIAL_BASE..SERIAL_BASE + 8).contains(&address) {
                 return devices
                     .serial
@@ -246,6 +283,7 @@ impl Bus for SystemBus {
             let result = match device {
                 WordDevice::Timer(system) => devices.timers.read(system, offset),
                 WordDevice::Interrupt(system) => devices.interrupts.read(system, offset),
+                WordDevice::Reset => Ok(devices.reset.read()),
             };
             devices.sync_interrupts();
             return result.map_err(|kind| BusError { address, kind });
@@ -271,6 +309,10 @@ impl Bus for SystemBus {
             let result = match device {
                 WordDevice::Timer(system) => devices.timers.write(system, offset, value),
                 WordDevice::Interrupt(system) => devices.interrupts.write(system, offset, value),
+                WordDevice::Reset => {
+                    devices.reset.write(value);
+                    Ok(())
+                }
             };
             devices.sync_interrupts();
             return result.map_err(|kind| BusError { address, kind });

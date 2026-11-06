@@ -42,7 +42,8 @@ CPU_CLOCK_HZ records 85 MHz, separate from STEP_NS. CGsix is planned as a
   OpenBIOS is proved working. Pinned images and hashes are in docs/firmware.md.
 - Both images fetched into ignored local/firmware. Sun ss5.bin completes four
   instructions then reads unmapped system reset/status 0x71f00000 at PC 0xbda0;
-  ET=0 latches CPU error state. Implement this block next using chip semantics.
+  ET=0 latches CPU error state. This initial stop is superseded by the
+  reset/status implementation; see reset-bringup.md for the current timer stop.
   OpenBIOS completes four then stops on ASI 0x2d/STHA at PC 0x5f0c, QEMU fw_cfg.
   Do not change the hardware ASI model to accommodate it during OBP bring-up.
 - Retain hashes/configuration/transcripts/stops; SCC interrupt generation remains

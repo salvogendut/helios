@@ -126,7 +126,9 @@ impl Port {
                 return Err(BusErrorKind::Unsupported("SCC CRC or transmit break"))
             }
             10 if value != 0 => return Err(BusErrorKind::Unsupported("SCC encoding/SDLC mode")),
-            14 if value & 0x0c != 0 || !matches!(value & 0xe0, 0 | 0x40 | 0x60) => {
+            // WR14's clock-source/encoding commands configure a disabled DPLL;
+            // only Enter Search Mode enables it (Zilog 1992, section 5.2.16).
+            14 if value & 0x0c != 0 || value & 0xe0 == 0x20 => {
                 return Err(BusErrorKind::Unsupported("SCC DPLL/auto-echo mode"))
             }
             15 if value & 5 != 0 => {

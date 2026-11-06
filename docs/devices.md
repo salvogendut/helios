@@ -3,12 +3,14 @@
 `Machine::sun4m` installs the following physical byte apertures. These are a
 functional polling subset, tested with a synthetic PROM, not a firmware-boot
 compatibility claim. The machine also installs word-accessed
-[interrupt control and timers](interrupts-timers.md).
+[interrupt control and timers](interrupts-timers.md), and [reset/status](reset.md).
 `Machine::bare_metal` continues to install RAM only.
 Sources and reference revisions are listed in [references.md](references.md).
 
 | Physical address | Device/register |
 | --- | --- |
+| `0x71000000`, `0x71000002` | Keyboard/mouse SCC channel B control, data (mouse) |
+| `0x71000004`, `0x71000006` | Keyboard/mouse SCC channel A control, data (keyboard) |
 | `0x71100000`, `0x71100002` | SCC channel B control, data |
 | `0x71100004`, `0x71100006` | SCC channel A control, data (TTYA) |
 | `0x71200000`–`0x71201fff` | M48T08 NVRAM/RTC, 8192 bytes |
@@ -57,6 +59,12 @@ clock can be exported but will be rejected on import until repaired.
 
 ## Z8530 polling subset
 
+There are two independent SCC instances: console TTYA/TTYB and keyboard/mouse.
+The latter exposes the same polled register and byte-queue behavior; keyboard
+commands, mouse packets and host input translation are pending. The CLI connects
+only TTYA. Installing the second SCC lets OBP initialize its registers without
+an artificial unmapped-address trap.
+
 Both channels have separate receive/transmit state and a shared control-register
 pointer. WR2 (interrupt vector) and WR9 (master/reset control) are also shared.
 A control write selects the next register, including WR0's point-high command;
@@ -69,6 +77,9 @@ channel/hardware resets. RR0 reports receive availability and transmit-buffer
 empty; RR1 reports all-sent. DCD and CTS stay asserted for the connected virtual
 endpoint. RR3 reports no pending interrupts; RR2B supplies the no-interrupt code.
 An empty receive-data read returns zero as a deterministic emulator choice.
+WR14 accepts DPLL clock-source and encoding configuration while the DPLL is
+disabled, including OBP's `0x82` write. Only Enter Search Mode enables the DPLL;
+that command remains unsupported. This follows Zilog section 5.2.16.
 
 `Serial::receive(channel, byte)` accepts a byte only when reception is enabled
 and its three-byte FIFO has room. A false result means the caller retains the

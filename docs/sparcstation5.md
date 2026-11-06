@@ -7,7 +7,7 @@ one **SCSI disk**, one **SCSI CD-ROM**, **Ethernet**, and **TTYA/TTYB**. This ke
 the first platform focused while leaving other Sun families for later profiles.
 The executable provides bare-metal and reset/PROM memory harnesses described
 in the README, with a polled console, NVRAM/RTC, interrupt control and counter
-timers; other peripherals are pending.
+timers and system reset/status; other peripherals are pending.
 
 The graphics target is a standard 1 MiB TurboGX card in the CGsix family.
 Its SBus slot assignment and device aperture will be fixed when the card is
@@ -30,12 +30,12 @@ were compared against QEMU's
 | IOMMU | `0x10000000` | Planned |
 | CGsix / TurboGX framebuffer | SBus slot aperture, to be selected | Planned; no mapping installed |
 | Boot PROM / SLAVIO area | `0x70000000` | 1 MiB raw PROM aperture; remaining SLAVIO devices pending |
-| Keyboard/mouse serial | `0x71000000` | Planned |
+| Keyboard/mouse serial | `0x71000000` | Second polled SCC; keyboard/mouse protocols pending |
 | Console serial | `0x71100000` | Z8530 asynchronous polling, A/B byte ports |
 | NVRAM / RTC | `0x71200000` | 8 KiB M48T08, IDPROM and deterministic clock |
 | Timer block | `0x71d00000` | CPU counter here; system counter at `+0x10000` |
 | Interrupt block | `0x71e00000` | CPU pending/soft IRQs here; system pending/masks at `+0x10000` |
-| System reset/status | `0x71f00000` | Planned; first original OBP probe stops here |
+| System reset/status | `0x71f00000` | Software reset, reset-cause flags; automatic CPU watchdog recovery pending |
 | DMA block | `0x78400000` | Planned |
 | ESP SCSI | `0x78800000` | Planned |
 | LANCE Ethernet | `0x78c00000` | Planned |
@@ -44,8 +44,8 @@ QEMU's TCX mapping at `0x50000000` describes a different graphics device and is
 not used as the CGsix register map. Use the card's own SBus-relative registers,
 PROM and interrupt wiring when implementing it.
 
-RAM, PROM, console serial, NVRAM/RTC, interrupt control and counter timers are
-installed. See [devices.md](devices.md) and [interrupts-timers.md](interrupts-timers.md)
+RAM, PROM, both SCCs, NVRAM/RTC, interrupt control, counter timers and reset/status are
+installed. See [devices.md](devices.md), [reset.md](reset.md) and [interrupts-timers.md](interrupts-timers.md)
 for exact apertures and limits. Remaining devices contain
 subregions and mirrors that need independent verification before implementation.
 In particular, reset instruction fetch and PROM access depend on CPU/MMU boot

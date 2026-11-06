@@ -124,6 +124,40 @@ fn trap_demo_reports_trap_entry_separately_from_executed_instructions() {
 }
 
 #[test]
+fn guest_software_reset_is_traced_and_execution_continues_within_the_budget() {
+    let bytes: Vec<u8> = [
+        0x031c_7c00u32, // sethi %hi(0x71f00000), g1
+        0x8410_2001,    // mov 1, g2
+        0xc4a0_4400,    // sta g2, [g1] ASI 0x20
+    ]
+    .into_iter()
+    .flat_map(u32::to_be_bytes)
+    .collect();
+    let image = Image::new(&bytes);
+    let output = helios(&[
+        "boot",
+        image.path(),
+        "--steps",
+        "9",
+        "--trace",
+        "--ram-mib",
+        "1",
+    ]);
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    let trace = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        trace
+            .lines()
+            .filter(|line| line.starts_with("reset=software"))
+            .count(),
+        3
+    );
+    assert!(trace.contains("9 instructions, 0 traps, 0 interrupts, 3 resets"));
+    assert!(trace.contains("PC=0x00000000, nPC=0x00000004"));
+}
+
+#[test]
 fn out_of_ram_and_empty_images_are_rejected() {
     let image = Image::new(&[1, 0, 0, 0]);
     let output = helios(&[
