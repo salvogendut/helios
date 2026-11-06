@@ -1,5 +1,8 @@
 # SBus faults, capture registers and the OBP FPU boundary
 
+Historical checkpoint: [fpu-transfers.md](fpu-transfers.md) records the following
+FPU transfer milestone and the new FCMPs stop.
+
 - Primary microSPARC-II rev1.1 sections 5.3, 5.6.4/5, 5.7.5–9, 9.1 and
   chapter11 table50; NCR89C105 maps, SBus subset, figures6-9/6-11. SBus standard
   table9 encodes SIZE byte=1, half=2, word=0, not log2(bytes). References and

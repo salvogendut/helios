@@ -118,7 +118,8 @@ failures, completed asynchronous stores, sizes, first/multiple error capture,
 masking, IC acknowledgement, interrupt entry, register masks and read-unlock,
 CPU/DMA metadata, actual CPU mode, unsupported operations and resets.
 
-The unchanged original OBP now passes both bus-error diagnostic checks without
-the earlier warning/reset and stops at `LDDF` in POST. See [firmware.md](firmware.md)
-for the bounded run and remaining FPU boundary. No firmware prompt or successful
+This milestone let the unchanged original OBP pass both bus-error diagnostic
+checks without the earlier warning/reset, reaching `LDDF` in POST. The subsequent
+[FPU transfer milestone](fpu.md) advances to `FCMPs`; see [firmware.md](firmware.md)
+for both bounded runs. No firmware prompt or successful
 POST is claimed.

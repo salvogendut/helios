@@ -113,6 +113,7 @@ Tests cover all eight ranges, first/last pages, table-base alignment, lane order
 permissions, arbitration, bypass, reserved bits, stale mappings, CPU/I/O
 partitioning, diagnostic injection, selective flushes, reset and error isolation.
 The original ROM now passes IOCR enable writes and both bus-error diagnostics
-without the previous warning/reset, then stops on a floating-point load.
+without the previous warning/reset, then passes floating-point transfers before
+stopping on an unimplemented comparison.
 See [firmware.md](firmware.md).
 This does not establish working SCSI/Ethernet DMA or a firmware prompt.

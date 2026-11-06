@@ -194,8 +194,8 @@ bounded library trace/source and the matching serial transcript. The firmware
 hash is unchanged. [I/O controls](io-control.md) describes the implemented DMA
 interface and remaining hardware limits.
 
-With [bus faults and capture registers](fault-capture.md) implemented, the
-unchanged original ROM completes **25373701 instructions**, with **two synchronous
+At the [bus faults and capture registers](fault-capture.md) milestone, the
+unchanged original ROM completed **25373701 instructions**, with **two synchronous
 traps**, **zero interrupts**, **zero software resets** and **zero serial bytes**.
 The 30000000-step budget, four 32 MiB DSIMMs, default NVRAM, no serial input and
 100 ns step quantum are unchanged. The earlier `Suspect Swift Module` warning
@@ -212,10 +212,10 @@ The final host stop is attempt **25373704**, PC=`0x70002454`, nPC=`0x70002458`,
 instruction=`0xc11c0011`: `LDDF [%l0 + %l1], %f0` (register pair `%f0/%f1`).
 Here `%l0=0x2000`, `%l1=0`, PCR=`0x04004000` and PSR=`0x044010e6` (EF set).
 The effective and physical address is `0x2000`. FPU instructions are not yet
-implemented, so this is an `UnsupportedInstruction` host stop, with the CPU
-error latch clear and CLI exit status 1. The next milestone is FPU register
-state, transfers and trap behavior; POST completion and an OBP prompt remain
-unproved.
+implemented at that checkpoint, so this was an `UnsupportedInstruction` host
+stop, with the CPU error latch clear and CLI exit status 1. It identified FPU
+register state, transfers and trap behavior as the next milestone. POST completion
+and an OBP prompt remain unproved.
 
 Records under `local/probes/fault-capture-ss5/` retain configuration, CLI
 console/stop, bounded library trace/source and matching empty serial transcripts.
@@ -224,6 +224,28 @@ previous warning-recovery MFSR stop; capture registers, asynchronous store error
 and module interrupts are validated separately by focused tests. This run also
 executes cache diagnostic data/tag stores, without establishing working ordinary
 cache hits/fills or real memory parity checking.
+
+With [FPU state and transfers](fpu.md) implemented, the same original ROM now
+completes **25374200 instructions**, with **two synchronous traps**, **zero
+interrupts**, **zero software resets** and **zero serial bytes**. The firmware
+hash and all machine/probe settings above are unchanged. The two traps are the
+same intentional bus-error diagnostics, at attempts 20588909 and 20588995.
+
+This run completes **66 LDDF loads and 66 STDF stores**, advancing past the
+earlier `LDDF` stop. Attempt **25374203** stops at PC=`0x70002728`,
+nPC=`0x7000272c`, instruction=`0x81a80a22`: `FCMPs %f0, %f2`.
+Both operands contain `0x01234567`; `%f1` and `%f3` contain `0xfedcba98`.
+PCR=`0x04004000`, PSR=`0x044010e6` (EF set) and FSR=`0x00080000`.
+Comparison execution is still unsupported; it does not update FCC, generate
+a floating-point exception or latch CPU error. The CLI exits 1. The next work
+is IEEE comparisons and microSPARC-II deferred-exception state/queue behavior.
+
+Records under `local/probes/fpu-transfers-ss5/` retain configuration, CLI
+console/stop and bounded library trace/source, including FPU registers and
+instruction counts. The empty serial transcripts match. FSR transfers, moves,
+branches and FPU traps are exercised by focused tests; this ROM run reaches the
+comparison before executing those operations. Neither a completed POST nor a
+firmware prompt has been demonstrated.
 
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)

@@ -393,7 +393,7 @@ fn data_fault_in_delay_slot_preserves_both_pcs_and_registers() {
 
 #[test]
 fn unsupported_instruction_bad_fetch_jump_and_store_stop_precisely() {
-    let mut m = machine(&[0x81a0_0020]); // FMOVs is not implemented yet
+    let mut m = machine(&[0x8340_4000]); // RD ASR1 is not implemented yet
     let before = m.cpu.clone();
     assert_eq!(
         m.step().unwrap_err().kind,

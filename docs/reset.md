@@ -20,7 +20,8 @@ convention to RS as well. QEMU implements only the software-reset write and
 retains its status across host resets. Helios distinguishes the reset causes.
 Bytes, halfwords, doublewords, atomics and partial masked stores are rejected
 before any side effect, consistently with other word-only device apertures.
-Adjacent addresses remain unmapped; wider register mirroring is not modeled.
+Adjacent reserved NCR addresses return an SBus error acknowledgement; wider
+register mirroring is not modeled. See [fault capture](fault-capture.md).
 
 `ResetControl` only records a request. `Machine::step` applies it after the
 requesting store completes, before the next instruction or interrupt. The store
@@ -38,10 +39,12 @@ The core never exits the host process to service a reset.
 Software reset restarts PROM execution at PC/nPC 0/4, resets the MMU to boot
 mode, resets both SCCs, masks/clears interrupts and resets both counters.
 RS becomes one and WD clears. RAM, ROM, NVRAM/RTC, the fractional RTC second
-and already transmitted bytes survive. The CPU register file, PSR.PS/CWP and
+and already transmitted bytes survive. The integer register file, PSR.PS/CWP and
 TBR.TT survive non-power-up reset, following microSPARC-II sections 3.11.3 and
 10.2; other CPU/MMU state uses the existing deterministic reset baseline
-described in [memory.md](memory.md). Full preservation of cache/TLB RAM and
+described in [memory.md](memory.md). The current FPU baseline clears its registers
+and writable status on either reset; the fixed version remains visible, as
+documented in [fpu.md](fpu.md). Full preservation of cache/TLB RAM and
 physical reset timing are outside this functional model.
 
 `Machine::reset` applies the existing power-on baseline and clears both status

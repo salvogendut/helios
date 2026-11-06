@@ -165,7 +165,8 @@ fn invalid_psr_window_traps_without_partial_write() {
 fn unimp_is_guest_illegal_but_missing_implementation_is_a_host_stop() {
     let mut m = machine(&[0], PSR_S | PSR_ET);
     assert_trap(&mut m, 2);
-    for instruction in [0x81a0_0020, alu(0x28, 3, 16, 0), alu(0x30, 16, 0, 0)] {
+    // CPop1 and implementation-specific ASR accesses are still host stops.
+    for instruction in [0x81b0_0020, alu(0x28, 3, 16, 0), alu(0x30, 16, 0, 0)] {
         let mut m = machine(&[instruction], PSR_S | PSR_ET);
         let before = m.cpu.clone();
         assert_eq!(

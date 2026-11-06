@@ -1,7 +1,8 @@
-//! SPARC V8 integer interpreter with privileged state and precise synchronous
-//! traps, external interrupts and microSPARC-II memory access.
+//! SPARC V8 interpreter with privileged state, floating-point transfers,
+//! precise traps, external interrupts and microSPARC-II memory access.
 
 use crate::bus::{Bus, BusError, BusErrorKind};
+use crate::fpu::Fpu;
 use crate::mmu::{MemoryError, MmuFault, Srmmu, Width};
 use std::fmt;
 
@@ -66,6 +67,8 @@ pub enum FaultKind {
     UnsupportedMemory(MemoryError),
     IllegalInstruction,
     PrivilegedInstruction,
+    FpDisabled,
+    FpException,
     SoftwareTrap(u8),
     InstructionAccess(BusError),
     DataAccess(BusError),
@@ -87,6 +90,8 @@ impl FaultKind {
             Self::DataMmu(_) => 0x09,
             Self::IllegalInstruction => 0x02,
             Self::PrivilegedInstruction => 0x03,
+            Self::FpDisabled => 0x04,
+            Self::FpException => 0x08,
             Self::WindowOverflow => 0x05,
             Self::WindowUnderflow => 0x06,
             Self::TagOverflow => 0x0a,
@@ -177,6 +182,7 @@ pub struct Cpu {
     y: u32,
     error_state: Option<CpuFault>,
     pub mmu: Srmmu,
+    pub fpu: Fpu,
 }
 
 impl Cpu {
@@ -196,6 +202,7 @@ impl Cpu {
             y: 0,
             error_state: None,
             mmu: Srmmu::default(),
+            fpu: Fpu::default(),
         }
     }
 
@@ -207,8 +214,9 @@ impl Cpu {
         self.mmu = Srmmu::reset();
     }
 
-    /// Non-power-up reset retains the register file, PS, CWP and TT (microSPARC-II
-    /// sections 3.11.3 and 10.2). Other state uses our deterministic reset baseline.
+    /// Non-power-up reset retains integer registers, PS, CWP and TT
+    /// (microSPARC-II sections 3.11.3 and 10.2). Other state uses our
+    /// deterministic reset baseline.
     pub fn software_reset_sun4m(&mut self) {
         let globals = self.globals;
         let windows = self.windows;
@@ -424,6 +432,85 @@ impl Cpu {
         }
     }
 
+    fn require_fpu(&self) -> Result<(), FaultKind> {
+        if self.psr_control & PSR_EF == 0 {
+            Err(FaultKind::FpDisabled)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn fp_memory(
+        &mut self,
+        bus: &mut impl Bus,
+        op3: u32,
+        rd: u8,
+        address: u32,
+    ) -> Result<(), FaultKind> {
+        if op3 == 0x26 {
+            self.require_supervisor()?;
+        }
+        self.require_fpu()?;
+        let asi = if self.psr_control & PSR_S != 0 {
+            11
+        } else {
+            10
+        };
+        match op3 {
+            0x20 | 0x21 => {
+                let value = self
+                    .mmu
+                    .load(bus, address, asi, Width::Word)
+                    .map_err(|error| Self::memory_fault(error, false))?;
+                if op3 == 0x21 {
+                    self.fpu.load_fsr(value);
+                } else {
+                    self.fpu.write_reg(rd, value);
+                }
+            }
+            0x23 => {
+                let words = self
+                    .mmu
+                    .load_doubleword(bus, address, asi)
+                    .map_err(|error| Self::memory_fault(error, false))?;
+                // V8 reserves rd[0]. Match MAME's decoder by ignoring
+                // it; no optional invalid_fp_register trap is synthesized.
+                self.fpu.write_reg(rd & !1, words[0]);
+                self.fpu.write_reg(rd | 1, words[1]);
+            }
+            0x24 | 0x25 => {
+                let value = if op3 == 0x25 {
+                    self.fpu.fsr()
+                } else {
+                    self.fpu.read_reg(rd)
+                };
+                self.mmu
+                    .store(bus, address, asi, Width::Word, value)
+                    .map_err(|error| Self::memory_fault(error, false))?;
+            }
+            0x27 => {
+                let words = [self.fpu.read_reg(rd & !1), self.fpu.read_reg(rd | 1)];
+                self.mmu
+                    .store_doubleword(bus, address, asi, words)
+                    .map_err(|error| Self::memory_fault(error, false))?;
+            }
+            0x26 => {
+                // V8 priority: privilege, EF, alignment, then empty FQ. No
+                // translation or memory write occurs for a sequence error.
+                if address & 7 != 0 {
+                    return Err(FaultKind::DataAccess(BusError {
+                        address: u64::from(address),
+                        kind: BusErrorKind::Misaligned,
+                    }));
+                }
+                self.fpu.empty_queue_error();
+                return Err(FaultKind::FpException);
+            }
+            _ => unreachable!("floating-point memory opcode"),
+        }
+        Ok(())
+    }
+
     fn execute(&mut self, bus: &mut impl Bus, word: u32) -> Result<(), FaultKind> {
         let rd = ((word >> 25) & 31) as u8;
         let rs1 = ((word >> 14) & 31) as u8;
@@ -440,9 +527,14 @@ impl Cpu {
             0 => match (word >> 22) & 7 {
                 0 => return Err(FaultKind::IllegalInstruction), // UNIMP, including zero-filled RAM
                 4 => self.write_reg(rd, (word & 0x3f_ffff) << 10), // SETHI (including NOP)
-                2 => {
+                2 | 6 => {
                     let condition = (word >> 25) & 15;
-                    let taken = self.icc.matches(condition);
+                    let taken = if (word >> 22) & 7 == 6 {
+                        self.require_fpu()?;
+                        self.fpu.matches(condition)
+                    } else {
+                        self.icc.matches(condition)
+                    };
                     let annul = word & (1 << 29) != 0;
                     if taken {
                         let displacement = ((word << 10) as i32 >> 8) as u32;
@@ -460,6 +552,16 @@ impl Cpu {
                 next_npc = self.pc.wrapping_add(word << 2);
             }
             2 => match op3 {
+                0x34 | 0x35 => {
+                    self.require_fpu()?;
+                    if op3 != 0x34
+                        || !self
+                            .fpu
+                            .move_word((word >> 5) & 0x1ff, rd, (word & 31) as u8)
+                    {
+                        return Err(FaultKind::UnsupportedInstruction);
+                    }
+                }
                 0x00..=0x08 | 0x0c | 0x10..=0x18 | 0x1c => {
                     let (result, carry, overflow) = match op3 & 15 {
                         0 | 8 => {
@@ -662,6 +764,9 @@ impl Cpu {
                 }
                 _ => return Err(FaultKind::UnsupportedInstruction),
             },
+            3 if matches!(op3, 0x20 | 0x21 | 0x23..=0x27) => {
+                self.fp_memory(bus, op3, rd, a.wrapping_add(b))?;
+            }
             3 => {
                 let operation = op3 & !0x10;
                 let width = match operation {

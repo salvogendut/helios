@@ -20,6 +20,10 @@ test rather than assuming either emulator defines the hardware.
   after non-resumable multi-access machine errors.
   Sections 7.3–7.4 and C.2/C.8 also define interrupt eligibility, ET/PIL, level
   15, boundary sampling, saved PC/nPC and trap entry without modifying PIL.
+  Sections 4.4 and 5.1.7, B.2/B.5, B.22/B.34 and C.7/C.9 define FPU state,
+  memory transfers, moves, branches and trap priority. V8 reserves odd double
+  register encodings; its recommended invalid-register trap is optional.
+  [fpu.md](fpu.md) records the implemented subset and explicit choices.
 - [Sun microSPARC-II User's Manual, revision 1.1, July 1994](https://temlib.org/pub/SparcStation/Hardware/Sparc32/microSPARC-II-UsersManual2.pdf):
   primary hardware manual hosted by Temlib. Chapter 5 (tables 9, 18, 19, 23–28
   and 40) and chapter 12 define the target's 31-bit addressing, contexts,
@@ -50,6 +54,10 @@ test rather than assuming either emulator defines the hardware.
   table 32 were checked visually; figure 5.22's ATO bit 15 overrides its prose's
   reserved-bit typo. [fault-capture.md](fault-capture.md) distinguishes implemented
   requests/capture from pending parity, late errors and bus-cycle timing.
+  Sections 4.3–4.5 and table 6 define the Meiko FPU identity, read-only FSR
+  fields, NS=0, FTT lifetime, three deferred-exception states and empty-STDFQ
+  behavior. Table 6 was checked visually. Only the non-arithmetic subset and
+  empty-queue trap are implemented; deferred exceptions remain pending.
 - [ST M48T08/M48T08Y/M48T18 datasheet](https://www.st.com/resource/en/datasheet/m48t18.pdf),
   DocID2411 Rev 11, June 2011: table 5 and sections 3.1–3.3 define the 8 KiB
   register layout, BCD calendar, R/W transfer latches and oscillator stop.
@@ -110,7 +118,7 @@ Reference revision: `f71afb409a87c4ecd0f9d63a5963eb645dfab780` (inspected 2026-1
 | [SPARC system overview](https://www.qemu.org/docs/master/system/target-sparc.html) | Machine/peripheral inventory and firmware context |
 | [hw/sparc/sun4m.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/sparc/sun4m.c) | SS-5 profile, physical addresses, wiring and firmware interfaces |
 | [target/sparc/cpu.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/cpu.c) | MB86904 identity, window count and reset state |
-| [target/sparc/translate.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/translate.c) | Integer flags, multiply/divide, tagged arithmetic, doublewords, atomics and control transfers |
+| [target/sparc/translate.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/translate.c) | Integer operations, control flow, FPU transfers, EF guards, status operations and STDFQ comparison |
 | [target/sparc/win_helper.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/win_helper.c) | Window management and privileged state |
 | [target/sparc/mmu_helper.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/mmu_helper.c) | Independent SRMMU walk, permissions, R/M and fault comparison |
 | [target/sparc/ldst_helper.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/ldst_helper.c) | ASI dispatch, control registers, cache/TLB flush and bypass comparison |
@@ -157,6 +165,11 @@ working SS-5 platform oracle. QEMU is the primary machine-level starting point,
 and MAME remains useful as an independent CPU/device reference. MAME's sun4c
 MMU and timer/interrupt wiring must not be substituted for sun4m's. The local
 SPARC CPU implementation was also checked for ET/PIL gating and level-15 entry.
+Its FPU load decoder masks odd double-register encodings and was compared for
+word order and EF checks. Its generic LDFSR mask does not establish microSPARC-II
+read-only status fields; the chip's table 6 takes precedence. QEMU's empty-FQ
+check precedes the actual memory store; Helios explicitly checks STDFQ alignment
+before the empty-queue exception, following V8's priority and pseudocode.
 
 ## Provenance
 
