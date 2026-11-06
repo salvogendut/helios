@@ -45,10 +45,12 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
   a second polled SCC for the keyboard/mouse ports (input protocols pending).
 - microSPARC-II SBus arbitration, slot configuration and disabled-IOMMU
   configuration registers; DVMA translation is pending.
+- microSPARC-II instruction/data cache diagnostic storage and indexed
+  invalidation; normal accesses still use coherent memory without cache fills.
 
 Unsupported emulator behavior remains a host stop, separate from guest traps.
-Implementation-specific ASRs, broader illegal-opcode classification, MMU/cache
-diagnostics, FPU, serial interrupt generation, SCSI, networking
+Implementation-specific ASRs, broader illegal-opcode classification, TLB
+diagnostics, cache hit/fill behavior, FPU, serial interrupt generation, SCSI, networking
 and graphics remain to be implemented. There is no firmware or OS compatibility
 claim.
 
@@ -134,6 +136,7 @@ Guest reset behavior and current watchdog limits are in [System reset](docs/rese
 - [HACKING.md](HACKING.md): architecture, invariants and validation commands.
 - [SPARCstation 5](docs/sparcstation5.md): target and reference memory map.
 - [Memory and reset](docs/memory.md): SRMMU, ASIs, fault behavior and PROM mapping.
+- [Cache diagnostics](docs/cache.md): diagnostic storage, invalidation and functional limits.
 - [System reset](docs/reset.md): reset-status register, guest reset and watchdog limits.
 - [Devices](docs/devices.md): console serial, IDPROM, NVRAM persistence and RTC.
 - [Interrupts and timers](docs/interrupts-timers.md): register maps, masking and guest time.
@@ -154,9 +157,11 @@ cargo run --locked --offline -- boot local/firmware/sun-ss5.bin --steps 10000 --
 ```
 
 This short probe now reaches its 10000-step budget in OBP's timed keyboard
-polling loop. With a 30000000-step budget, OBP passes SBus arbitration setup
-and stops at data-cache tag initialization: ASI `0x0e`, PC `0x7000ac40`.
-That run completes 20004464 instructions without a trap or reset; no prompt yet.
+polling loop. With a 30000000-step budget, OBP passes cache-tag initialization
+and reaches memory probing. A store at `0x08000000`, beyond the configured RAM,
+traps; OBP prints a diagnostic and resets, then stops on ASI `0x06` TLB
+diagnostics at PC `0x0000be7c`. That run completes 20044378 instructions,
+one trap and one reset. Memory-bank behavior needs investigation; no prompt yet.
 The fetched image is hash-verified and stays ignored.
 OpenBIOS remains a separate compatibility test until it is proved working.
 

@@ -2,6 +2,7 @@
 //! SPARCstation 5 peripherals are the next platform milestone.
 
 pub mod bus;
+mod cache;
 pub mod cpu;
 pub mod devices;
 pub mod machine;

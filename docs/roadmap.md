@@ -8,8 +8,8 @@ observable acceptance criteria before its status can advance.
 | --- | --- | --- |
 | 0 — Foundation | Library/CLI, integer subset, word bus, runnable bare-metal demo and regression tests | Implemented |
 | 1 — CPU baseline | Complete V8 integer/privileged behavior, PSR/WIM/TBR/Y, precise traps/RETT, ASI dispatch, multiply/divide and atomics; independently checked bare-metal tests | In progress: core integer instruction groups, privileged state, synchronous traps, ASIs, doublewords and atomics implemented; implementation-specific ASRs and broader illegal-opcode classification pending |
-| 2 — Memory system | microSPARC-II reset/boot behavior and SRMMU, permissions, contexts, faults, TLB invalidation and required cache controls; translation/fault tests | In progress: reset/PROM, hardware page walks, permissions, contexts, R/M, fault state and TLB flush/probe implemented; diagnostics pending |
-| 3 — Serial firmware | Original Sun OBP loading, NVRAM/IDPROM, Z8530, interrupt controller and timers; reproducible OBP prompt transcript | In progress: OBP passes timed polling and SBus arbitration setup, then stops on ASI 0x0e data-cache tag initialization; working prompt pending |
+| 2 — Memory system | microSPARC-II reset/boot behavior and SRMMU, permissions, contexts, faults, TLB invalidation and required cache controls; translation/fault tests | In progress: translation, TLB flush/probe and cache diagnostic storage/invalidation implemented; TLB diagnostics, cache hits/fills and memory-bank behavior pending |
+| 3 — Serial firmware | Original Sun OBP loading, NVRAM/IDPROM, Z8530, interrupt controller and timers; reproducible OBP prompt transcript | In progress: OBP passes cache-tag initialization, then faults during memory probing; its reset path stops on ASI 0x06 TLB diagnostics; working prompt pending |
 | 4 — Storage and kernel | IOMMU, DMA, ESP SCSI, disk/CD-ROM targets and safe image writes; installer/kernel reaches serial userspace | Planned |
 | 5 — Usable workstation | Required FPU behavior, LANCE networking, CGsix/TurboGX framebuffer, keyboard/mouse and host frontend; documented guest compatibility matrix | Planned |
 | 6 — Performance and tooling | Profiling-driven optimization, optional JIT checked against interpreter, monitor/GDB, snapshots and automated guest runs | Planned |
@@ -32,9 +32,13 @@ System reset/status, guest software reset, watchdog status latching and both
 SCC register blocks now support early OBP initialization. Processor user time
 and doubleword access let it pass timed keyboard polling. The SBus/IOMMU
 configuration subset now handles MID/arbitration setup at `0x10002000`.
-OBP next stops at ASI `0x0e` data-cache tag initialization at PC `0x7000ac40`;
-implement the microSPARC-II cache diagnostic spaces next. ASI `0x06` TLB
-diagnostics, seen on the earlier guest reset path, remain another known gap.
+Cache diagnostic storage and indexed invalidation now let OBP pass tag setup.
+The next first fault is a store at `0x08000000`, beyond the configured 128 MiB,
+at PC `0x700075f8` during memory probing. Investigate the SS-5 memory-bank map
+and unpopulated-bank/error behavior before changing RAM size or fault handling.
+The subsequent diagnostic/reset path still stops on ASI `0x06` TLB diagnostics.
+Ordinary cache hits/fills remain pending; diagnostic storage alone is not a
+complete cache model or proof that cache POST works.
 IOMMU DVMA translation and its fault/flush machinery are still pending.
 [Firmware records](firmware.md) capture the images and bounded probes.
 Automatic partial CPU watchdog recovery and asynchronous hardware-error latches

@@ -100,12 +100,39 @@ nPC=`0x7000ac44`, instruction=`0xc0a401c0`: an unsupported ASI `0x0e` word
 store during data-cache tag initialization. This is an emulator stop, not CPU
 error state; the CLI exits with status 1.
 
-The next work is the microSPARC-II cache diagnostic spaces, starting with the
+That checkpoint identified the microSPARC-II cache diagnostic spaces, starting with the
 data-cache tag access on this normal initialization path. The ASI `0x06` TLB
 diagnostic limitation observed after the earlier guest reset remains a separate
 gap. Records under `local/probes/io-control-ss5/` retain configuration, CLI
 console/stop and the bounded library probe source/log. Firmware and machine
 settings are unchanged. This is still not a successful firmware boot.
+
+After adding cache diagnostic storage and indexed invalidation, the same
+30000000-step probe completes **20044378 instructions**, one synchronous trap,
+zero interrupts and one guest software reset. OBP performs 512 word stores to
+each of ASIs `0c` and `0e`, completing both cache-tag initialization loops.
+The probe counts no diagnostic data word stores, and PCR remains
+`0x04004000` at the first fault (boot mode, translation and caches disabled).
+The diagnostic data paths are covered separately by synthetic tests.
+
+The first fault is step **20009111**, PC=`0x700075f8`, nPC=`0x700075fc`,
+instruction=`0xe6a40400`: a physical-bypass word store of `0x02000000` to
+`0x08000000`, exactly beyond the configured 128 MiB. The bus reports Unmapped,
+and CPU trap `0x29` enters vector `0x70000290`. This occurs in OBP's memory
+probing loop. The next investigation is the SS-5 bank map and unpopulated-memory
+error behavior; this result does not justify increasing RAM or suppressing faults.
+
+OBP emits 154 serial bytes reporting a synchronous trap and resets at step
+20044216. The final stop is attempt **20044380**, PC=`0x0000be7c`,
+nPC=`0x0000be74`, instruction=`0xc0a200c0`: unsupported ASI `06` word store
+on the reset path. The CPU error latch remains clear; the CLI exits 1.
+The TLB diagnostic limitation is still separate from the initial memory fault.
+
+Records under `local/probes/cache-ss5/` retain the configuration, CLI console/stop,
+bounded library trace/source, pre-fault registers and diagnostic store counts.
+CLI and library console output match exactly. Firmware, RAM, NVRAM and step
+quantum are unchanged. This establishes progress beyond tag initialization,
+not a firmware prompt, working cache POST or OS compatibility.
 
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)

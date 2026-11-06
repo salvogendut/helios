@@ -2,6 +2,7 @@
 //! implementation choices, and differences from generic SPARC Reference MMUs.
 
 use crate::bus::{Bus, BusError, BusErrorKind};
+use crate::cache::CacheDiagnostics;
 
 pub const PCR_EN: u32 = 1;
 pub const PCR_NF: u32 = 2;
@@ -131,6 +132,7 @@ pub struct Srmmu {
     fault_address: u32,
     tlb: [Option<Entry>; TLB_ENTRIES],
     replacement: usize,
+    caches: CacheDiagnostics,
 }
 
 impl Default for Srmmu {
@@ -144,6 +146,7 @@ impl Default for Srmmu {
             fault_address: 0,
             tlb: [None; TLB_ENTRIES],
             replacement: 0,
+            caches: CacheDiagnostics::default(),
         }
     }
 }
@@ -167,6 +170,11 @@ impl Srmmu {
 
     pub fn fault_address(&self) -> u32 {
         self.fault_address
+    }
+
+    /// Unprivileged FLUSH: no translation, bus access or TLB invalidation.
+    pub(crate) fn flush_instruction(&mut self, address: u32) {
+        self.caches.flush_instruction(address);
     }
 
     fn flush(&mut self) {
@@ -241,6 +249,10 @@ impl Srmmu {
         match asi {
             3 if width == Width::Word => return self.probe(bus, address),
             4 if width == Width::Word => return self.read_register(address),
+            0x0c..=0x0e if width == Width::Word => {
+                return Ok(self.caches.read(address, asi, width));
+            }
+            0x0f => return Ok(self.caches.read(address, asi, width)),
             8..=11 | 0x20 => {}
             _ => {
                 return Err(MemoryError::UnsupportedAsi {
@@ -283,8 +295,18 @@ impl Srmmu {
                 return Ok(());
             }
             4 if width == Width::Word => return self.write_register(address, value),
-            // Coherent functional caches have no dirty lines to write back.
-            0x10..=0x14 if width == Width::Word => return Ok(()),
+            0x0c..=0x0e if width == Width::Word => {
+                self.caches.write(address, asi, width, value);
+                return Ok(());
+            }
+            0x0f => {
+                self.caches.write(address, asi, width, value);
+                return Ok(());
+            }
+            0x10..=0x14 if width == Width::Word => {
+                self.caches.flush(address, self.context, asi);
+                return Ok(());
+            }
             8..=11 | 0x20 => {}
             _ => {
                 return Err(MemoryError::UnsupportedAsi {
@@ -317,6 +339,9 @@ impl Srmmu {
         asi: u8,
     ) -> Result<[u32; 2], MemoryError> {
         Self::aligned_to(address, 8)?;
+        if asi == 0x0f {
+            return Ok(self.caches.read_doubleword(address));
+        }
         Self::memory_space(asi, MemoryOperation::LoadDoubleword)?;
         let access = Access {
             address,
@@ -338,6 +363,10 @@ impl Srmmu {
         words: [u32; 2],
     ) -> Result<(), MemoryError> {
         Self::aligned_to(address, 8)?;
+        if asi == 0x0f {
+            self.caches.write_doubleword(address, words);
+            return Ok(());
+        }
         Self::memory_space(asi, MemoryOperation::StoreDoubleword)?;
         let access = Access {
             address,

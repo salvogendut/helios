@@ -29,7 +29,10 @@ test rather than assuming either emulator defines the hardware.
   3.11.3 and 10.2 distinguish power-up, non-power-up and watchdog reset;
   [reset.md](reset.md) describes the functional subset and recovery limit. Sections
   3.5–3.6 define integer multiply/divide, including negative division-overflow
-  method B on printed page 41. Sections 6.9 and 7.8 describe FLUSH/cache behavior.
+  method B on printed page 41. Chapters 6/7 and table 55 define cache diagnostic
+  storage, widths and indexed flushes. Figures 6.1/7.1 were checked visually;
+  V8 appendix I table I-2 resolves table 55's segment-address typo. See
+  [cache.md](cache.md) for the implemented subset and ordinary cache limitations.
   Table 30, sections 5.7.1–5.7.2, 5.7.7, 5.7.10 and 9.4 define the implemented
   I/O configuration subset. Figures 5.21/5.23 were checked visually to resolve
   omitted bit labels and the SBAE reserved-bit typo; [io-control.md](io-control.md)
@@ -105,6 +108,8 @@ implementation differs: 31-bit physical bypass, BM overriding EN for ASI 8/9,
 the 28-bit boot offset, NF excluding both instruction spaces, destructive SFAR
 reads, and exact-level probes. QEMU is an implementation comparison, not proof
 of those hardware details. No differential execution has been performed.
+For cache diagnostics, QEMU returns zero/ignores writes; Helios retains array
+contents and invalidates indexed tags according to the primary manual.
 
 For upcoming work, continue the review of `hw/sparc/sun4m_iommu.c`,
 `hw/dma/sparc32_dma.c`, `hw/scsi/esp.c`, and `hw/net/lance.c`.

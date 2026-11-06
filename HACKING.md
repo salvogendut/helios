@@ -29,6 +29,7 @@ or assume host scheduling is guest timing.
 | `src/system_bus.rs` | Physical decoding, device widths, clock advancement and IRQ wiring |
 | `src/devices/` | NVRAM/RTC, two polled SCCs, interrupt control, timers, reset/status and I/O configuration |
 | `src/mmu.rs` | ASI dispatch, SRMMU translation, TLB, permissions and fault registers |
+| `src/cache.rs` | Cache diagnostic arrays and indexed invalidation; ordinary cache hits/fills pending |
 | `src/machine.rs` | Bare-metal/reset construction, RAM/PROM limits and demo images |
 | `src/main.rs` | CLI parsing, image files, trace printing and CPU step budget |
 | `tests/` | Architectural and boundary behavior through the public library |
@@ -133,10 +134,13 @@ add/subtract sets V for either signed arithmetic overflow or nonzero operand tag
 bits 1:0. The `TV` forms trap with rd and ICC unchanged; other forms commit the
 result and flags. Non-`cc` multiply/divide instructions preserve ICC.
 
-FLUSH is unprivileged and completes immediately under the coherent memory model.
+FLUSH is unprivileged and completes immediately under the coherent memory model,
+also invalidating the matching indexed instruction-cache diagnostic tag.
 It performs no data translation or bus read, tolerates low address bits and does
 not invalidate the TLB. Subsequent instruction fetches observe preceding stores.
 See V8 B.14, B.16–B.19 and B.32, and microSPARC-II sections 3.5–3.6, 6.9 and 7.8.
+The diagnostic arrays and ASI line flushes are described in [cache.md](docs/cache.md).
+They retain their own contents; normal accesses do not yet fill or use them.
 
 ## Privileged state and synchronous traps
 

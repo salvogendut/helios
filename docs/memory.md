@@ -3,8 +3,9 @@
 The first memory-system target is microSPARC-II, as used in SPARCstation 5.
 Its physical addresses are **31 bits**, virtual addresses are 32 bits, and the
 context register is eight bits. This is a functional implementation with
-synchronous memory access; cache timing and cache RAM diagnostics are not
-implemented. The installed peripheral subset is described in [devices.md](devices.md).
+synchronous memory access. [Cache diagnostic storage](cache.md) is implemented;
+cache hit/fill behavior and timing remain pending. The installed peripheral
+subset is described in [devices.md](devices.md).
 
 The sources are the Sun **microSPARC-II User's Manual**, revision 1.1, July 1994,
 chapters 5 and 12, and SPARC V8 appendix H. Links and the pinned QEMU comparison
@@ -103,7 +104,10 @@ turns a read-only mapping into a writable one.
 | `04` | Word reads/writes of the registers below |
 | `08` / `09` | User / supervisor instruction space, byte/halfword/word/doubleword and atomics |
 | `0a` / `0b` | User / supervisor data space, byte/halfword/word/doubleword and atomics |
-| `10`–`14` | Word cache-flush stores, completed immediately with coherent memory |
+| `0c` / `0e` | Word instruction/data cache diagnostic tag loads/stores |
+| `0d` | Word instruction-cache diagnostic data loads/stores |
+| `0f` | Byte/halfword/word/doubleword data-cache diagnostic data loads/stores |
+| `10`–`14` | Word stores: conditionally invalidate one diagnostic tag in each cache |
 | `20` | Physical bypass, byte/halfword/word/doubleword and atomics |
 
 For ASI 4, VA bits 12:8 select a register and bits 7:0 are ignored after alignment
@@ -130,7 +134,7 @@ PCR diagnostics need hardware confirmation before claiming full compatibility.
 Other ASIs, unsupported widths in control spaces, unimplemented registers and
 unsupported controls produce an explicit emulator stop. Hardware control-space
 fault synthesis is pending. In particular, generic 36-bit bypass ASIs `21`–`2f`
-are not implemented as microSPARC-II extensions. TLB/cache diagnostics, TRCR,
+are not implemented as microSPARC-II extensions. TLB diagnostics, ASI `39`, TRCR,
 software table walks and watchpoints are still pending.
 
 ## Page tables and TLB

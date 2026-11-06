@@ -641,9 +641,9 @@ impl Cpu {
                     }
                 }
                 0x3b => {
-                    // FLUSH: no instruction cache or queued stores. All prior
-                    // writes are already visible to subsequent fetches. This is
-                    // unprivileged, performs no data access and does not flush TLB.
+                    // Prior writes are already visible to subsequent fetches.
+                    // Also invalidate the addressed diagnostic I-cache tag.
+                    self.mmu.flush_instruction(a.wrapping_add(b));
                 }
                 0x3c | 0x3d => {
                     let saving = op3 == 0x3c;
