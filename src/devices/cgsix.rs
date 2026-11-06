@@ -150,15 +150,13 @@ impl Cgsix {
             self.rom[offset as usize / 4]
         } else if (VRAM_OFFSET..VRAM_OFFSET + VRAM_BYTES as u64).contains(&offset) {
             self.vram[(offset - VRAM_OFFSET) as usize / 4]
+        } else if offset & !3 == 0x300000 {
+            self.fhc
         } else {
-            if offset & !3 == 0x300000 {
-                self.fhc
-            } else {
-                if bytes != 4 {
-                    return Err(BusErrorKind::Unsupported("narrow CGsix register access"));
-                }
-                return self.read_register(offset);
+            if bytes != 4 {
+                return Err(BusErrorKind::Unsupported("narrow CGsix register access"));
             }
+            return self.read_register(offset);
         };
         Ok(match bytes {
             1 => (word >> ((3 - offset % 4) * 8)) & 255,
