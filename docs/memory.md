@@ -76,8 +76,9 @@ The processor user count at `0x71d00000` also accepts aligned doubleword
 loads/stores while configured in user mode. Both halves form one transaction;
 see [interrupts-timers.md](interrupts-timers.md). Other widths, partial masked
 stores and atomic MMIO operations stop before device effects.
-The separate [I/O control block](io-control.md) currently implements configuration
-only; it does not translate DMA or replace CPU SRMMU behavior.
+The [I/O control block](io-control.md) configures DMA translation and queues
+I/O-only TLB flushes. CPU and DMA use the same 64-entry TLB; I/O mappings
+ignore the CPU context and use their own writable bit and address range.
 
 SWAP exchanges a word with rd; LDSTUB returns an unsigned byte and stores `0xff`
 into that byte lane. Both operate even when rd=g0. SWAP requires word alignment;
@@ -182,7 +183,9 @@ retain tagged entries; PCR and CTPR writes conservatively flush all entries.
 
 ASI 3 uses address bits 11:8 for the operation type and bits 31:12 for the
 virtual page. Flush types 0–4 (page, segment, region, context, entire) currently
-flush the entire TLB. V8 permits conservative over-flushing. Types 5–15 do
+flush the entire shared TLB, including I/O entries. This retains the existing
+conservative full-flush implementation; selective CPU flushes remain pending.
+I/O flush registers invalidate only I/O entries. Types 5–15 do
 nothing. Flushes clear tag Valid while retaining diagnostic contents and the
 replacement counter. Cache flush ASIs do not invalidate translations.
 

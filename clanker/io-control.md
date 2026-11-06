@@ -4,6 +4,7 @@ Checked 2026-11-06. Contract: docs/io-control.md. This slice implements SBus
 arbitration, five slot configuration registers, IOCR with translation disabled,
 and the page-table base latch. It does not implement DVMA translation or faults.
 The later checkpoint in cache-diagnostics.md supersedes this note's ASI0e stop.
+[iommu-dma.md](iommu-dma.md) supersedes the translation/flush limitations below.
 
 - Primary manual is /tmp/helios-ms2.pdf, revision 1.1 July 1994, sections
   5.7.1–5.7.2, 5.7.7, 5.7.10, 9.4 and table 30. Printed pages 90–91 (PDF 88–89)

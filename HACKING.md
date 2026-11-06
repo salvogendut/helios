@@ -28,7 +28,8 @@ or assume host scheduling is guest timing.
 | `src/bus.rs` | Physical bus contract, RAM/ROM mappings and external byte import |
 | `src/system_bus.rs` | Physical decoding, device widths, clock advancement and IRQ wiring |
 | `src/devices/` | NVRAM/RTC, two polled SCCs, interrupt control, timers, reset/status and I/O configuration |
-| `src/mmu.rs` | ASI dispatch, SRMMU translation, TLB, permissions and fault registers |
+| `src/mmu.rs` | ASI dispatch, CPU/I/O translation, shared TLB, permissions and CPU fault registers |
+| `src/dma.rs` | Machine-owned SBus DMA transfers and device-facing errors |
 | `src/cache.rs` | Cache diagnostic arrays and indexed invalidation; ordinary cache hits/fills pending |
 | `src/dram.rs` | SS-5 DSIMM layout, mirrors and empty-bank behavior |
 | `src/machine.rs` | Bare-metal/reset construction, RAM/PROM limits and demo images |
@@ -48,8 +49,13 @@ and [devices.md](docs/devices.md) for reset state and platform limits.
 Guest software reset is serviced by the machine owner at a step boundary;
 see [reset.md](docs/reset.md) for retained state, trace outcomes and watchdog limits.
 The machine also installs the microSPARC-II [I/O control subset](docs/io-control.md).
-Its SBus/disabled-IOMMU configuration resets with the rest of I/O. DVMA translation
-is not implemented; enabling it stops before changing the register.
+Its SBus/IOMMU configuration resets with the rest of I/O. `Machine::dma_read`
+and `dma_write` provide aligned single-transfer access to RAM using the shared
+CPU/I/O TLB, without advancing CPU or device time. SCSI/Ethernet DMA engines
+are not yet connected. Invalid mappings return an SBus error to the requesting
+device; they do not populate CPU fault registers or assert a CPU interrupt.
+The bus queues I/O flush commands for the MMU to consume before its next access,
+including diagnostics. This preserves single ownership without a second IOTLB.
 `Machine::ss5` and `ss5_with_nvram` install physical DSIMM banks and are used
 by CLI `boot`. The older `sun4m` constructors retain contiguous RAM for small
 synthetic tests. Firmware probes must use `ss5`; see [dram-tlb.md](docs/dram-tlb.md).
@@ -272,6 +278,9 @@ Processor user-time tests check the 54-bit count, sticky overflow, run/stop,
 indivisible doubleword access, MMU protection and mode/reset transitions.
 I/O configuration tests check microSPARC-II field masks, all six arbitration
 enables, shared slot restrictions, reset and precise unsupported-operation stops.
+DMA tests cover all eight ranges, table alignment, lane ordering, permissions,
+stale mappings, shared TLB partitions, diagnostic injection, selective flushes,
+slot bypass and separation of DMA errors from CPU traps.
 These are local regression checks, not a SPARC conformance suite or a completed
 QEMU/MAME differential comparison.
 

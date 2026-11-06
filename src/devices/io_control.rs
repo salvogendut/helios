@@ -1,7 +1,7 @@
-//! microSPARC-II SBus/IOMMU configuration subset. See docs/io-control.md.
-//! DVMA translation, fault capture and diagnostic/performance registers are
-//! separate facilities; unsupported operations stop before changing state.
-use crate::bus::BusErrorKind;
+//! microSPARC-II SBus/IOMMU controls. See docs/io-control.md.
+use crate::bus::{BusErrorKind, IoTlbFlush};
+use crate::dma::{DmaError, DmaFault};
+use std::collections::VecDeque;
 
 pub const IO_CONTROL_SIZE: u64 = 0x8000;
 const VERSION: u32 = 0x0400_0000;
@@ -14,6 +14,12 @@ pub struct IoControl {
     table_base: u32,
     slots: [u32; 5],
     arbitration: u32,
+    flushes: VecDeque<IoTlbFlush>,
+}
+
+pub(crate) enum IoMapping {
+    Bypass(u64),
+    PageTable(u64),
 }
 
 impl IoControl {
@@ -35,11 +41,16 @@ impl IoControl {
 
     pub fn write(&mut self, offset: u64, value: u32) -> Result<(), BusErrorKind> {
         match offset {
-            0 => {
-                if value & 1 != 0 {
-                    return Err(BusErrorKind::Unsupported("IOMMU DVMA translation enable"));
+            0 => self.control = value & 0x1d,
+            0x14 => {
+                self.flushes.clear();
+                self.flushes.push_back(IoTlbFlush::All);
+            }
+            0x18 => {
+                let flush = IoTlbFlush::Page(value & !0xfff);
+                if !self.flushes.contains(&IoTlbFlush::All) && !self.flushes.contains(&flush) {
+                    self.flushes.push_back(flush);
                 }
-                self.control = value & 0x1c;
             }
             4 => self.table_base = value & BASE_MASK,
             0x1010 | 0x1014 | 0x1018 | 0x101c | 0x1020 => {
@@ -56,9 +67,56 @@ impl IoControl {
         Ok(())
     }
 
+    pub(crate) fn take_flush(&mut self) -> Option<IoTlbFlush> {
+        self.flushes.pop_front()
+    }
+
+    pub(crate) fn mapping(&self, master: u8, address: u32) -> Result<IoMapping, DmaError> {
+        if master >= 6 {
+            return Err(DmaError::Unsupported("SBus master index must be 0..5"));
+        }
+        if self.arbitration & (1 << (16 + master)) == 0 {
+            return Err(DmaError::NotGranted { master });
+        }
+        let slot = self.slots[usize::from(master.min(4))];
+        if slot & 1 != 0 && address >> 30 == 0 {
+            let physical = u64::from(address) | (u64::from(slot & 0x10000) << 14);
+            // Section 5.8 restricts bypass to main memory (PA[30:28]=000).
+            if physical >= 0x1000_0000 {
+                return Err(DmaError::Fault {
+                    address,
+                    kind: DmaFault::InvalidBypassAddress,
+                });
+            }
+            return Ok(IoMapping::Bypass(physical));
+        }
+        if self.control & 1 == 0 {
+            // The manual specifies enabled translation and per-slot bypass;
+            // do not invent an identity mapping for disabled, non-bypass DMA.
+            return Err(DmaError::Unsupported(
+                "DMA with IOMMU disabled and no slot bypass",
+            ));
+        }
+        let range = (self.control >> 2) & 7;
+        let mask = (1u32 << (24 + range)) - 1;
+        if address & !mask != !mask {
+            return Err(DmaError::Fault {
+                address,
+                kind: DmaFault::OutOfRange,
+            });
+        }
+        // Concatenate IBA and the page index, ignoring base bits within the
+        // selected table size; addition would carry a misaligned base instead.
+        let table_mask = u64::from(mask >> 10);
+        let base = (u64::from(self.table_base) << 4) & !table_mask;
+        Ok(IoMapping::PageTable(
+            base | (u64::from((address & mask) >> 12) * 4),
+        ))
+    }
+
     fn unsupported_register(offset: u64) -> BusErrorKind {
         match offset {
-            0x14 | 0x18 => BusErrorKind::Unsupported("I/O TLB flush register"),
+            0x14 | 0x18 => BusErrorKind::Unsupported("read of write-only I/O TLB flush port"),
             0x1000 | 0x1004 => BusErrorKind::Unsupported("asynchronous I/O fault register"),
             0x1050 | 0x1054 => BusErrorKind::Unsupported("memory fault capture register"),
             0x3000 | 0x3004 | 0x3008 | 0x300c | 0x3010 | 0x3014 | 0x3018 | 0x301c => {

@@ -51,5 +51,8 @@ Checked 2026-11-06. Human contract: docs/dram-tlb.md.
   local/probes/dram-tlb-ss5/. Temp source /tmp/helios-dram-probe.rs uses ss5;
   final log /tmp/helios-dram-tlb-probe.log. Original firmware is unchanged.
   No firmware prompt, cache POST completion or DMA transfer claim.
-- Next: actual IOMMU translation, flush/fault behavior and CPU/I/O TLB sharing.
+- Follow-up: [iommu-dma.md](iommu-dma.md) implements IOMMU translation and
+  I/O flushes through the shared TLB, resolving the IOCR.EN stop. The findings
+  above are the earlier DRAM/TLB milestone. Remaining fault-register work is
+  recorded in the follow-up.
   Reuse docs/io-control.md and its documented microSPARC-specific masks.

@@ -43,8 +43,8 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
   start/stop control and consistent doubleword reads/writes.
 - SS-5 system reset/status, guest software reset and watchdog status latching;
   a second polled SCC for the keyboard/mouse ports (input protocols pending).
-- microSPARC-II SBus arbitration, slot configuration and disabled-IOMMU
-  configuration registers; DVMA translation is pending.
+- microSPARC-II IOMMU page translation, I/O TLB flushes, SBus arbitration and
+  slot bypass, with byte/halfword/word DMA access to RAM through the shared TLB.
 - microSPARC-II instruction/data cache diagnostic storage and indexed
   invalidation; normal accesses still use coherent memory without cache fills.
 - SS-5 DRAM banks, smaller-module mirrors and empty-bank access behavior.
@@ -150,7 +150,7 @@ and the distinction from the contiguous RAM used by synthetic harnesses.
 - [System reset](docs/reset.md): reset-status register, guest reset and watchdog limits.
 - [Devices](docs/devices.md): console serial, IDPROM, NVRAM persistence and RTC.
 - [Interrupts and timers](docs/interrupts-timers.md): register maps, masking and guest time.
-- [I/O controls](docs/io-control.md): SBus arbitration and the IOMMU configuration subset.
+- [I/O controls](docs/io-control.md): IOMMU translation, shared TLB, DMA access and current limits.
 - [Firmware](docs/firmware.md): original Sun OBP development baseline, pinned downloads and probe results.
 - [Roadmap](docs/roadmap.md): milestones from this harness to a usable system.
 - [References](docs/references.md): specific MAME/QEMU sources and provenance.
@@ -167,11 +167,12 @@ cargo run --locked --offline -- boot local/firmware/sun-ss5.bin --steps 10000 --
 ```
 
 This short probe now reaches its 10000-step budget in OBP's timed keyboard
-polling loop. With a 30000000-step budget, OBP passes the former memory-bank
-fault and exercises TLB diagnostics. It completes 20543176 instructions without
-a trap, interrupt or reset, then stops at PC `0x70005b68` when an IOMMU register
-test attempts to set translation-enable. DVMA translation is the next gap;
-there is no serial output or firmware prompt yet.
+polling loop. With a 30000000-step budget, OBP passes the former memory-bank,
+TLB-diagnostic and IOMMU-enable stops. It completes 21020690 instructions with
+one trap and one software reset, emitting its first serial diagnostic warning:
+a missing SBus timeout status bit. It then stops at PC `0xffd27690` reading the
+unimplemented memory-fault status register. Fault-status capture is the next
+gap; there is no firmware prompt yet.
 The fetched image is hash-verified and stays ignored.
 OpenBIOS remains a separate compatibility test until it is proved working.
 

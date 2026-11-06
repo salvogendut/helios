@@ -29,7 +29,7 @@ were compared against QEMU's
 | Component | Reference physical base | Helios status |
 | --- | --- | --- |
 | DRAM | `0x00000000` | Eight 32 MiB apertures; default four 32 MiB DSIMMs, four empty slots |
-| SBus / IOMMU controls | `0x10000000` | Configuration subset; arbitration at `+0x2000`; DVMA translation pending |
+| SBus / IOMMU controls | `0x10000000` | Page translation, I/O flushes, slot bypass and arbitration; DMA to RAM through library API |
 | CGsix / TurboGX framebuffer | SBus slot aperture, to be selected | Planned; no mapping installed |
 | Boot PROM / SLAVIO area | `0x70000000` | 1 MiB raw PROM aperture; remaining SLAVIO devices pending |
 | Keyboard/mouse serial | `0x71000000` | Second polled SCC; keyboard/mouse protocols pending |

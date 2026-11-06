@@ -1,8 +1,10 @@
 //! microSPARC-II SRMMU. See docs/memory.md for the supported control spaces,
 //! implementation choices, and differences from generic SPARC Reference MMUs.
 
-use crate::bus::{Bus, BusError, BusErrorKind};
+use crate::bus::{Bus, BusError, BusErrorKind, IoTlbFlush};
 use crate::cache::CacheDiagnostics;
+use crate::devices::io_control::IoMapping;
+use crate::dma::{DmaError, DmaFault};
 
 pub const PCR_EN: u32 = 1;
 pub const PCR_NF: u32 = 2;
@@ -207,6 +209,20 @@ impl Srmmu {
         }
     }
 
+    fn sync_io_flushes(&mut self, bus: &mut impl Bus) {
+        while let Some(flush) = bus.take_io_tlb_flush() {
+            for entry in &mut self.tlb {
+                let matches = match flush {
+                    IoTlbFlush::All => true,
+                    IoTlbFlush::Page(address) => entry.upper & !0xfff == address,
+                };
+                if entry.lower & 4 != 0 && matches {
+                    entry.upper &= !8;
+                }
+            }
+        }
+    }
+
     fn insert(&mut self, entry: Entry) {
         let wrap = ((self.trcr >> 7) & 63) as usize;
         let limit = if self.trcr & (1 << 13) != 0 {
@@ -215,8 +231,12 @@ impl Srmmu {
             wrap
         };
         let counter = (self.trcr & 63) as usize;
-        let mut index = counter % (limit + 1);
-        // Locked PTP slots have alternate CPU PTE locations 3, 4 and 5.
+        let mut index = if entry.lower & 4 != 0 && self.trcr & (1 << 13) != 0 {
+            48 + (counter & 15)
+        } else {
+            counter % (limit + 1)
+        };
+        // Locked PTP slots redirect leaf fills to locations 3, 4 and 5.
         if index < 3 && self.trcr & (1 << (14 + index)) != 0 {
             index += 3;
         }
@@ -329,6 +349,7 @@ impl Srmmu {
         asi: u8,
         width: Width,
     ) -> Result<u32, MemoryError> {
+        self.sync_io_flushes(bus);
         Self::aligned(address, width)?;
         match asi {
             3 if width == Width::Word => return self.probe(bus, address),
@@ -371,6 +392,7 @@ impl Srmmu {
         width: Width,
         value: u32,
     ) -> Result<(), MemoryError> {
+        self.sync_io_flushes(bus);
         Self::aligned(address, width)?;
         match asi {
             3 if width == Width::Word => {
@@ -424,6 +446,7 @@ impl Srmmu {
         address: u32,
         asi: u8,
     ) -> Result<[u32; 2], MemoryError> {
+        self.sync_io_flushes(bus);
         Self::aligned_to(address, 8)?;
         if asi == 0x0f {
             return Ok(self.caches.read_doubleword(address));
@@ -448,6 +471,7 @@ impl Srmmu {
         asi: u8,
         words: [u32; 2],
     ) -> Result<(), MemoryError> {
+        self.sync_io_flushes(bus);
         Self::aligned_to(address, 8)?;
         if asi == 0x0f {
             self.caches.write_doubleword(address, words);
@@ -493,6 +517,7 @@ impl Srmmu {
         asi: u8,
         value: Option<u32>,
     ) -> Result<u32, MemoryError> {
+        self.sync_io_flushes(bus);
         Self::memory_space(
             asi,
             if value.is_some() {
@@ -585,6 +610,66 @@ impl Srmmu {
             _ => return Err(MemoryError::UnsupportedRegister(address)),
         }
         Ok(())
+    }
+
+    pub(crate) fn translate_io(
+        &mut self,
+        bus: &mut impl Bus,
+        address: u32,
+        write: bool,
+        mapping: IoMapping,
+    ) -> Result<u64, DmaError> {
+        self.sync_io_flushes(bus);
+        let pte_address = match mapping {
+            IoMapping::Bypass(physical) => return Ok(physical),
+            IoMapping::PageTable(physical) => physical,
+        };
+        let mut hit = None;
+        for entry in &self.tlb {
+            if entry.upper & 8 != 0 && entry.lower & 4 != 0 {
+                if entry.upper & 7 != 0 || entry.lower & 2 != 0 {
+                    return Err(DmaError::Unsupported("non-page I/O TLB diagnostic entry"));
+                }
+                // IOPTE matching ignores CPU context and supervisor state.
+                if entry.upper & !0xfff == address & !0xfff {
+                    hit = Some(*entry);
+                }
+            }
+        }
+        let entry = if let Some(entry) = hit {
+            entry
+        } else {
+            if pte_address >= 0x1000_0000 {
+                return Err(DmaError::Unsupported("I/O page table outside DRAM"));
+            }
+            let pte = bus.read32(pte_address).map_err(DmaError::Bus)?;
+            if pte & 2 == 0 {
+                return Err(DmaError::Fault {
+                    address,
+                    kind: DmaFault::InvalidPte,
+                });
+            }
+            Entry {
+                virtual_base: address & !0xfff,
+                offset_mask: 0xfff,
+                level: 3,
+                pte: (pte & 0x07ff_ff04) | 0xe000_0000,
+                upper: (address & !0xfff) | 8,
+                lower: 4,
+                ..Entry::default()
+            }
+        };
+        if write && entry.pte & 4 == 0 {
+            return Err(DmaError::Fault {
+                address,
+                kind: DmaFault::WriteProtected,
+            });
+        }
+        if hit.is_none() {
+            self.insert(entry);
+        }
+        // IOPTEs have neither referenced nor modified bits: never write them back.
+        Ok((u64::from(entry.pte & 0x07ff_ff00) << 4) | u64::from(address & 0xfff))
     }
 
     fn translate(&mut self, bus: &mut impl Bus, access: Access) -> Result<u64, MemoryError> {

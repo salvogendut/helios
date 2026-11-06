@@ -1,6 +1,6 @@
 //! Machine-owned physical decoding. Device bytes never pass through RAM's
 //! word-based narrow-access defaults or a speculative read-modify-write.
-use crate::bus::{Bus, BusError, BusErrorKind, MapError, MemoryBus};
+use crate::bus::{Bus, BusError, BusErrorKind, IoTlbFlush, MapError, MemoryBus};
 use crate::devices::{
     interrupt::{InterruptController, Source},
     io_control::{IoControl, IO_CONTROL_SIZE},
@@ -249,6 +249,10 @@ impl SystemBus {
 }
 
 impl Bus for SystemBus {
+    fn take_io_tlb_flush(&mut self) -> Option<IoTlbFlush> {
+        self.devices.as_mut()?.io_control.take_flush()
+    }
+
     fn read8(&mut self, address: u64) -> Result<u8, BusError> {
         if let Some(dram) = self.dram_at(address) {
             return dram.read8(address);

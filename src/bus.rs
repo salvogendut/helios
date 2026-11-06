@@ -33,6 +33,15 @@ impl fmt::Display for BusError {
 
 impl std::error::Error for BusError {}
 
+/// I/O control writes are consumed by the owner of the shared CPU/I/O TLB
+/// before its next access, including diagnostic accesses. Plain RAM buses do
+/// not produce these requests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IoTlbFlush {
+    All,
+    Page(u32),
+}
+
 fn aligned(address: u64, alignment: u64) -> Result<(), BusError> {
     if address % alignment == 0 {
         Ok(())
@@ -51,6 +60,10 @@ fn aligned(address: u64, alignment: u64) -> Result<(), BusError> {
 /// them explicitly: generic read-then-write fallbacks can consume MMIO data before
 /// discovering a write failure. Future concurrent owners must serialize them.
 pub trait Bus {
+    fn take_io_tlb_flush(&mut self) -> Option<IoTlbFlush> {
+        None
+    }
+
     fn read32(&mut self, address: u64) -> Result<u32, BusError>;
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError>;
     /// The word at the lower address comes first, with no host endian conversion.

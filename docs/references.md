@@ -39,7 +39,11 @@ test rather than assuming either emulator defines the hardware.
   records the chosen masks and differences from QEMU. Sections 8.2.1–8.2.2
   define the DRAM bank map, mirrors and empty-bank completion; sections 5.2,
   5.6.6 and 5.14.1 define TLB diagnostic data/tags and replacement controls.
-  Figures 5.15/5.35/5.36 and table 41 were inspected visually.
+  Figures 5.15/5.35/5.36 and table 41 were inspected visually. Sections 5.2.5,
+  5.7.1–5.7.4, 5.8, 5.10, 9.1 and chapter 11 table 50 define IOPTEs,
+  table indexing, selective I/O flushes, bypass and device-facing DMA errors.
+  Unlike QEMU's generic IOMMU fault path, invalid/protected DMA mappings return
+  an SBus error acknowledge without synthesizing a CPU late-error interrupt.
   [dram-tlb.md](dram-tlb.md) records implemented behavior and functional limits.
 - [ST M48T08/M48T08Y/M48T18 datasheet](https://www.st.com/resource/en/datasheet/m48t18.pdf),
   DocID2411 Rev 11, June 2011: table 5 and sections 3.1–3.3 define the 8 KiB
@@ -107,7 +111,7 @@ Reference revision: `f71afb409a87c4ecd0f9d63a5963eb645dfab780` (inspected 2026-1
 | [hw/timer/slavio_timer.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/timer/slavio_timer.c) | Counter field layout, 500 ns ticks, acknowledgement and system/local IRQ wiring comparison |
 | [hw/misc/slavio_misc.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/misc/slavio_misc.c) | Word-only system control, software-reset request and reset-status comparison |
 | [hw/misc/empty_slot.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/misc/empty_slot.c) | Zero readback and discarded writes for unpopulated non-ECC RAM in the SS-5 profile |
-| [hw/sparc/sun4m_iommu.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/sparc/sun4m_iommu.c) | I/O configuration/register comparison; microSPARC-II differs in identity, six arbitration enables and shared slot 4; DVMA implementation review pending |
+| [hw/sparc/sun4m_iommu.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/sparc/sun4m_iommu.c) | IOMMU register/page-walk comparison; microSPARC-II differs in table alignment, shared TLB, DMA error routing, identity, six arbitration enables and shared slot 4 |
 
 For memory behavior, prefer the microSPARC-II manual where the generic QEMU
 implementation differs: 31-bit physical bypass, BM overriding EN for ASI 8/9,

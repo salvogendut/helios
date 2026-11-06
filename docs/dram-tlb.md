@@ -36,7 +36,7 @@ sizes through `SystemBus::dram().bank_sizes()`.
 
 ## TLB diagnostic ports
 
-ASI `06` accesses the same 64 entries used by CPU translation. Word accesses
+ASI `06` accesses the same 64 entries used by CPU and I/O translation. Word accesses
 only; CPU privilege, encoding and alignment checks still apply.
 
 | Address | Contents |
@@ -70,7 +70,9 @@ read as specified above.
 Diagnostic tests can retain arbitrary patterns while translation is disabled.
 Active injected PTPs and reserved CPU level code `010` cause an explicit host
 stop before translated access or an entire probe. PTP-assisted walks remain
-unimplemented. IOPTEs are excluded from CPU leaf matching; DVMA is still pending.
+unimplemented. IOPTEs are excluded from CPU leaf matching. DMA uses their
+4 KiB VA tags without context comparison, PPN and W bit; injected IOPTEs
+work through the same ports. See [I/O controls](io-control.md).
 Diagnostic edits detach the entry from its software page-table address. Injected
 CPU leaves support reads and, with tag M=1, writes. An M=0 store to a detached
 entry stops before mutation: the hardware rewalk needed to locate/update its
@@ -83,9 +85,10 @@ ASI `04`, VA[12:8]=`10`, selects TRCR. The mask is `01f1ffff`, following figure
 5.15 rather than the adjacent reserved-bit typo. Fields are SBSP[24:23],
 MEMSP[22:21], VP[20], PL[16:14], IL[13], WP[12:7], TC[6], TLBRC[5:0].
 
-The functional replacement counter advances on CPU leaf fills. TC freezes it;
-WP sets its inclusive wrap point. IL reserves entries 48–63 for I/O. PL redirects
-CPU fills from reserved slots 0/1/2 into alternate slots 3/4/5. These affect
+The functional replacement counter advances on CPU and I/O leaf fills. TC freezes it;
+WP sets its inclusive wrap point. IL places I/O fills at `48 + (counter & 15)`
+and limits CPU fills to 0–47. With IL clear, both use the same range. PL redirects
+leaf fills from reserved slots 0/1/2 into alternate slots 3/4/5. These affect
 actual replacement, not merely register readback. Flushes do not reset TLBRC.
 The model clamps the CPU wrap point to 47 with IL set and reduces out-of-range
 counter values modulo the eligible range. These are deterministic choices for
@@ -94,8 +97,8 @@ inconsistent guest configurations; software should set compatible values.
 The real counter advances on CPU clocks; this emulator does not provide that
 timing. Reset selects WP=63, TLBRC=0 and other fields zero as a functional
 baseline. Speed fields are latches with no clock effect. VP is retained, but
-normal walks do not cache intermediate PTPs. I/O replacement and exact silicon
-reset/speed-strap readback remain pending.
+normal walks do not cache intermediate PTPs. Exact silicon replacement timing
+and reset/speed-strap readback remain pending.
 
 ## Sources and validation
 

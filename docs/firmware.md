@@ -134,7 +134,7 @@ CLI and library console output match exactly. Firmware, RAM, NVRAM and step
 quantum are unchanged. This establishes progress beyond tag initialization,
 not a firmware prompt, working cache POST or OS compatibility.
 
-With the SS-5 DRAM bank model and live TLB diagnostics/replacement controls,
+At the DRAM/TLB milestone, with the SS-5 bank model and live diagnostic entries,
 the same 30000000-step probe completes **20543176 instructions** with zero
 traps, interrupts or resets and no serial output. `boot` and the library probe
 now use `Machine::ss5`: four 32 MiB modules in slots 0–3, four empty slots.
@@ -146,8 +146,8 @@ The firmware also passes its accesses to TRCR (`ASI 04`, address `1000`) and
 TLB diagnostic data/tags (`ASI 06`). The next stop is attempt **20543177**,
 PC=`0x70005b68`, nPC=`0x70005b6c`, instruction=`0xe6a58400`: an ASI `20`
 store of the test pattern `0xa5a5a5a5` to physical `0x10000000`. This attempts
-to set IOCR.EN during an IOMMU register test. DVMA translation is not yet
-implemented, so the device rejects the write before mutation. The CPU error
+to set IOCR.EN during an IOMMU register test. At that milestone DVMA translation
+was not implemented, so the device rejected the write before mutation. The CPU error
 latch remains clear and the CLI exits 1. This does not demonstrate any DMA
 transfer or working firmware prompt.
 
@@ -158,6 +158,41 @@ it is host output, separate from the guest serial transcript. The firmware
 hash, 128 MiB capacity, default NVRAM, no input and 100 ns step quantum are unchanged.
 See [DRAM and TLB diagnostics](dram-tlb.md) for functional limits, including
 parity, fill-driven replacement timing, injected PTP walks and M-bit rewalks.
+
+With IOMMU translation and shared I/O TLB flushes implemented, the unchanged
+original ROM now completes **21020690 instructions**, with **one synchronous
+trap**, **zero interrupts**, **one software reset** and **125 serial bytes**.
+The same 30000000-step budget, four 32 MiB DSIMMs, default NVRAM, no serial
+input and 100 ns step quantum apply. No DMA device engine is running in this
+probe; translation is separately exercised by library tests.
+
+The first fault is attempt **20588909**, PC=`0x700063d0`, nPC=`0x700063d4`,
+instruction=`0xc0850400`: an ASI `20` word load from unmapped SBus physical
+address `0x7cc00000`, taken as data-access error trap `0x29`. OBP emits:
+
+```text
+ERROR  : Address= 00000300, exp= 00000816, obs= 00000016, xor= 00000800
+UNUMBER: U0103
+WARNING: Suspect Swift Module
+```
+
+The `0x800` difference is the SFSR SBus timeout bit (manual figure 5.13).
+The preceding unmapped SBus read and current generic bus-error recording identify
+timeout classification/capture as the next fault-status gap. This is a firmware
+self-test warning, not a report of a failed physical module on the host.
+OBP requests a software reset on attempt **20617884** and continues.
+
+The final host stop is attempt **21020692**, PC=`0xffd27690`, nPC=`0xffd27694`,
+instruction=`0xc8840400`: an ASI `20` word load from physical `0x10001050`
+(MFSR), which is still an unsupported memory-fault capture register. The CPU
+error latch is clear and the CLI exits 1. There is no OBP prompt or successful
+POST/OS-boot claim. The next work is SBus timeout status and memory/asynchronous
+fault capture, preserving the distinction between CPU faults and device DMA errors.
+
+Records under `local/probes/iommu-ss5/` retain configuration, CLI console/stop,
+bounded library trace/source and the matching serial transcript. The firmware
+hash is unchanged. [I/O controls](io-control.md) describes the implemented DMA
+interface and remaining hardware limits.
 
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)

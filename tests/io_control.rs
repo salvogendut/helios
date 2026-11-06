@@ -23,12 +23,10 @@ fn io_control_identity_range_and_table_base_follow_microsparc_fields() {
         io.write(4, written).unwrap();
         assert_eq!(io.read(4).unwrap(), expected);
     }
-    let before = io.clone();
-    assert_eq!(
-        io.write(0, 1),
-        Err(BusErrorKind::Unsupported("IOMMU DVMA translation enable"))
-    );
-    assert_eq!(io, before); // enabling unsupported translation cannot partially change RANGE
+    io.write(0, u32::MAX).unwrap();
+    assert_eq!(io.read(0).unwrap(), 0x0400_001d);
+    io.write(0, 0).unwrap();
+    assert_eq!(io.read(0).unwrap(), 0x0400_0000);
 }
 
 #[test]
@@ -84,8 +82,8 @@ fn unimplemented_facilities_stop_without_fabricating_success_or_changing_configu
     io.write(0, 0x1c).unwrap();
     let before = io.clone();
     for offset in [
-        0x14, 0x18, 0x1000, 0x1004, 0x1050, 0x1054, 0x3000, 0x3004, 0x3008, 0x300c, 0x3010, 0x3014,
-        0x3018, 0x301c, 0x4000, 0x6000, 0x7000,
+        0x1000, 0x1004, 0x1050, 0x1054, 0x3000, 0x3004, 0x3008, 0x300c, 0x3010, 0x3014, 0x3018,
+        0x301c, 0x4000, 0x6000, 0x7000,
     ] {
         assert!(io.read(offset).unwrap_err().is_host_stop(), "{offset:#x}");
         assert!(
@@ -191,9 +189,9 @@ fn reset_prom_programs_sbus_controls_through_physical_bypass_and_reset_clears_th
 }
 
 #[test]
-fn unsupported_dvma_enable_is_retryable_even_with_cpu_no_fault_mode() {
+fn unsupported_fault_capture_is_retryable_even_with_cpu_no_fault_mode() {
     let mut m = Machine::sun4m(8192, &0xc4a0_4400u32.to_be_bytes()).unwrap();
-    m.cpu.write_reg(1, IO_CONTROL_BASE as u32);
+    m.cpu.write_reg(1, (IO_CONTROL_BASE + 0x1000) as u32);
     m.cpu.write_reg(2, 1);
     m.bus.write32(IO_CONTROL_BASE, 0x1c).unwrap();
     m.cpu
@@ -213,9 +211,10 @@ fn unsupported_dvma_enable_is_retryable_even_with_cpu_no_fault_mode() {
     assert_eq!(m.bus.devices().unwrap().io_control, before);
     assert_eq!(m.bus.devices().unwrap().timers, timers);
     assert_eq!(m.bus.read32(RESET_BASE).unwrap(), 0); // no watchdog event
-    m.cpu.write_reg(2, 0x10); // retry the same instruction with a supported write
+    m.cpu.write_reg(1, IO_CONTROL_BASE as u32); // retry at a supported register
+    m.cpu.write_reg(2, 0x11);
     assert!(matches!(m.step().unwrap(), Step::Executed { pc: 0, .. }));
-    assert_eq!(m.bus.read32(IO_CONTROL_BASE).unwrap(), 0x0400_0010);
+    assert_eq!(m.bus.read32(IO_CONTROL_BASE).unwrap(), 0x0400_0011);
 }
 
 #[test]
