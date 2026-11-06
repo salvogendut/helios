@@ -126,8 +126,9 @@ Regressions exercise guest TX/RX, MMU-translated byte accesses, unsupported
 widths without destructive reads, backpressure/retry, channel reset, clock
 latches and calendar boundaries, identity checksums and CLI file behavior.
 CPU interrupt delivery and counter timers have a separate synthetic PROM demo.
-Serial interrupt generation is still pending; no Sun PROM, OpenBIOS prompt or
-OS boot has been demonstrated.
+Serial interrupt generation remains pending. Original OBP now has a responsive
+[serial recovery prompt](firmware.md#serial-ok-prompt); OpenBIOS and OS boot
+have not been demonstrated.
 
 ## NCR89C105 auxiliary ports
 
@@ -140,12 +141,12 @@ Reserved bits 7:6 and 4 always read zero. The input can be supplied through
 
 Each write with bit 1 set emits a terminal-count pulse event; zero emits none.
 The bit always reads zero. `take_terminal_count_pulses` drains these events for a
-future floppy controller. The hardware's four-SBus-clock pulse width is not
+future floppy data-transfer engine. The hardware's four-SBus-clock pulse width is not
 modeled. Reads do not consume pulses, and writes replace the output bits.
 
 Wrong widths, atomics, masked stores and image loads stop before device effects.
 This implements the documented base registers only; address mirrors,
-modem/configuration registers, an actual floppy controller and
+modem/configuration registers, floppy media transfers and
 Ethernet link-test behavior remain pending. Pin-state storage and TC events do
 not establish functioning floppy or Ethernet devices.
 
@@ -156,3 +157,53 @@ acknowledge. Reserved bits 7:6 and 4 read zero. A write requesting power-off
 (bit 0) stops explicitly before changing device state: powered-down machine
 execution is not implemented. External power-failure detection and its
 configuration/interrupt wiring remain pending. Reset clears the scratch bits.
+
+## NCR82077 floppy initialization and positioning
+
+The byte-only controller aperture at `0x71400000` exposes DOR (`+2`),
+MSR/DSR (`+4`), FIFO (`+5`) and DIR/CCR (`+7`). System reset holds DOR.nRESET
+low; writing it high releases the core. NCR-specific DOR bits control eject,
+density, motor and interrupt gating; reserved bits 5/1 read zero by convention.
+Wider transfers throughout the aperture retain the NCR SBus-error behavior.
+Unimplemented register offsets/mirrors and masked/atomic accesses stop explicitly.
+
+MSR distinguishes reset, command-ready, parameter collection, result-read and
+per-drive busy state. FIFO reads/writes in the wrong direction return retryable
+backpressure before modifying state. Implemented commands are SPECIFY, SENSE
+DRIVE STATUS, SENSE INTERRUPT STATUS, VERSION, CONFIGURE, DUMPREG,
+PERPENDICULAR MODE, LOCK/UNLOCK, SEEK and RECALIBRATE. Unsupported commands,
+including data transfers and unclassified invalid encodings, stop explicitly.
+The model stores configuration without claiming a working sector FIFO engine.
+VERSION returns `0x90`; non-interrupt commands do not invent completion IRQs.
+
+Reset clears command/results, movement and pending interrupts. SPECIFY survives
+pin reset. LOCK preserves EFIFO/FIFOTHR/PRETRK across DOR/DSR reset; those fields
+return to defaults when unlocked, while EIS/POLL retain their configuration.
+Software reset clears perpendicular WGATE/GAP and preserves its drive bits;
+pin reset clears LOCK and perpendicular configuration. DSR reset self-clears;
+DSR power-down is unsupported and stops before changes.
+
+Reset polling produces one interrupt and four SENSE INTERRUPT results (`c0`
+through `c3`, PCN zero). A functional deadline of 250 microseconds at 1 Mbit/s
+scales with the data-rate selection. Intel documents the CONFIGURE suppression
+window; using its endpoint as the modeled deadline is a scheduling convention,
+not measured NCR timing. Entering command/result processing pauses polling;
+CONFIGURE.POLL disables it. DOR.DMAGATE gates the source, connected to NCR
+bit 22 / CPU level 11. SENSE INTERRUPT acknowledges pending completion state.
+
+There are **no attached floppy drives or images**. External TRK0, write-protect
+and disk-change assertions are inactive. ST3 includes fixed bits 5/3 and the
+requested unit/head; otherwise tri-stated DIR bits deterministically read zero.
+SEEK advances the internal cylinder after a delay derived from SPECIFY.SRT and
+the data rate; no physical position feedback is required. RECALIBRATE fails with
+EC/SE and abnormal status `0x70 | unit` because TRK0 never asserts. Intel section
+5.2.2 says 79 pulses while the ST0 table says 80; the model uses 79 and does not
+model individual pulse edges. PCN is cleared at recalibration start and seek
+position is committed on completion. Busy persists until SENSE INTERRUPT.
+Concurrent completions within one host advance are queued in unit order.
+
+No motor/rotation/index timing, media read/write, DMA/PIO sector transfer,
+relative seek, terminal-count transfer termination or power-down is implemented.
+AuxIO1's terminal-count events remain available for the future media engine.
+These limits do not prevent OBP from initializing the controller, observing
+recalibration failure, and continuing to its serial monitor.

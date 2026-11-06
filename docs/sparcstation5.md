@@ -35,6 +35,8 @@ were compared against QEMU's
 | Keyboard/mouse serial | `0x71000000` | Second polled SCC; keyboard/mouse protocols pending |
 | Console serial | `0x71100000` | Z8530 asynchronous polling, A/B byte ports |
 | NVRAM / RTC | `0x71200000` | 8 KiB M48T08, IDPROM and deterministic clock |
+| Floppy controller | `0x71400000` | NCR82077 configuration, reset, positioning/status and IRQ; no drive/media engine |
+| Auxiliary registers | `0x71900000`, `0x71910000` | LED/link/mux/density/TC and power scratch/clear subset |
 | Timer block | `0x71d00000` | CPU counter or 64-bit user timer here; system counter/configuration at `+0x10000` |
 | Interrupt block | `0x71e00000` | CPU pending/soft IRQs here; system pending/masks at `+0x10000` |
 | System reset/status | `0x71f00000` | Software reset, reset-cause flags; automatic CPU watchdog recovery pending |
@@ -64,5 +66,6 @@ Original Sun OBP is the primary firmware for development and hardware accuracy.
 OpenBIOS remains a separate compatibility test until proved working. QEMU
 supplies it with interfaces such as `fw_cfg`; those must not redefine SS-5
 hardware behavior. [firmware.md](firmware.md) records the pinned images and
-bounded probe results. Neither firmware has reached a prompt yet.
+bounded probe results. Original OBP reaches a responsive serial recovery prompt;
+OpenBIOS remains unproven, and no OS boot is supported.
 

@@ -340,3 +340,11 @@ CPU model. Firmware tests must additionally record the firmware hash, machine
 configuration, serial transcript and stopping condition. Keep performance
 measurements separate from correctness checks.
 
+
+The optional original-OBP serial checkpoint is documented in
+[firmware.md](docs/firmware.md#serial-ok-prompt). It reaches a recovery monitor,
+then evaluates a Forth expression through TTYA. It requires the ignored ROM and
+is separate from firmware-free CI. Floppy regressions exercise command/result
+backpressure, configuration/reset retention, delayed polling, missing-track-zero
+failure, seek status and level-11 interrupt acknowledgement; sector transfers
+and attached drives remain pending.

@@ -77,6 +77,14 @@ test rather than assuming either emulator defines the hardware.
   multiplication (always completed in hardware, possibly via Meiko restart)
   from FsMULd's possible unfinished exception. The current emulator implements
   FMULs/d without multiplier pipeline timing; widening multiplication is pending.
+- [Intel 82077AA datasheet](https://ardent-tool.com/datasheets/Intel_82077AA.pdf),
+  Intel document 290166: sections 2.1–2.2, 5.2–5.3, 6.4, 7.4 and 8.2 define
+  command/result handshakes, reset retention, configuration, polling suppression,
+  seek/recalibrate and status. NCR89C105 figure 6-5 overrides PC DOR wiring;
+  only its listed byte registers are exposed. The 79/80-step recalibration
+  discrepancy, disconnected drive pins and functional timing choices are
+  recorded in [devices.md](devices.md). Pinned QEMU `hw/block/fdc.c` provides a
+  comparison; its generic PC register/reset assumptions are not copied wholesale.
 - [ST M48T08/M48T08Y/M48T18 datasheet](https://www.st.com/resource/en/datasheet/m48t18.pdf),
   DocID2411 Rev 11, June 2011: table 5 and sections 3.1–3.3 define the 8 KiB
   register layout, BCD calendar, R/W transfer latches and oscillator stop.

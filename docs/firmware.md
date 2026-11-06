@@ -4,7 +4,10 @@ Use **original Sun OBP firmware** for development and hardware-accuracy checks.
 OpenBIOS is a separate compatibility test until it is proved working. Firmware
 must not be patched to bypass missing hardware, and QEMU-specific interfaces
 must not redefine the SS-5 model. A successful isolated probe is not a firmware
-compatibility claim. Neither image below has reached a prompt in Helios.
+compatibility claim. Original OBP now reaches a responsive serial monitor after
+an initialization error; OpenBIOS has not reached a prompt. The current
+[serial checkpoint](#serial-ok-prompt) distinguishes this from successful POST
+or OS boot. Earlier checkpoints below are retained as historical evidence.
 
 The selected machine is an SS5/85: 85 MHz microSPARC-II, 128 MiB RAM, CGsix,
 SCSI disk/CD-ROM, Ethernet and serial. Pending devices remain absent; the
@@ -35,6 +38,8 @@ The fetch helper verifies both the pinned SHA-256 and Git blob hash before
 writing. It records provenance in a neighboring JSON file. Existing differing
 files are refused; existing identical files can be reused. For an already
 downloaded copy, pass `--source FILE`. No firmware is committed to this repository.
+
+### Historical bring-up checkpoints
 
 Initial probe, 2026-11-06, default 128 MiB, CPU/MMU reset, default NVRAM,
 no serial input, 10000-step maximum, deterministic 100 ns successful-step quantum:
@@ -362,6 +367,56 @@ floppy access, with the CPU error latch clear. Serial output remains 225 bytes
 through `Probing CPU FMI,MB86904`; no prompt yet. Records are under
 `local/probes/auxiliary-ss5/`. This checkpoint supersedes the apparent prolonged
 Forth initialization seen when the auxiliary ports were absent.
+
+## Serial `ok` prompt
+
+The unmodified original SS-5 ROM now reaches `ok` on SCC channel A (TTYA).
+The probe uses `Machine::ss5`, 128 MiB RAM, default NVRAM, no initial input,
+and the unchanged functional 100 ns step quantum. Firmware SHA-256 remains
+`e7f40845504c65f4011278aa3e97a9810aa36775e6c199b715839fbc25eec45e`.
+The final change adds the onboard NCR82077 initialization/positioning subset
+with no attached floppy drive; hardware boot code has not been patched.
+
+| Observation | First prompt | After Forth command |
+| --- | ---: | ---: |
+| Step | 93481624 | 93671422 |
+| Completed instructions, including reset store | 93481339 | 93671135 |
+| Synchronous traps | 17 | 17 |
+| Interrupt entries | 268 | 270 |
+| Software resets | 1 | 1 |
+| Serial bytes | 344 | 360 |
+
+Both observations have PC=`0xffd27424`, nPC=`0xffd27428`, with no CPU error
+latch. After the first prompt, the library sends `1 2 + .` followed by carriage
+return through `Serial::receive`, respecting receiver enable and FIFO capacity.
+OBP echoes the command, prints `3`, and returns to `ok`:
+
+```text
+Data Access Error
+Type  help  for more information
+ok 1 2 + .
+3
+ok
+```
+
+**This is an error-recovery monitor prompt, not a completed normal boot.**
+The earlier processor-timer diagnostic still reports `expected 0000001e`,
+followed by a guest reset and configuration-checksum/default-NVRAM messages.
+Later serial output announces SBus probing with `espdma` and `esp` labels.
+At step 93294238, an ASI `0x20` byte read from physical `0x6e000000` raises
+SBus timeout/data-access trap `0x29`: PC=`0xffd265f8`, nPC=`0xffd266ac`,
+instruction=`0xc88c0400`. OBP handles it by entering the monitor. This trace
+alone does not identify the complete cause of that probe failure. SCSI/DMA,
+Ethernet, CGsix, completed POST and operating-system boot remain unfinished.
+
+```sh
+cargo run --release --locked --offline -- boot local/firmware/sun-ss5.bin --steps 100000000
+```
+
+`local/probes/obp-ok-ss5/` retains firmware/configuration metadata, bounded
+library probe source and log, raw serial transcript, CLI output and a separate
+NVRAM export. The proof run stops after the second prompt. No firmware or NVRAM
+image is committed. User-requested hardware bring-up stops at this checkpoint.
 
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)

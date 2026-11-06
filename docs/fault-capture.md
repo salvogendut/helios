@@ -22,8 +22,8 @@ bus without the controller does not synthesize SBus errors.
 The NCR's documented reserved windows return `SBusError`. The floppy aperture
 at `0x71400000`–`0x714fffff` rejects halfword/word/doubleword transfers with an
 error acknowledgement, as specified for this byte-only range. Its byte
-operations remain explicit emulator stops because the floppy controller is not
-implemented. Register mirrors, full onboard decoding and remaining device-width
+operations now route to the [NCR82077 subset](devices.md); missing commands
+and register offsets still stop explicitly. Register mirrors, full onboard decoding and remaining device-width
 rules are separate work; this is not a complete NCR address decoder.
 
 SFSR.TO (bit 11) distinguishes timeout from SFSR.BE (bit 10). FT, AT, level,
@@ -121,5 +121,5 @@ CPU/DMA metadata, actual CPU mode, unsupported operations and resets.
 This milestone let the unchanged original OBP pass both bus-error diagnostic
 checks without the earlier warning/reset, reaching `LDDF` in POST. The subsequent
 [FPU milestones](fpu.md) advance through arithmetic and deferred traps to timer diagnostics; see
-[firmware.md](firmware.md) for the bounded runs. No firmware prompt or successful
-POST is claimed.
+[firmware.md](firmware.md) for the bounded runs. Subsequent device work reaches an OBP serial recovery
+prompt; completed POST remains unverified.

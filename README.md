@@ -17,7 +17,13 @@ implementation references; the SPARC architecture manual defines ISA behavior.
 
 ## Current status
 
-This is an executable foundation, **not yet a bootable SPARCstation**. It has:
+Original Sun OBP now reaches a **responsive `ok` prompt on serial TTYA**.
+It currently enters the monitor after a device-probe `Data Access Error`, with
+an earlier processor-timer diagnostic warning. Full POST and OS boot remain
+unverified. The library also verifies `1 2 + .` returns `3` and another prompt.
+See the [reproducible firmware checkpoint](docs/firmware.md#serial-ok-prompt).
+
+The implemented foundation includes:
 
 - A dependency-free Rust library and headless CLI.
 - Eight overlapping register windows, `%g0`, PC/nPC, and integer condition codes.
@@ -46,7 +52,8 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
 - The processor's 64-bit user-timer register: a 54-bit count, overflow flag,
   start/stop control and consistent doubleword reads/writes.
 - NCR89C105 auxiliary LED/link/mux output latches, floppy density input and
-  terminal-count pulse events; the floppy controller remains pending.
+  terminal-count pulse events, plus NCR82077 initialization, timed seek/recalibrate
+  completion and interrupts. No floppy drive or media engine is attached.
 - SS-5 system reset/status, guest software reset and watchdog status latching;
   a second polled SCC for the keyboard/mouse ports (input protocols pending).
 - microSPARC-II IOMMU page translation, I/O TLB flushes, SBus arbitration and
@@ -178,15 +185,18 @@ python3 tools/fetch_firmware.py sun-ss5
 cargo run --locked --offline -- boot local/firmware/sun-ss5.bin --steps 10000 --trace
 ```
 
-This short probe now reaches its 10000-step budget in OBP's timed keyboard
-polling loop. With a 30000000-step budget, OBP passes the former memory-bank,
-TLB-diagnostic and IOMMU-enable stops, then exercises single/double arithmetic,
-deferred FPU exceptions and software interrupts. It completes the 30000000-step
-budget with 29999968 instructions, 16 traps, 16 interrupts and one reset. Serial
-output reports a missing processor-timer interrupt (`expected 0000001e`). A
-longer probe reaches an unsupported processor breakpoint register at
-`0x10003018`. There is no firmware prompt yet; see the recorded limitations in
-[firmware.md](docs/firmware.md).
+The short probe reaches OBP's timed keyboard polling loop. To reproduce the
+serial monitor checkpoint with the original unchanged image:
+
+```sh
+cargo run --release --locked --offline -- boot local/firmware/sun-ss5.bin --steps 100000000
+```
+
+The first `ok` arrives at step **93481624** with default NVRAM, 128 MiB RAM and
+no serial input. It follows a device-probe error and does not establish a clean
+boot. The CLI prints serial output; interactive input currently uses the library
+API. [Firmware records](docs/firmware.md#serial-ok-prompt) include the transcript,
+counts, input/response verification and remaining limitations.
 The fetched image is hash-verified and stays ignored.
 OpenBIOS remains a separate compatibility test until it is proved working.
 

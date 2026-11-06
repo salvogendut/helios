@@ -129,4 +129,5 @@ The original ROM now passes IOCR enable writes and both bus-error diagnostics
 without the previous warning/reset. It then passes floating-point transfers,
 comparisons and arithmetic, then reports a missing processor-timer interrupt.
 See [firmware.md](firmware.md).
-This does not establish working SCSI/Ethernet DMA or a firmware prompt.
+Subsequent auxiliary/floppy work reaches an OBP serial recovery prompt;
+SCSI/Ethernet DMA engines remain pending.

@@ -289,6 +289,6 @@ subnormal ties, extreme exponents, overflow, NaNs, enabled exceptions and queue
 recovery. Original OBP now executes single/double division, addition, subtraction,
 multiplication, comparisons, branches and twelve deferred exception/queue cycles.
 Its 30000000-step probe reports a missing processor-timer interrupt on serial,
-resets and continues firmware initialization. A longer run reaches an unsupported
-processor breakpoint register. No firmware prompt has been demonstrated.
+resets and continues firmware initialization. Later chip-revision, auxiliary and floppy-controller work now reaches a serial
+recovery prompt after a device-probe error. Clean POST remains unverified.
 [Firmware records](firmware.md) retain the bounded checkpoint and exact limits.

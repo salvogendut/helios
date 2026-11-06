@@ -3,6 +3,7 @@
 use crate::bus::{Bus, BusError, BusErrorKind, IoTlbFlush, MapError, MemoryBus, MemoryRequest};
 use crate::devices::{
     auxiliary::Auxiliary,
+    floppy::Floppy,
     interrupt::{InterruptController, Source},
     io_control::{IoControl, IO_CONTROL_SIZE},
     nvram::{Nvram, NVRAM_SIZE},
@@ -50,6 +51,7 @@ enum WordDevice {
 #[derive(Debug)]
 pub struct Sun4mDevices {
     pub auxiliary: Auxiliary,
+    pub floppy: Floppy,
     pub io_control: IoControl,
     pub nvram: Nvram,
     pub serial: Serial,
@@ -64,11 +66,14 @@ pub struct Sun4mDevices {
 impl Sun4mDevices {
     fn sync_interrupts(&mut self) {
         self.interrupts
+            .set_source(Source::Floppy, self.floppy.irq());
+        self.interrupts
             .set_source(Source::SystemTimer, self.timers.system_irq());
         self.interrupts.set_cpu_timer(self.timers.processor_irq());
     }
 
     fn advance_ns(&mut self, ns: u64) {
+        self.floppy.advance_ns(ns);
         self.timers.advance_ns(ns);
         let remainder = ns % 1_000_000_000 + u64::from(self.rtc_phase_ns);
         self.nvram
@@ -95,16 +100,13 @@ impl SystemBus {
                     kind: BusErrorKind::Misaligned,
                 });
             }
-            return Err(BusError {
-                address,
-                // NCR89C105 rejects wider transfers throughout the floppy
-                // aperture. Byte transfers need the still-unimplemented FDC.
-                kind: if bytes == 1 {
-                    BusErrorKind::Unsupported("floppy controller byte access")
-                } else {
-                    BusErrorKind::SBusError
-                },
-            });
+            if bytes != 1 {
+                // NCR89C105 rejects wider transfers throughout this aperture.
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::SBusError,
+                });
+            }
         }
         Ok(())
     }
@@ -164,6 +166,7 @@ impl SystemBus {
         }
         self.devices = Some(Sun4mDevices {
             auxiliary: Auxiliary::default(),
+            floppy: Floppy::default(),
             io_control: IoControl::default(),
             nvram,
             serial: Serial::default(),
@@ -198,6 +201,7 @@ impl SystemBus {
         if let Some(devices) = &mut self.devices {
             devices.io_control.reset();
             devices.auxiliary.reset();
+            devices.floppy.reset();
             devices.serial.reset();
             devices.keyboard_serial.reset();
             devices.interrupts.reset();
@@ -211,6 +215,9 @@ impl SystemBus {
     }
     pub fn advance_seconds(&mut self, seconds: u64) {
         if let Some(devices) = &mut self.devices {
+            devices
+                .floppy
+                .advance_ns(seconds.saturating_mul(1_000_000_000));
             devices.timers.advance_seconds(seconds);
             devices.nvram.advance_seconds(seconds);
             devices.sync_interrupts();
@@ -351,6 +358,11 @@ impl Bus for SystemBus {
         }
         self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
+            if (FLOPPY_BASE..FLOPPY_BASE + 0x10_0000).contains(&address) {
+                let result = devices.floppy.read(address - FLOPPY_BASE);
+                devices.sync_interrupts();
+                return result.map_err(|kind| BusError { address, kind });
+            }
             if address == AUXILIARY_BASE {
                 return Ok(devices.auxiliary.read());
             }
@@ -387,6 +399,11 @@ impl Bus for SystemBus {
         }
         self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
+            if (FLOPPY_BASE..FLOPPY_BASE + 0x10_0000).contains(&address) {
+                let result = devices.floppy.write(address - FLOPPY_BASE, value);
+                devices.sync_interrupts();
+                return result.map_err(|kind| BusError { address, kind });
+            }
             if address == AUXILIARY_BASE {
                 devices.auxiliary.write(value);
                 return Ok(());
