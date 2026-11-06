@@ -39,12 +39,14 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
   and an M48T08 NVRAM/RTC with SS-5 IDPROM and explicit clock advancement.
 - CPU interrupt entry with ET/PIL masking, sun4m software interrupts and source
   masks, and system/processor counter timers on a deterministic timebase.
+- The processor's 64-bit user-timer register: a 54-bit count, overflow flag,
+  start/stop control and consistent doubleword reads/writes.
 - SS-5 system reset/status, guest software reset and watchdog status latching;
   a second polled SCC for the keyboard/mouse ports (input protocols pending).
 
 Unsupported emulator behavior remains a host stop, separate from guest traps.
 Implementation-specific ASRs, broader illegal-opcode classification, MMU/cache
-diagnostics, FPU, serial interrupt generation, 64-bit user timers, SCSI, networking
+diagnostics, FPU, serial interrupt generation, SCSI, networking
 and graphics remain to be implemented. There is no firmware or OS compatibility
 claim.
 
@@ -148,8 +150,10 @@ python3 tools/fetch_firmware.py sun-ss5
 cargo run --locked --offline -- boot local/firmware/sun-ss5.bin --steps 10000 --trace
 ```
 
-This bounded probe currently completes 304 instructions, then stops when OBP
-selects the unimplemented 64-bit processor timer mode at `0x71d10010`.
+This short probe now reaches its 10000-step budget in OBP's timed keyboard
+polling loop. With a 30000000-step budget, OBP encounters an unmapped SBus
+control register at `0x10002000`, prints a diagnostic and requests software
+reset; the restarted path stops on unsupported ASI `0x06` TLB diagnostic access.
 The fetched image is hash-verified and stays ignored.
 OpenBIOS remains a separate compatibility test until it is proved working.
 

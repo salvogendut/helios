@@ -51,6 +51,9 @@ test rather than assuming either emulator defines the hardware.
   The archived text has no revision header. Its explicit zero-limit overflow
   interrupt rule differs from QEMU. Mask All's treatment of software requests
   is less explicit; [interrupts-timers.md](interrupts-timers.md) records the choice.
+  The SBus feature subset restricts two-word bursts to the processor count in
+  user mode. Figures 6-16–6-18 define its 54-bit count, overflow flag, Run and
+  mode select; the mode-transition transfer state is not specified.
 - [Sun SPARCclassic Engine OEM Technical Manual, Part One, April 1993](https://bitsavers.trailing-edge.com/pdf/sun/sparc/801-3137-10_SPARCclassic_Engine_OEM_Technical_Manual_Part_One_Apr1993.pdf),
   801-3137-10: section 5's NCR89C105 overview and section 7's SLAVIO address map
   independently confirm the uniprocessor layout at `0x71d00000`/`0x71e00000`.
@@ -91,6 +94,7 @@ Reference revision: `f71afb409a87c4ecd0f9d63a5963eb645dfab780` (inspected 2026-1
 | [hw/intc/slavio_intctl.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/intc/slavio_intctl.c) | Source bits/levels, soft requests, mask aliases and generic multiprocessor comparison |
 | [hw/timer/slavio_timer.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/timer/slavio_timer.c) | Counter field layout, 500 ns ticks, acknowledgement and system/local IRQ wiring comparison |
 | [hw/misc/slavio_misc.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/misc/slavio_misc.c) | Word-only system control, software-reset request and reset-status comparison |
+| [hw/sparc/sun4m_iommu.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/sparc/sun4m_iommu.c) | Initial identification of OBP's next missing register, MID/SBus arbitration at `0x10002000`; implementation review pending |
 
 For memory behavior, prefer the microSPARC-II manual where the generic QEMU
 implementation differs: 31-bit physical bypass, BM overriding EN for ASI 8/9,
@@ -98,7 +102,7 @@ the 28-bit boot offset, NF excluding both instruction spaces, destructive SFAR
 reads, and exact-level probes. QEMU is an implementation comparison, not proof
 of those hardware details. No differential execution has been performed.
 
-For upcoming work, start with `hw/sparc/sun4m_iommu.c`,
+For upcoming work, continue the review of `hw/sparc/sun4m_iommu.c`,
 `hw/dma/sparc32_dma.c`, `hw/scsi/esp.c`, and `hw/net/lance.c`.
 Verify each file at the selected revision before relying on its behavior.
 QEMU's TCX framebuffer is a different device from the selected CGsix card.

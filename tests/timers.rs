@@ -114,7 +114,7 @@ fn huge_time_advances_are_bounded_and_partition_independent() {
 }
 
 #[test]
-fn reserved_bits_readonly_fields_and_user_mode_stop_preserve_counter_state() {
+fn reserved_bits_readonly_fields_and_run_writes_preserve_counter_state() {
     let mut t = Timers::default();
     t.write(true, 0, u32::MAX).unwrap();
     assert_eq!(t.read(true, 0).unwrap(), 0x7fff_fe00);
@@ -128,12 +128,8 @@ fn reserved_bits_readonly_fields_and_user_mode_stop_preserve_counter_state() {
     t.advance_ns(500);
     assert_eq!(t.read(false, 4).unwrap(), 1024);
     let before = t.clone();
-    assert!(matches!(
-        t.write(true, 16, 1),
-        Err(BusErrorKind::Unsupported(_))
-    ));
-    assert_eq!(t, before);
     t.write(true, 16, !1).unwrap();
+    assert_eq!(t, before);
     assert_eq!(t.read(true, 16).unwrap(), 0);
 }
 

@@ -14,7 +14,8 @@ CPU_CLOCK_HZ records 85 MHz, separate from STEP_NS. CGsix is planned as a
 - NCR table 6-25/figures 6-14..18 specify 22-bit counters in bits 30:9, 500 ns
   ticks, reload 1 on match, read-limit acknowledgement, non-resetting limit
   writes, zeroed reset, and overflow interrupts even with limit zero. QEMU's
-  no-interrupt free-run differs. Mode bit 0 (64-bit user timer) is unsupported.
+  no-interrupt free-run differs. The later user-timer.md note covers implemented
+  mode bit 0, 54-bit counting and doubleword access.
 - Match-after-increment and pending clear on resetting limit write are recorded
   choices. The scalar oracle tests wrap and lower-limit cases. Large advances
   skip periods; do not introduce per-tick loops for u64::MAX time arguments.

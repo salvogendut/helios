@@ -33,7 +33,7 @@ were compared against QEMU's
 | Keyboard/mouse serial | `0x71000000` | Second polled SCC; keyboard/mouse protocols pending |
 | Console serial | `0x71100000` | Z8530 asynchronous polling, A/B byte ports |
 | NVRAM / RTC | `0x71200000` | 8 KiB M48T08, IDPROM and deterministic clock |
-| Timer block | `0x71d00000` | CPU counter here; system counter at `+0x10000` |
+| Timer block | `0x71d00000` | CPU counter or 64-bit user timer here; system counter/configuration at `+0x10000` |
 | Interrupt block | `0x71e00000` | CPU pending/soft IRQs here; system pending/masks at `+0x10000` |
 | System reset/status | `0x71f00000` | Software reset, reset-cause flags; automatic CPU watchdog recovery pending |
 | DMA block | `0x78400000` | Planned |

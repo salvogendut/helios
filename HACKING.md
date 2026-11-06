@@ -68,7 +68,9 @@ are distinct errors. Failed bus accesses must not mutate memory or devices.
 Masked stores do not call the device read path. RAM's default narrow accessors
 are unsuitable for MMIO registers. `SystemBus` dispatches device accesses at
 their required width: bytes for serial/NVRAM, aligned words for timers/interrupt
-control/reset status. Other widths, partial masked writes and atomics stop before any effects.
+control/reset status. The processor user count also accepts aligned doublewords
+when user mode is selected. Other widths, partial masked writes and atomics stop
+before any effects.
 It also prevents image loads and RAM/ROM mappings from
 overlapping installed devices.
 
@@ -253,6 +255,8 @@ user/supervisor state, WIM-independent entry and branch-delay return. Timer test
 check read acknowledgement, non-resetting limits behind the count, wraparound,
 bounded large advances and a scalar tick oracle. The timer PROM handles both
 device sources and resumes its interrupted loop.
+Processor user-time tests check the 54-bit count, sticky overflow, run/stop,
+indivisible doubleword access, MMU protection and mode/reset transitions.
 These are local regression checks, not a SPARC conformance suite or a completed
 QEMU/MAME differential comparison.
 

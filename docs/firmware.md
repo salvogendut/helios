@@ -56,11 +56,42 @@ with the same configuration produces:
 - This mode remains unsupported. The CLI exits with status 1 as an emulator
   stop, without a guest trap, CPU error latch or timer-configuration change.
 
-The reset register and both SCC instances now let OBP pass the earlier reset
+The reset register and both SCC instances let OBP pass the earlier reset
 and serial initialization accesses. WR14 DPLL source configuration is accepted
 without enabling DPLL operation. The next hardware work is the processor's
-64-bit timer mode. Local records are retained under
+64-bit timer mode at this checkpoint. Local records are retained under
 `local/probes/reset-ss5/`; the initial records remain separate.
+
+The next checkpoint implements that timer mode. The same 10000-step probe now
+reaches its budget in the keyboard polling loop, with 10000 instructions, no
+traps/interrupts/resets and no console output. The user timer advances while
+Run=1; OBP samples it with LDDA. A longer run exposes subsequent hardware gaps:
+
+```sh
+cargo run --locked --offline -- boot local/firmware/sun-ss5.bin --steps 30000000
+```
+
+- At step 20000419, PC=`0x70001004`, nPC=`0x70001008`, instruction=`0xc0a04400`,
+  OBP stores zero through ASI `0x20` to physical `0x10002000`. This unmapped
+  microSPARC-II MID/SBus arbitration-enable register causes guest trap `0x29`.
+  It is the **first missing hardware access**, before the final emulator stop.
+- OBP prints a synchronous-trap diagnostic on TTYA, then requests a software
+  reset at step 20035524. This is guest error handling, not a firmware prompt.
+- The restarted path stops at step 20035688, PC=`0x0000be7c`, nPC=`0x0000be74`,
+  instruction=`0xc0a200c0`: unsupported ASI `0x06` word store. microSPARC-II
+  uses this space for TLB diagnostics. The CPU error latch is clear.
+- Totals before the stop: 20035686 completed instructions (including the reset
+  store), one synchronous trap, zero interrupts and one software reset.
+  The CLI exits with status 1.
+
+Records under `local/probes/user-timer-ss5/` retain the short trace, long-run
+console and stop, and a bounded library probe with its source. That probe records
+the first 500 steps, timer samples every million steps, exceptional outcomes and
+128-step fault context, avoiding a multi-million-line trace. Its console matches
+the CLI run. The firmware, RAM, default NVRAM and step quantum are unchanged.
+Next work is the SBus/IOMMU control block, then TLB diagnostic behavior as
+indicated by the original firmware. Neither probe establishes full timer
+mode-transition hardware behavior or firmware compatibility.
 
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)

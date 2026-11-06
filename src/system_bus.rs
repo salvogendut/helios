@@ -321,10 +321,26 @@ impl Bus for SystemBus {
         self.memory.write32_masked(address, value, mask)
     }
     fn read_doubleword(&mut self, address: u64) -> Result<[u32; 2], BusError> {
+        if address == CPU_TIMER_BASE {
+            if let Some(devices) = &self.devices {
+                return devices
+                    .timers
+                    .read_user_doubleword()
+                    .map_err(|kind| BusError { address, kind });
+            }
+        }
         self.memory_only(address, 8)?;
         self.memory.read_doubleword(address)
     }
     fn write_doubleword(&mut self, address: u64, words: [u32; 2]) -> Result<(), BusError> {
+        if address == CPU_TIMER_BASE {
+            if let Some(devices) = &mut self.devices {
+                return devices
+                    .timers
+                    .write_user_doubleword(words)
+                    .map_err(|kind| BusError { address, kind });
+            }
+        }
         self.memory_only(address, 8)?;
         self.memory.write_doubleword(address, words)
     }

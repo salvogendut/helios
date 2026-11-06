@@ -66,8 +66,11 @@ captured before any destination register is written, including overlapping pairs
 An aligned doubleword fits in one MMU page and uses one translation.
 
 The installed serial and NVRAM devices accept plain byte loads/stores only.
-Interrupt, timer and reset/status registers require aligned word loads/stores. Other widths,
-partial masked stores and atomic MMIO operations stop before device effects.
+Interrupt, timer and reset/status registers require aligned word loads/stores.
+The processor user count at `0x71d00000` also accepts aligned doubleword
+loads/stores while configured in user mode. Both halves form one transaction;
+see [interrupts-timers.md](interrupts-timers.md). Other widths, partial masked
+stores and atomic MMIO operations stop before device effects.
 
 SWAP exchanges a word with rd; LDSTUB returns an unsigned byte and stores `0xff`
 into that byte lane. Both operate even when rd=g0. SWAP requires word alignment;

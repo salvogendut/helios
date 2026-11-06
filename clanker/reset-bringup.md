@@ -32,8 +32,8 @@ sources are in docs/references.md. No firmware prompt or differential run.
   step/10000-step limit. 304 instructions, no traps/IRQs/resets/output, exit 1:
   PC=0xbbb4, nPC=0xbbb8, instruction=0xd2a20400; ASI20 word store of 1 to
   physical 0x71d10010. Unsupported 64-bit processor user timer, no CPU error.
-  Implement this mode next from NCR counter/user-timer sections and pinned QEMU
-  slavio_timer.c; retain deterministic bounded arithmetic and counter regressions.
+  This checkpoint is superseded by the user-timer implementation; see
+  user-timer.md for the current SBus-control fault and TLB diagnostic stop.
 - Original image unchanged at SHA256
   e7f40845504c65f4011278aa3e97a9810aa36775e6c199b715839fbc25eec45e.
   local/probes/reset-ss5 holds the configuration/trace/console record, separate

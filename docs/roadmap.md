@@ -9,7 +9,7 @@ observable acceptance criteria before its status can advance.
 | 0 — Foundation | Library/CLI, integer subset, word bus, runnable bare-metal demo and regression tests | Implemented |
 | 1 — CPU baseline | Complete V8 integer/privileged behavior, PSR/WIM/TBR/Y, precise traps/RETT, ASI dispatch, multiply/divide and atomics; independently checked bare-metal tests | In progress: core integer instruction groups, privileged state, synchronous traps, ASIs, doublewords and atomics implemented; implementation-specific ASRs and broader illegal-opcode classification pending |
 | 2 — Memory system | microSPARC-II reset/boot behavior and SRMMU, permissions, contexts, faults, TLB invalidation and required cache controls; translation/fault tests | In progress: reset/PROM, hardware page walks, permissions, contexts, R/M, fault state and TLB flush/probe implemented; diagnostics pending |
-| 3 — Serial firmware | Original Sun OBP loading, NVRAM/IDPROM, Z8530, interrupt controller and timers; reproducible OBP prompt transcript | In progress: reset/status and both SCCs installed; original OBP completes 304 instructions before selecting unsupported 64-bit processor timer mode; serial IRQs and a working prompt pending |
+| 3 — Serial firmware | Original Sun OBP loading, NVRAM/IDPROM, Z8530, interrupt controller and timers; reproducible OBP prompt transcript | In progress: processor user timer implemented; OBP passes timed polling, faults at missing SBus arbitration control, prints diagnostics and resets; restarted path stops on ASI 0x06 TLB diagnostics; working prompt pending |
 | 4 — Storage and kernel | IOMMU, DMA, ESP SCSI, disk/CD-ROM targets and safe image writes; installer/kernel reaches serial userspace | Planned |
 | 5 — Usable workstation | Required FPU behavior, LANCE networking, CGsix/TurboGX framebuffer, keyboard/mouse and host frontend; documented guest compatibility matrix | Planned |
 | 6 — Performance and tooling | Profiling-driven optimization, optional JIT checked against interpreter, monitor/GDB, snapshots and automated guest runs | Planned |
@@ -29,9 +29,11 @@ software requests and system/processor counter timers now have a guest demo
 and deterministic timing tests. Original Sun OBP is the primary development
 baseline; OpenBIOS remains a separate compatibility test until proved working.
 System reset/status, guest software reset, watchdog status latching and both
-SCC register blocks now let OBP complete 304 instructions without a guest trap.
-It stops while selecting 64-bit processor timer mode at `0x71d10010`; implement
-that mode next, followed by evidence-driven bring-up and serial interrupts.
+SCC register blocks now support early OBP initialization. Processor user time
+and doubleword access let it pass timed keyboard polling. Its first missing
+hardware access is now a store to the MID/SBus arbitration-enable register at
+`0x10002000`; implement the SBus/IOMMU control block next. OBP's resulting
+diagnostic/reset path later stops on ASI `0x06` TLB diagnostics, another known gap.
 [Firmware records](firmware.md) capture the images and bounded probes.
 Automatic partial CPU watchdog recovery and asynchronous hardware-error latches
 remain explicit gaps.
