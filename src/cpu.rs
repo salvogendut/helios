@@ -65,6 +65,8 @@ pub enum FaultKind {
     /// Missing emulator behavior, never delivered to the guest as an ISA trap.
     UnsupportedInstruction,
     UnsupportedMemory(MemoryError),
+    /// Device engine host stop at a CPU boundary; not a guest CPU trap.
+    DeviceDma(crate::dma::DmaError),
     IllegalInstruction,
     PrivilegedInstruction,
     FpDisabled,
@@ -85,7 +87,9 @@ impl FaultKind {
     /// V8 trap type. MMU exceptions and physical bus errors have distinct vectors.
     pub fn trap_type(self) -> Option<u8> {
         Some(match self {
-            Self::UnsupportedInstruction | Self::UnsupportedMemory(_) => return None,
+            Self::UnsupportedInstruction | Self::UnsupportedMemory(_) | Self::DeviceDma(_) => {
+                return None
+            }
             Self::InstructionMmu(_) => 0x01,
             Self::DataMmu(_) => 0x09,
             Self::IllegalInstruction => 0x02,

@@ -5,7 +5,7 @@ flushes, SBus arbitration and slot bypass. `Machine::dma_read` and `dma_write`
 accept a master number (0–5), a 32-bit DVMA address and byte/halfword/word width.
 Transfers must be naturally aligned. Values remain guest bit patterns; narrow
 accesses use big-endian lanes. These calls do not execute the CPU or advance time.
-SCSI/Ethernet device engines and burst transfers remain pending.
+The Ethernet engine uses these transfers; SCSI DMA and burst timing remain pending.
 
 The primary source is the microSPARC-II User's Manual revision 1.1, sections
 5.2.1–5.2.5, 5.6.6, 5.7.1–5.7.4, 5.7.7, 5.7.10, 5.8, 5.10, 9.1/9.4 and
@@ -130,4 +130,4 @@ without the previous warning/reset. It then passes floating-point transfers,
 comparisons and arithmetic, then reports a missing processor-timer interrupt.
 See [firmware.md](firmware.md).
 Subsequent auxiliary/floppy work reaches an OBP serial recovery prompt;
-SCSI/Ethernet DMA engines remain pending.
+The Ethernet engine is connected through master 5; SCSI DMA remains pending.

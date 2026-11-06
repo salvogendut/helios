@@ -17,6 +17,7 @@ pub struct Esp {
     sync_period: u8,
     sync_offset: u8,
     config: [u8; 3],
+    test_mode: bool,
     clock_factor: u8,
     high_written: bool,
     dma_nop: bool,
@@ -41,6 +42,7 @@ impl Default for Esp {
             sync_period: 5,
             sync_offset: 0,
             config: [0; 3],
+            test_mode: false,
             clock_factor: 2,
             high_written: false,
             dma_nop: false,
@@ -64,6 +66,7 @@ impl Esp {
         self.sync_period = 5;
         self.sync_offset = 0;
         self.config = [0; 3];
+        self.test_mode = false;
         self.clock_factor = 2;
         self.high_written = false;
         self.dma_nop = false;
@@ -148,9 +151,7 @@ impl Esp {
             6 => self.sync_period = value & 31,
             7 => self.sync_offset = value & 15,
             8 => {
-                if value & 8 != 0 {
-                    return Err(BusErrorKind::Unsupported("ESP chip test mode"));
-                }
+                self.test_mode |= value & 8 != 0;
                 self.config[0] = value;
             }
             9 => {
@@ -181,6 +182,9 @@ impl Esp {
         if code == 2 {
             self.reset();
             return Ok(());
+        }
+        if self.test_mode && code != 0 {
+            return Err(BusErrorKind::Unsupported("ESP command in chip test mode"));
         }
         if !matches!(code, 0 | 1 | 3 | 0x44 | 0x45) {
             return Err(BusErrorKind::Unsupported(

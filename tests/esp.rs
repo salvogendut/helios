@@ -96,15 +96,7 @@ fn configuration_readback_and_reset_follow_integrated_core() {
         assert_eq!(e.read(offset).unwrap(), 0);
     }
     let before = e.clone();
-    for (offset, value) in [
-        (32, 8),
-        (36, 1),
-        (40, 1),
-        (52, 0),
-        (12, 0x41),
-        (12, 1),
-        (1, 0),
-    ] {
+    for (offset, value) in [(36, 1), (40, 1), (52, 0), (12, 0x41), (12, 1), (1, 0)] {
         assert!(e.write(offset, value).unwrap_err().is_host_stop());
         assert_eq!(e, before);
     }
@@ -112,6 +104,23 @@ fn configuration_readback_and_reset_follow_integrated_core() {
         assert!(e.read(offset).unwrap_err().is_host_stop());
         assert_eq!(e, before);
     }
+}
+
+#[test]
+fn test_mode_enable_allows_configuration_readback_but_requires_chip_reset() {
+    let mut e = Esp::default();
+    e.write(12, 0).unwrap();
+    for value in [0x55, 0xaa, 0] {
+        e.write(32, value).unwrap();
+        assert_eq!(e.read(32).unwrap(), value);
+    }
+    let before = e.clone();
+    assert!(e.write(12, 3).unwrap_err().is_host_stop());
+    assert!(e.write(40, 0).unwrap_err().is_host_stop());
+    assert_eq!(e, before);
+    e.write(12, 2).unwrap();
+    e.write(12, 0).unwrap();
+    e.write(12, 3).unwrap();
 }
 
 #[test]

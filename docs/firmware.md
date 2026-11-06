@@ -536,3 +536,57 @@ ASI `0x2d` halfword store. In QEMU this is the `fw_cfg` selector at physical
 emulator limitation, not a CPU error state, and there is no console output.
 Implementing that interface is deferred compatibility work; original OBP
 hardware bring-up takes priority.
+
+## Timer and Ethernet bring-up
+
+The original, unmodified SS5 OBP image now passes its processor-timer diagnostic
+and the Ethernet driver's internal loopback test. Physical PROM reads include
+NCR89C105's six SBus clocks per byte at the SS5/85's 21.25 MHz SBus clock.
+Counter overflow skips zero, zero-limit timers do not interrupt, and a limit
+read returns its pending flag before acknowledging it. These rules follow
+Sun-4M section 5.3.2; [interrupts-timers.md](interrupts-timers.md) records the
+conflict with the NCR timer prose.
+
+The user-selected fresh IDPROM now reports MAC `08:00:20:c0:ff:ee`, hostid
+`80c0ffee` and serial 12648430, with manufacture date zero and checksum `a9`.
+Configuration SRAM starts blank, so OBP still reports an initial configuration
+checksum warning and establishes its own defaults. Imported NVRAM is unchanged.
+
+The 2026-11-06 headless probe uses 128 MiB, the same pinned original ROM and
+its unchanged SHA-256, a 2,000,000,000-step budget, and no ROM patch or diagnostic
+bypass. It completes device enumeration and the full RAM test, initializes the
+Ethernet controller through real IOMMU DMA, completes internal loopback, and
+emits 64-byte RARP requests with EtherType `8035` and opcode 3. No host network
+backend or server replies are attached. After the second request, the probe
+asserts serial BREAK for 1,000,000 steps, releases it, and waits for `ok` before
+typing `1 2 + .` and CR through TTYA's FIFO.
+
+| Event | Completed step |
+| --- | ---: |
+| First RARP frame | 995183053 |
+| Second RARP frame / BREAK asserted | 1057759536 |
+| BREAK released | 1058759536 |
+| First serial `ok` | 1058977191 |
+| Forth result `3` and second `ok` | 1059249163 |
+
+Final totals: 1,059,239,040 instructions, 21 synchronous traps, 10,102 interrupt
+entries and one guest software reset; 4,036 TTYA bytes. PC=`ffd1689c`,
+nPC=`ffd168a0`, no CPU error state and no host stop. The serial transcript ends:
+
+```text
+ok 1 2 + .
+3
+ok
+```
+
+This is a monitor return via the normal serial abort path, after real Ethernet
+initialization and packet transmission. The timer warning and unmapped Ethernet
+fault from earlier checkpoints are gone. Clean POST is still unfinished: at
+step 8711303, PC=`700044f8` reads the unimplemented parallel-port DMA CSR
+`7c800000`, producing a diagnostic SBus timeout. OBP recovers and continues.
+That is the next POST hardware gap, separate from Ethernet packet behavior.
+
+Ignored `local/probes/timer-ethernet-ss5/` contains the probe, exact configuration,
+console/step logs, both RARP frames and exported NVRAM. Synthetic regressions
+cover timer timing/flags, DMA errors, packet ordering/CRC, loopback, IDPROM and
+serial BREAK. No OS, storage target, CGsix display or network boot is claimed.

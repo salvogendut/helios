@@ -19,32 +19,37 @@ impl Counter {
         if ticks == 0 {
             return;
         }
-        // Match after incrementing the 22-bit counter; zero matches on wrap.
-        // A non-resetting write behind the count waits for that wrap first.
-        let mut distance = (u128::from(self.limit) + MODULUS - u128::from(self.count)) % MODULUS;
-        if distance == 0 {
-            distance = MODULUS;
+        // Sun-4M section 5.3.2: overflow reloads 1, skipping zero.
+        // Therefore a zero limit free-runs without matching or raising IRQ.
+        let span = MODULUS - 1;
+        if self.limit == 0 {
+            self.count = (1 + (u128::from(self.count) + ticks - 1) % span) as u32;
+            return;
         }
+        let distance = if self.limit > self.count {
+            u128::from(self.limit - self.count)
+        } else {
+            span - u128::from(self.count) + u128::from(self.limit)
+        };
         if ticks < distance {
-            self.count = ((u128::from(self.count) + ticks) % MODULUS) as u32;
+            self.count = (1 + (u128::from(self.count) + ticks - 1) % span) as u32;
         } else {
             self.pending = true;
-            // A match reloads 1 (500 ns). Limit=1 next matches after a full
-            // wrap; limits 0 and >=2 have a period one shorter than the limit.
-            let period = match self.limit {
-                0 => MODULUS - 1,
-                1 => MODULUS,
-                n => u128::from(n - 1),
+            let period = if self.limit == 1 {
+                span
+            } else {
+                u128::from(self.limit - 1)
             };
-            self.count = ((1 + (ticks - distance) % period) % MODULUS) as u32;
+            self.count = (1 + (ticks - distance) % period) as u32;
         }
     }
 
     fn read(&mut self, offset: u64) -> Result<u32, BusErrorKind> {
         match offset {
             0 => {
+                let value = (self.limit << 9) | if self.pending { 1 << 31 } else { 0 };
                 self.pending = false;
-                Ok(self.limit << 9)
+                Ok(value)
             }
             4 => Ok((self.count << 9) | if self.pending { 1 << 31 } else { 0 }),
             8 => Ok(0), // write-only non-resetting limit port

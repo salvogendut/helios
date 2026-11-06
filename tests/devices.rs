@@ -39,7 +39,7 @@ fn idprom_has_ss5_type_mac_serial_and_independently_checkable_checksum() {
     let bytes = n.image();
     assert_eq!(
         &bytes[IDPROM_OFFSET..IDPROM_OFFSET + 16],
-        &[1, 0x80, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0x83]
+        &[1, 0x80, 8, 0, 0x20, 0xc0, 0xff, 0xee, 0, 0, 0, 0, 0xc0, 0xff, 0xee, 0xa9]
     );
     assert_eq!(
         bytes[IDPROM_OFFSET..IDPROM_OFFSET + 16]
@@ -59,6 +59,30 @@ fn idprom_has_ss5_type_mac_serial_and_independently_checkable_checksum() {
         0
     );
     assert_eq!(rtc(&n), [0, 0, 0, 7, 1, 1, 0x32]);
+}
+
+#[test]
+fn serial_break_status_and_termination_null_are_distinct_from_ctrl_c() {
+    let mut s = Serial::default();
+    configure(&mut s, Channel::A);
+    assert!(s.receive(Channel::A, 3));
+    assert_eq!(s.read(4).unwrap() & 0x81, 1);
+    assert_eq!(s.read(6).unwrap(), 3);
+    s.set_break(Channel::A, true).unwrap();
+    assert_eq!(s.read(4).unwrap() & 0x81, 0x80);
+    assert_eq!(s.read(0).unwrap() & 0x80, 0);
+    assert!(!s.receive(Channel::A, b'x'));
+    s.write(4, 0x10).unwrap(); // reset external/status latch while BREAK held
+    assert_eq!(s.read(4).unwrap() & 0x80, 0x80);
+    s.set_break(Channel::A, false).unwrap();
+    assert_eq!(s.read(4).unwrap() & 0x81, 1);
+    assert_eq!(s.read(6).unwrap(), 0);
+    assert_eq!(s.read(4).unwrap() & 0x81, 0);
+    s.set_break(Channel::A, false).unwrap(); // no duplicate termination byte
+    assert_eq!(s.read(4).unwrap() & 1, 0);
+    s.set_break(Channel::A, true).unwrap();
+    s.reset();
+    assert_eq!(s.read(4).unwrap() & 0x81, 0);
 }
 
 #[test]

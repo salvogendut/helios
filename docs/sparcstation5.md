@@ -14,11 +14,12 @@ Its SBus slot assignment and device aperture will be fixed when the card is
 implemented. The SS-5 service manual lists the 85 MHz board and 1 MiB TGX option;
 the SPARCengine 5 OEM manual describes this card's BT458 RAMDAC and 8-bit output.
 See [references.md](references.md). Disk capacity and media are configuration
-choices for the storage milestone. Graphics, SCSI devices and Ethernet are
-planned; only the implemented devices listed below are currently installed.
+choices for the storage milestone. Graphics and SCSI data transfers remain planned. Ethernet has a headless
+packet endpoint; see [ethernet.md](ethernet.md) for its implemented subset.
 
 `CPU_CLOCK_HZ` records the nominal 85 MHz clock. The interpreter's 100 ns step
-quantum is a separate functional scheduling convention, not 85 MHz cycle timing.
+quantum is a separate functional scheduling convention. Physical PROM reads add
+six 21.25 MHz SBus clocks per byte; the pipeline and ordinary caches are not timed.
 QEMU's SS-5 profile selects `Fujitsu-MB86904` and limits RAM to 256 MiB; Helios
 uses 128 MiB by default within that limit, with hardware bank decode in
 `Machine::ss5`/CLI `boot`. [DRAM and TLB diagnostics](dram-tlb.md) describes
@@ -40,9 +41,9 @@ were compared against QEMU's
 | Timer block | `0x71d00000` | CPU counter or 64-bit user timer here; system counter/configuration at `+0x10000` |
 | Interrupt block | `0x71e00000` | CPU pending/soft IRQs here; system pending/masks at `+0x10000` |
 | System reset/status | `0x71f00000` | Software reset, reset-cause flags; automatic CPU watchdog recovery pending |
-| DMA block | `0x78400000` | Planned |
-| ESP SCSI | `0x78800000` | Planned |
-| LANCE Ethernet | `0x78c00000` | Planned |
+| DMA2 SCSI/Ethernet | `0x78400000`, `0x78400010` | SCSI register initialization; Ethernet DMA connected to IOMMU |
+| ESP SCSI | `0x78800000` | NCR53C9X register initialization, FIFO and reset; targets/data engine pending |
+| NCR92C990 Ethernet | `0x78c00000` | Halfword CSR ports, initialization, packets and internal loopback |
 
 QEMU's TCX mapping at `0x50000000` describes a different graphics device and is
 not used as the CGsix register map. Use the card's own SBus-relative registers,

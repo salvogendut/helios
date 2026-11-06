@@ -18,11 +18,12 @@ implementation references; the SPARC architecture manual defines ISA behavior.
 ## Current status
 
 Original Sun OBP reaches a **responsive `ok` prompt on serial TTYA** after
-completing device enumeration and its 128 MiB RAM test. Automatic network boot
-then encounters the unimplemented Ethernet DMA block and falls back to the
-monitor. An earlier processor-timer diagnostic warning remains; clean POST and
-OS boot are unverified. A library probe verifies `1 2 + .` returns `3` and another
-prompt. See the [latest firmware checkpoint](docs/firmware.md#esp-initialization-and-full-ram-test).
+completing device enumeration and its 128 MiB RAM test. The processor timer
+and Ethernet internal-loopback diagnostics now pass. Network boot transmits
+RARP requests through a headless packet endpoint; serial BREAK returns to the
+monitor, where `1 2 + .` returns `3`. The remaining POST fault is an unimplemented
+parallel-port DMA register. OS boot remains unverified. See the
+[latest firmware checkpoint](docs/firmware.md#timer-and-ethernet-bring-up).
 
 The implemented foundation includes:
 
@@ -58,6 +59,8 @@ The implemented foundation includes:
 - NCR89C100 identification and DMA2 SCSI configuration, address/count chaining
   latches and IRQ gating, plus NCR53C9X SCSI reset/configuration/FIFO handling;
   DMA data transfers and storage targets remain pending.
+- NCR89C100 Ethernet DMA and NCR92C990 initialization, single-buffer packets,
+  CRC, filtering and internal loopback through the IOMMU. See [Ethernet](docs/ethernet.md).
 - SS-5 system reset/status, guest software reset and watchdog status latching;
   a second polled SCC for the keyboard/mouse ports (input protocols pending).
 - microSPARC-II IOMMU page translation, I/O TLB flushes, SBus arbitration and
@@ -74,7 +77,7 @@ The implemented foundation includes:
 Unsupported emulator behavior remains a host stop, separate from guest traps.
 Implementation-specific ASRs, broader illegal-opcode classification, remaining TLB
 diagnostic modes, cache hit/fill behavior, remaining FPU arithmetic/conversions, quad-operation traps,
-serial interrupt generation, SCSI, networking
+serial interrupt generation, SCSI transfers, a host network backend
 and graphics remain to be implemented. There is no firmware or OS compatibility
 claim.
 
@@ -150,10 +153,10 @@ mode. Ordinary data accesses use the physical map, including console serial at
 bytes to stdout and diagnostics/traces to stderr. Input comes from a file;
 interactive terminal input is pending. NVRAM uses an 8192-byte raw image and is
 saved at the step limit or an execution error when `--nvram-out` is supplied.
-The sun4m harness advances device time by 100 ns per completed step, including
-trap/interrupt entry. This is a functional scheduling convention, not CPU cycle
-timing. The library also exposes explicit time advancement. A working firmware
-prompt remains pending. See [Memory and reset](docs/memory.md),
+The sun4m harness advances device time by a 100 ns base per completed step,
+including trap/interrupt entry, plus physical PROM read wait states. This is a
+functional scheduling convention, not full CPU cycle timing. The library also
+exposes explicit time advancement and a decoded serial BREAK input. See [Memory and reset](docs/memory.md),
 [Devices](docs/devices.md) and [Interrupts and timers](docs/interrupts-timers.md).
 Guest reset behavior and current watchdog limits are in [System reset](docs/reset.md).
 For `boot`, RAM must fit eight 8 MiB or 32 MiB DSIMMs; larger modules occupy

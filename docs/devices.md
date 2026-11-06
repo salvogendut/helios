@@ -25,8 +25,8 @@ register. Mapping RAM/ROM or loading a raw image over a device is rejected.
 ## NVRAM, identity and clock
 
 Fresh NVRAM has zeroed configuration SRAM and an IDPROM with format 1, SS-5
-machine type `0x80`, locally administered MAC `02:00:00:00:00:01`, manufacture
-date zero and serial `000001` (hostid `80000001`). Byte 15 makes the XOR of the
+machine type `0x80`, Sun-style MAC `08:00:20:c0:ff:ee`, manufacture
+date zero and serial `c0ffee` (hostid `80c0ffee`). Byte 15 makes the XOR of the
 first 16 bytes zero. `Nvram::new` accepts another MAC and three-byte serial.
 Imported images and guest writes are retained without automatic checksum
 repair. No Sun environment defaults or OpenBIOS configuration partitions are
@@ -44,7 +44,8 @@ clearing W loads all fields into the counter together. The seconds register's
 bit 7 stops the oscillator. Invalid BCD/calendar fields or unsupported test
 bits stop before a W-clear commits. Frequency calibration is unsupported.
 
-The machine supplies elapsed time from its deterministic 100 ns step quantum
+The machine supplies elapsed time from its 100 ns base step quantum plus
+documented physical PROM read wait states
 and `advance_ns`/`advance_seconds` APIs. The standalone `Nvram` device still uses
 explicit `advance_seconds` calls. Host wall time is never consulted. Very large
 advances use bounded calendar work. Machine reset retains SRAM, clock state,
@@ -249,7 +250,8 @@ operations stop explicitly without changing device state.
 Diagnostic FIFO accesses, reserved burst modes and illegal combinations of
 count/chaining or transfer-cycle modes stop before mutation.
 DMA requests, FIFO/data movement, terminal-count/error generation and the
-Ethernet/parallel channels remain pending. NCR's reset and W1C semantics take
+parallel channel remain pending. The Ethernet channel is described in
+[ethernet.md](ethernet.md). NCR's reset and W1C semantics take
 precedence over QEMU's generic DMA register array.
 
 ## NCR53C9X SCSI controller initialization
@@ -284,7 +286,20 @@ transfer (reads choose zero) until reset is released. The NCR89C100 omits the
 standalone core's RESETO pin, so unacknowledged SCSI reset does not reset the CPU.
 
 The implementation supports byte accesses only. Padding, reserved/test registers,
-wide accesses, chip test mode, active selection, data-transfer commands and
+wide accesses, commands issued in chip test mode, active selection, data-transfer commands and
 stacked interrupts stop before mutation. SCSI bus arbitration, targets, sector
 I/O and the DMA request/data path remain pending. Creating `sd` and `st` nodes
 in OBP is evidence of firmware enumeration, not working disks or tapes.
+
+CFG1 chip-test-enable can be written and read back during register diagnostics.
+Its internal test state persists even if the bit is subsequently written zero;
+chip reset clears it before normal commands resume. Test-register execution
+remains unsupported.
+
+`Serial::set_break(channel, asserted)` supplies a decoded asynchronous receive
+BREAK. RR0 bit 7 follows its transitions through the WR15-controlled status
+latch; WR0 Reset External/Status opens the latch. Termination queues one null
+byte. A full FIFO makes termination retryable without losing the BREAK state.
+Odd-parity termination stops explicitly; error/parity FIFO and bit timing are
+pending. This headless input lets original OBP abort network boot normally.
+The current CLI has no interactive BREAK command.

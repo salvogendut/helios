@@ -27,3 +27,4 @@
 - [MACIO DMA2 registers](macio-dma.md): SCSI DMA configuration, primary manual corrections and next ESP access.
 
 - [ESP initialization and RAM test](esp-initialization.md): completed enumeration, full original-OBP memory diagnostic and next Ethernet DMA access.
+- [Timer and Ethernet](timer-ethernet.md): corrected PROM/counter timing, real Ethernet initialization/loopback/RARP, chosen Sun IDPROM and serial BREAK return to `ok`; next POST gap is parallel DMA.

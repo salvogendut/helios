@@ -4,8 +4,8 @@ Helios implements the uniprocessor NCR89C105 control registers used in the
 SS-5/sun4m map. Sources are the NCR chip specification, SPARC V8 and the pinned
 QEMU/MAME revisions in [references.md](references.md). The synthetic
 [timer PROM](../examples/timer.s) demonstrates both counter interrupts and return
-to interrupted code. Initial firmware probes stop before a prompt; see
-[firmware.md](firmware.md). No firmware compatibility is established.
+to interrupted code. Original OBP now passes its processor counter diagnostic;
+see [firmware.md](firmware.md) for the bounded boot evidence and remaining gaps.
 
 ## CPU delivery
 
@@ -98,16 +98,16 @@ pending coalesce into the same asserted line.
 | `+0xc` | User Run bit, retained but no effect in counter mode | Reserved, reads zero |
 | `+0x10` | Outside aperture | Configuration bit 0 selects processor user mode |
 
-Limit reads clear pending without resetting the running count, and return only
-the limit field. Limit writes mask to bits 30:9, reset the count to `0x200` and
+Limit reads return the limit and the sampled pending bit 31, then clear pending
+without resetting the running count. Limit writes mask to bits 30:9, reset the count to `0x200` and
 clear pending. Non-resetting writes retain both count and pending. If the new
 limit is behind the current count, matching waits until wraparound; it does not
 immediately expire or restart. Writes to the read-only counter are ignored.
 
-A zero limit matches at 22-bit overflow and still interrupts, roughly every
-two seconds. For nonzero limit N in tick units, repeated matches normally occur
+A zero limit free-runs without interrupting. Overflow reloads one, skipping
+zero, as specified by Sun-4M section 5.3.2. For nonzero limit N in tick units, repeated matches normally occur
 every N−1 ticks because a match reloads one. Helios compares after increment:
-the edge case N=1 therefore waits a full 22-bit wrap after reload. Limit writes
+the edge case N=1 therefore waits 2^22−1 ticks after reload. Limit writes
 do not manufacture an immediate match. This edge rule and clearing pending on
 a resetting write are explicit functional choices; hardware boundary validation
 remains desirable.
@@ -158,13 +158,18 @@ and `u64::MAX` seconds.
 
 ## Time and ownership
 
-The machine samples interrupt lines, executes one CPU outcome, then advances
-the timers and RTC by `STEP_NS = 100` ns. Completed instructions and successful
-trap/interrupt entries consume the same quantum. An error or unsupported stop
+The machine services one pending Ethernet DMA transfer, samples interrupt lines,
+executes one CPU outcome, then advances devices by a base `STEP_NS = 100` ns
+plus physical PROM read service time. NCR89C105 table 6-10 specifies six SBus
+clocks per byte of the byte-wide PROM. The SS5/85 SBus runs at 21.25 MHz
+(CPU/4), so a word fetch adds 24 clocks, about 1129.41 ns. Instruction and data
+reads both count, including the reset boot alias; RAM execution adds no PROM
+wait. Fractional nanoseconds carry across accesses. Direct bus inspection does
+not advance time. An error or unsupported stop
 does not advance time. A timer expiring during advancement is visible at the
 next boundary. Host wall time, terminal I/O and scheduling have no influence.
-This quantum is a functional convention, not a microSPARC frequency or cycle
-accuracy claim.
+The base quantum and serialized DMA are functional conventions. This is not a
+cycle-accurate pipeline, ordinary cache, SBus arbitration or burst timing model.
 
 `Machine::advance_ns` and `advance_seconds` advance all devices between CPU steps.
 They do not execute the CPU or auto-enter handlers. Timer tick fractions and
@@ -179,10 +184,16 @@ must provide their own clock advancement and interrupt wiring.
 
 ## Reference differences and verification
 
-The NCR specification and generic QEMU sun4m model differ. NCR documents
-interrupts on zero-limit overflow and zeroed counter/Run reset state; Helios
-follows those descriptions. QEMU suppresses zero-limit interrupts and resets
-Run to one. QEMU also implements a multiprocessor target register, while NCR
+Sun-4M System Architecture (950-1373-01, July 19 1991, revision 50), section
+5.3.2, explicitly says zero-limit free-running counters do not interrupt and
+overflow reloads 500 ns. Its figure shows the limit flag in both registers.
+This conflicts with NCR89C105's zero-limit-overflow interrupt prose and its
+limit-register diagram. Helios now follows Sun on these points; the original
+OBP processor-timer diagnostic also requires the limit flag on the acknowledging
+read. The earlier NCR-based model produced a spurious level 10 interrupt once
+PROM service time was added. QEMU likewise suppresses zero-limit interrupts,
+but resets Run to one; Helios retains NCR's zero counter/Run reset baseline.
+QEMU also implements a multiprocessor target register, while NCR
 reserves that address. Helios applies NCR's Mask All wording to software
 requests as well; QEMU lets them bypass that bit. The wording is not explicit
 about this exception, so the software-mask choice needs hardware confirmation.

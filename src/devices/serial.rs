@@ -27,6 +27,8 @@ struct Port {
     output: VecDeque<u8>,
     tx: Option<u8>,
     underrun: bool,
+    break_active: bool,
+    break_latch: Option<bool>,
 }
 
 impl Default for Port {
@@ -37,6 +39,8 @@ impl Default for Port {
             output: VecDeque::new(),
             tx: None,
             underrun: true,
+            break_active: false,
+            break_latch: None,
         };
         port.reset(true);
         port
@@ -60,6 +64,8 @@ impl Port {
         self.rx.clear();
         self.tx = None;
         self.underrun = true;
+        self.break_active = false;
+        self.break_latch = None;
         // Already transmitted bytes belong to the host endpoint; guest reset
         // cannot retract them. Keep output until the owner drains it.
     }
@@ -72,7 +78,7 @@ impl Port {
         }
     }
     fn receive(&mut self, value: u8) -> bool {
-        if self.wr[3] & 1 == 0 || self.rx.len() == RX_CAPACITY {
+        if self.wr[3] & 1 == 0 || self.rx.len() == RX_CAPACITY || self.break_active {
             return false;
         }
         self.rx.push_back(value & Self::mask(self.wr[3] >> 6));
@@ -180,6 +186,31 @@ impl Serial {
     pub fn receive(&mut self, channel: Channel, value: u8) -> bool {
         self.ports[channel.index()].receive(value)
     }
+    /// Supply a decoded asynchronous BREAK condition. Termination queues one
+    /// null byte, as Z8530 section 4.2.2 specifies. FIFO-full release is retryable.
+    /// Bit timing, parity errors and external/status interrupts remain pending.
+    pub fn set_break(&mut self, channel: Channel, asserted: bool) -> Result<(), BusErrorKind> {
+        let port = &mut self.ports[channel.index()];
+        if port.wr[3] & 1 == 0 || port.break_active == asserted {
+            return Ok(());
+        }
+        if !asserted {
+            if port.wr[4] & 3 == 1 {
+                return Err(BusErrorKind::Unsupported(
+                    "SCC odd-parity BREAK termination",
+                ));
+            }
+            if port.rx.len() == RX_CAPACITY {
+                return Err(BusErrorKind::WouldBlock);
+            }
+            port.rx.push_back(0);
+        }
+        port.break_active = asserted;
+        if port.wr[15] & 0x80 != 0 {
+            port.break_latch = Some(asserted);
+        }
+        Ok(())
+    }
     pub fn take_output(&mut self, channel: Channel) -> Vec<u8> {
         self.ports[channel.index()].output.drain(..).collect()
     }
@@ -197,8 +228,14 @@ impl Serial {
         let port = &mut self.ports[channel];
         Ok(match reg {
             0 | 4 => {
+                let break_status = if port.wr[15] & 0x80 != 0 {
+                    port.break_latch.unwrap_or(port.break_active)
+                } else {
+                    port.break_active
+                };
                 0x28 | if port.underrun { 0x40 } else { 0 }
                     | if port.tx.is_none() { 4 } else { 0 }
+                    | if break_status { 0x80 } else { 0 }
                     | u8::from(!port.rx.is_empty())
             }
             1 | 5 => 6 | u8::from(port.tx.is_none()),
@@ -242,6 +279,9 @@ impl Serial {
             }
             if value & 0xc0 == 0xc0 {
                 self.ports[channel].underrun = false;
+            }
+            if value & 0x38 == 0x10 {
+                self.ports[channel].break_latch = None;
             }
             self.pointer = (value & 7) | if value & 0x38 == 8 { 8 } else { 0 };
             return Ok(());

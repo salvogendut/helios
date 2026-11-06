@@ -38,6 +38,47 @@ impl fmt::Display for DmaError {
 impl std::error::Error for DmaError {}
 
 impl Machine {
+    /// Advance at most one MAC DMA transfer per CPU boundary. Device work is
+    /// retained across arbiter denial and host stops, without moving CPU state.
+    pub fn service_ethernet(&mut self) -> Result<(), DmaError> {
+        let Some(devices) = self.bus.devices_mut() else {
+            return Ok(());
+        };
+        if devices.ethernet_dma.reset_asserted() {
+            return Ok(());
+        }
+        let Some(request) = devices.ethernet.request() else {
+            return Ok(());
+        };
+        let address = devices.ethernet_dma.address(request.address);
+        // microSPARC-II's onboard NCR89C100 is SBus master 5.
+        let result = match request.write {
+            Some(value) => self.dma_write(5, address, request.width, value).map(|()| 0),
+            None => self.dma_read(5, address, request.width),
+        };
+        let devices = self.bus.devices_mut().expect("installed Ethernet");
+        match result {
+            Ok(value) => devices.ethernet.complete(value).map_err(|kind| {
+                DmaError::Bus(BusError {
+                    address: u64::from(address),
+                    kind,
+                })
+            }),
+            Err(DmaError::NotGranted { .. }) => Ok(()),
+            Err(DmaError::Fault { .. }) => {
+                devices.ethernet_dma.memory_error();
+                devices.ethernet.memory_error();
+                Ok(())
+            }
+            Err(DmaError::Bus(error)) if !error.kind.is_host_stop() => {
+                devices.ethernet_dma.memory_error();
+                devices.ethernet.memory_error();
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Read one naturally aligned byte, halfword or word from guest RAM.
     /// No CPU execution or time advancement; values remain guest bit patterns.
     pub fn dma_read(&mut self, master: u8, address: u32, width: Width) -> Result<u32, DmaError> {

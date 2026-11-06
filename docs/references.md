@@ -95,6 +95,14 @@ test rather than assuming either emulator defines the hardware.
   standalone RESETO pin. Pinned QEMU `hw/scsi/esp.c` supplies a comparison;
   Helios follows the primary count/counter separation, ID gating, reset
   retention and FIFO-overwrite status rather than assuming QEMU's shortcuts.
+  Chapter 5 page 5-20 permits CFG1 chip-test-enable readback but requires chip
+  reset before normal operation. Helios retains that state; test-register
+  execution remains unsupported. Chapter 3 pages 3-18–3-22 and chapter 4 define
+  the Ethernet DMA/CSR, initialization block, packet descriptors and internal
+  loopback. [ethernet.md](ethernet.md) records the subset and the E_BASE_ADDR
+  bit-position disagreement with Linux/QEMU. CSR3 programmable IPG is an NCR
+  extension, not PCnet's interrupt mask. The pinned MAME AM79C90 comparison
+  confirms loopback FCS and 8–32-byte test-packet handling.
 - [Intel 82077AA datasheet](https://ardent-tool.com/datasheets/Intel_82077AA.pdf),
   Intel document 290166: sections 2.1–2.2, 5.2–5.3, 6.4, 7.4 and 8.2 define
   command/result handshakes, reset retention, configuration, polling suppression,
@@ -116,6 +124,14 @@ test rather than assuming either emulator defines the hardware.
   model instead keeps a per-channel pointer. Helios uses the manual's behavior.
   Section 5.2.16 distinguishes WR14's disabled-DPLL configuration commands from
   Enter Search Mode, which enables the DPLL. OBP uses the former during setup.
+  Sections 2.4.9, 4.2.2 and 5.3.1 define decoded receive BREAK, both status
+  transitions and the single terminating null byte. The polling endpoint
+  models these without enabling serial interrupt generation or bit timing.
+- [Sun NVRAM/hostid FAQ, revision 1.39, 1996-11-26](https://lib.ru/TXT/faqsunnvram.txt):
+  Mark Henderson's IDPROM programming reference, supplied by the user. It
+  identifies SS5 machine type `80`, MAC bytes 2–7, serial bytes c–e and the
+  XOR checksum at f; it recommends Sun's `08:00:20` prefix for compatibility.
+  The chosen default is MAC `08:00:20:c0:ff:ee`, hostid `80c0ffee`, date zero.
 - [NCR89C105 Chip Specification](https://www.ibiblio.org/pub/historic-linux/early-ports/Sparc/NCR/NCR89C105.txt),
   primary chip documentation preserved in the historic Linux/SPARC archive and
   referenced by QEMU: table 6-7 maps both SCC instances and reset/status;
@@ -125,8 +141,9 @@ test rather than assuming either emulator defines the hardware.
   self-clearing terminal-count pulses; [devices.md](devices.md) records the
   functional event interface, AuxIO2 scratch/clear behavior and missing external
   device connections and power-state handling.
-  The archived text has no revision header. Its explicit zero-limit overflow
-  interrupt rule differs from QEMU. Mask All's treatment of software requests
+  The archived text has no revision header. Its zero-limit overflow interrupt
+  rule conflicts with Sun-4M section 5.3.2 below; Helios follows Sun's explicit
+  zero-limit suppression and skip-zero overflow rule. Mask All's treatment of software requests
   is less explicit; [interrupts-timers.md](interrupts-timers.md) records the choice.
   The SBus feature subset restricts two-word bursts to the processor count in
   user mode. Figures 6-16–6-18 define its 54-bit count, overflow flag, Run and
@@ -163,10 +180,28 @@ test rather than assuming either emulator defines the hardware.
 
 ## QEMU
 
+Additional hardware timing references:
+
+- [Sun-4M System Architecture, 950-1373-01](https://temlib.org/pub/SparcStation/Hardware/Sun4M_SystemArchitecture_edited2.pdf),
+  July 19 1991 revision 50 as printed inside the document: section 5.3.2,
+  page 24, inspected visually, defines zero-limit free-running without IRQ,
+  overflow reload to 500 ns and the L flag in both counter and limit registers.
+  This resolves the NCR timer disagreement described above.
+- [SPARCengine 5 OEM Technical Manual](https://device.report/m/24e55e1efd74cebad92ef139a523192872b87937967e4567f9cdafcecf56e515.pdf),
+  table 2-1, printed page 2-3: the 85 MHz board runs SBus at 21.25 MHz.
+  NCR89C105 table 6-10, printed page 6-29 in the SBus I/O Chipset manual,
+  specifies six SBus clocks per EPROM byte. These define physical PROM read
+  service time, added to the functional CPU quantum without rounding each
+  access separately. No ordinary-cache or pipeline timing is implied.
+- [Linux v6.12 sunlance.c](https://github.com/torvalds/linux/blob/v6.12/drivers/net/ethernet/amd/sunlance.c):
+  independent driver evidence for E_BASE_ADDR high-byte placement and the
+  initialization block's MAC-byte pairs on SPARC.
+
 Reference revision: `f71afb409a87c4ecd0f9d63a5963eb645dfab780` (inspected 2026-11-06).
 
 | Source | Use |
 | --- | --- |
+| [hw/net/pcnet.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/net/pcnet.c) | LANCE-format DMA and packet/metadata byte-order comparison; PCnet extensions do not define NCR92C990 |
 | [SPARC system overview](https://www.qemu.org/docs/master/system/target-sparc.html) | Machine/peripheral inventory and firmware context |
 | [hw/sparc/sun4m.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/sparc/sun4m.c) | SS-5 profile, physical addresses, wiring and firmware interfaces |
 | [target/sparc/cpu.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/cpu.c) | MB86904 identity, window count and reset state |
@@ -198,6 +233,9 @@ Verify each file at the selected revision before relying on its behavior.
 QEMU's TCX framebuffer is a different device from the selected CGsix card.
 
 ## MAME
+
+The pinned [src/devices/machine/am79c90.cpp](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/machine/am79c90.cpp)
+also supplies an independent LANCE descriptor, loopback and CRC comparison.
 
 CPU reference revision: `cd883a1be2fe0d120bfe594b0efcab5751ae565b`
 (inspected 2026-11-06). A local checkout is also available at `../mame`; its

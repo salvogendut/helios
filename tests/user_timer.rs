@@ -78,6 +78,7 @@ fn run_gates_user_ticks_only_and_preserves_the_shared_500ns_phase() {
     assert_eq!(t.read_user_doubleword().unwrap(), [0, 0x400]);
     t.write(false, 12, 0).unwrap();
     t.write_user_doubleword([1, 0x1000]).unwrap();
+    t.write(true, 0, 19 << 9).unwrap();
     t.advance_seconds(5);
     assert_eq!(t.read_user_doubleword().unwrap(), [1, 0x1000]);
     assert!(t.system_irq()); // independent system counter continued
@@ -244,12 +245,20 @@ fn guest_prom_configures_starts_reads_and_stops_user_time_across_low_word_carry(
     for _ in 0..13 {
         assert!(matches!(m.step().unwrap(), Step::Executed { .. }));
     }
-    assert_eq!((m.cpu.read_reg(6), m.cpu.read_reg(7)), (0x1234_5679, 0));
-    assert_eq!((m.cpu.read_reg(8), m.cpu.read_reg(9)), (0x1234_5679, 0));
+    // PROM fetches add 24 clocks at 21.25 MHz to each 100 ns CPU step.
+    // Run spans ticks 14..27; the first load samples tick 24, the second 27.
+    assert_eq!(
+        (m.cpu.read_reg(6), m.cpu.read_reg(7)),
+        (0x1234_5679, 0x1200)
+    );
+    assert_eq!(
+        (m.cpu.read_reg(8), m.cpu.read_reg(9)),
+        (0x1234_5679, 0x1800)
+    );
     m.advance_seconds(10);
     assert_eq!(
         m.bus.read_doubleword(CPU_TIMER_BASE).unwrap(),
-        [0x1234_5679, 0]
+        [0x1234_5679, 0x1800]
     );
     assert!(!m.bus.devices().unwrap().timers.processor_irq());
 }

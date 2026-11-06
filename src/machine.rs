@@ -2,7 +2,7 @@
 //! Timers and interrupt delivery share a deterministic functional timebase.
 
 use crate::bus::{BusError, MapError};
-use crate::cpu::{Cpu, CpuFault, Step};
+use crate::cpu::{Cpu, CpuFault, FaultKind, Step};
 use crate::devices::nvram::Nvram;
 use crate::dram::Ss5Dram;
 use crate::mmu::PROM_BASE;
@@ -15,7 +15,8 @@ pub const DEFAULT_RAM_BYTES: usize = 128 * 1024 * 1024;
 /// Nominal SS5/85 hardware clock, independent of the interpreter's time quantum.
 pub const CPU_CLOCK_HZ: u64 = 85_000_000;
 pub const MAX_PROM_BYTES: usize = 1024 * 1024;
-/// Functional scheduling convention, not microSPARC cycle timing or a speed claim.
+/// Base functional quantum; physical PROM reads add documented EBus wait time.
+/// This is not a cycle-accurate microSPARC pipeline model.
 pub const STEP_NS: u64 = 100;
 
 #[derive(Debug)]
@@ -146,16 +147,24 @@ impl Machine {
         if self.software_reset_requested() {
             return Ok(self.software_reset(self.cpu.pc(), self.cpu.npc(), None));
         }
+        self.service_ethernet().map_err(|error| CpuFault {
+            pc: self.cpu.pc(),
+            npc: self.cpu.npc(),
+            instruction: None,
+            kind: FaultKind::DeviceDma(error),
+        })?;
         let pending = self.bus.interrupt_levels();
         let was_error = self.cpu.error_state().is_some();
+        self.bus.begin_cpu_step();
         let result = self.cpu.step_with_interrupts(&mut self.bus, pending);
+        let wait_ns = self.bus.finish_cpu_step(result.is_ok());
         if !was_error && self.cpu.error_state().is_some() {
             if let Some(devices) = self.bus.devices_mut() {
                 devices.reset.latch_watchdog();
             }
         }
         let step = result?;
-        self.bus.advance_ns(STEP_NS);
+        self.bus.advance_ns(STEP_NS + wait_ns);
         if self.software_reset_requested() {
             if let Step::Executed {
                 pc,

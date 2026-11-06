@@ -56,8 +56,7 @@ see [reset.md](docs/reset.md) for retained state, trace outcomes and watchdog li
 The machine also installs the microSPARC-II [I/O control subset](docs/io-control.md).
 Its SBus/IOMMU configuration resets with the rest of I/O. `Machine::dma_read`
 and `dma_write` provide aligned single-transfer access to RAM using the shared
-CPU/I/O TLB, without advancing CPU or device time. SCSI/Ethernet DMA engines
-are not yet connected. Invalid mappings return an SBus error to the requesting
+CPU/I/O TLB, without advancing CPU or device time. The Ethernet engine is connected as master 5; SCSI DMA remains pending. Invalid mappings return an SBus error to the requesting
 device; they do not populate CPU fault registers or assert a CPU interrupt.
 The bus queues I/O flush commands for the MMU to consume before its next access,
 including diagnostics. This preserves single ownership without a second IOTLB.

@@ -130,7 +130,7 @@ pub struct Nvram {
 
 impl Default for Nvram {
     fn default() -> Self {
-        Self::new([0x02, 0, 0, 0, 0, 1], [0, 0, 1])
+        Self::new([0x08, 0x00, 0x20, 0xc0, 0xff, 0xee], [0xc0, 0xff, 0xee])
     }
 }
 

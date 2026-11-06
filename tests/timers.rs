@@ -25,27 +25,31 @@ fn counters_tick_every_500ns_and_limit_read_acknowledges_only_its_timer() {
     t.advance_ns(500);
     assert_eq!(t.read(true, 4).unwrap(), 0x8000_0200);
     assert_eq!(t.read(true, 4).unwrap(), 0x8000_0200); // non-destructive
-    assert_eq!(t.read(true, 0).unwrap(), 2048);
+    assert_eq!(t.read(true, 0).unwrap(), 0x8000_0800);
     assert!(!t.system_irq());
     assert!(t.processor_irq());
-    assert_eq!(t.read(false, 0).unwrap(), 1536);
+    assert_eq!(t.read(false, 0).unwrap(), 0x8000_0600);
     assert!(!t.processor_irq());
     t.advance_ns(1500);
     assert!(t.system_irq()); // repeats; acknowledgement did not restart it
 }
 
 #[test]
-fn zero_limit_overflow_and_limit_one_wait_for_incremented_comparison() {
+fn zero_limit_free_runs_without_interrupt_and_overflow_skips_zero() {
     let mut t = Timers::default();
     t.advance_ns(((1 << 22) - 1) * 500);
     assert_eq!(t.read(true, 4).unwrap(), 0x7fff_fe00);
     assert!(!t.system_irq());
     t.advance_ns(500);
-    assert_eq!(t.read(true, 4).unwrap(), 0x8000_0200);
+    assert_eq!(t.read(true, 4).unwrap(), 0x200);
+    assert!(!t.system_irq());
     assert_eq!(t.read(true, 0).unwrap(), 0);
+    t.advance_seconds(100);
+    assert!(!t.system_irq());
+    assert!(!t.processor_irq());
     t.write(true, 0, 512).unwrap();
-    t.advance_ns(((1 << 22) - 1) * 500);
-    assert_eq!(t.read(true, 4).unwrap(), 0);
+    t.advance_ns(((1 << 22) - 2) * 500);
+    assert_eq!(t.read(true, 4).unwrap(), 0x7fff_fe00);
     assert!(!t.system_irq());
     t.advance_ns(500);
     assert_eq!(t.read(true, 4).unwrap(), 0x8000_0200);
@@ -57,7 +61,7 @@ fn nonresetting_limit_behind_count_waits_for_wrap_and_retains_pending() {
     t.advance_ns(10 * 500);
     t.write(true, 8, 5 << 9).unwrap();
     assert_eq!(t.read(true, 4).unwrap(), 10 << 9);
-    t.advance_ns(((1 << 22) - 10 + 4) * 500);
+    t.advance_ns(((1 << 22) - 11 + 4) * 500);
     assert_eq!(t.read(true, 4).unwrap(), 4 << 9);
     assert!(!t.system_irq());
     t.advance_ns(500);
@@ -79,8 +83,8 @@ fn batched_time_matches_a_scalar_counter_oracle_at_match_and_wrap_boundaries() {
             let mut count = start;
             let mut pending = false;
             for _ in 0..537 {
-                count = (count + 1) & ((1 << 22) - 1);
-                if count == limit {
+                count = if count == (1 << 22) - 1 { 1 } else { count + 1 };
+                if limit != 0 && count == limit {
                     count = 1;
                     pending = true;
                 }
@@ -181,7 +185,7 @@ fn mmio_rejects_unsupported_widths_before_acknowledging_a_timer() {
     assert_eq!(m.bus.interrupt_levels(), 1 << 10);
     assert_eq!(m.bus.read32(SYSTEM_INTERRUPT_BASE).unwrap(), 1 << 19);
     assert_eq!(m.bus.read32(CPU_INTERRUPT_BASE).unwrap(), 1 << 10);
-    assert_eq!(m.bus.read32(SYSTEM_TIMER_BASE).unwrap(), 2 << 9);
+    assert_eq!(m.bus.read32(SYSTEM_TIMER_BASE).unwrap(), 0x8000_0400);
     assert_eq!(m.bus.read32(SYSTEM_INTERRUPT_BASE).unwrap(), 0);
     assert_eq!(m.bus.interrupt_levels(), 0);
     for base in [
@@ -210,10 +214,12 @@ fn machine_time_advances_on_success_and_retains_rtc_fraction_across_reset() {
     for _ in 0..4 {
         m.step().unwrap();
     }
-    assert_eq!(m.bus.read32(SYSTEM_TIMER_BASE + 4).unwrap(), 0);
+    // Four PROM fetches: 4*24 SBus clocks + 4*100 ns = 4917 ns.
+    assert_eq!(m.bus.read32(SYSTEM_TIMER_BASE + 4).unwrap(), 9 << 9);
     m.step().unwrap();
-    assert_eq!(m.bus.read32(SYSTEM_TIMER_BASE + 4).unwrap(), 512);
-    m.advance_ns(499_999_500);
+    // Five fetches consume floor(120e9 / 21.25e6) + 500 = 6147 ns.
+    assert_eq!(m.bus.read32(SYSTEM_TIMER_BASE + 4).unwrap(), 12 << 9);
+    m.advance_ns(500_000_000 - 6147);
     m.reset();
     assert_eq!(m.bus.read32(SYSTEM_TIMER_BASE + 4).unwrap(), 0);
     assert_eq!(m.bus.interrupt_levels(), 0);
@@ -237,13 +243,47 @@ fn reset_prom_program_handles_both_timers_and_resumes_work() {
             assert_eq!((m.cpu.read_reg(17), m.cpu.read_reg(18)), (pc, npc));
         }
     }
-    assert_eq!(levels, [10, 14]);
+    // Both timers expire during slow PROM setup. Highest priority enters first.
+    assert_eq!(levels, [14, 10]);
     assert_eq!((m.cpu.read_reg(5), m.cpu.read_reg(7)), (1, 1));
     assert!(m.cpu.read_reg(3) > 2);
     assert_eq!(m.cpu.current_window(), 0);
     assert_ne!(m.cpu.psr() & PSR_ET, 0);
     assert_eq!(m.bus.read32(SYSTEM_INTERRUPT_BASE).unwrap(), 0);
     assert_eq!(m.bus.read32(CPU_INTERRUPT_BASE).unwrap(), 0);
+}
+
+#[test]
+fn prom_wait_fraction_is_carried_and_debug_reads_do_not_consume_time() {
+    let mut m = Machine::sun4m(8192, &0x3080_0000u32.to_be_bytes()).unwrap();
+    for _ in 0..85 {
+        m.bus.read32(0x7000_0000).unwrap();
+    }
+    assert_eq!(m.bus.read32(SYSTEM_TIMER_BASE + 4).unwrap(), 0);
+    for _ in 0..85 {
+        m.step().unwrap();
+    }
+    // 85 word fetches * 24 clocks / 21.25 MHz = exactly 96 us,
+    // plus 8.5 us CPU time. Rounding each fetch separately loses a tick.
+    assert_eq!(m.bus.read32(SYSTEM_TIMER_BASE + 4).unwrap(), 209 << 9);
+}
+
+#[test]
+fn ram_execution_and_physical_prom_data_reads_have_distinct_wait_times() {
+    for (instruction, ticks) in [
+        (0x0100_0000, 0),
+        (0xc408_4000, 0),
+        (0xc410_4000, 1),
+        (0xc400_4000, 2),
+    ] {
+        let mut m = Machine::sun4m(8192, &[0x12, 0x34, 0x56, 0x78]).unwrap();
+        m.cpu = helios::cpu::Cpu::new(0); // MMU disabled, RAM instruction fetch
+        m.cpu.write_reg(1, 0x7000_0000);
+        m.bus.write32(0, instruction).unwrap();
+        m.step().unwrap();
+        // NOP 100 ns; byte 382 ns; halfword 664 ns; word 1229 ns.
+        assert_eq!(m.bus.read32(SYSTEM_TIMER_BASE + 4).unwrap(), ticks << 9);
+    }
 }
 
 #[test]
@@ -270,7 +310,10 @@ fn translated_timer_acknowledgement_happens_only_after_permission_checks() {
         .unwrap();
     assert_eq!(mmu.load(&mut m.bus, 0x2000, 10, Width::Word).unwrap(), 0);
     assert!(m.bus.devices().unwrap().timers.system_irq());
-    assert_eq!(mmu.load(&mut m.bus, 0x2000, 11, Width::Word).unwrap(), 1024);
+    assert_eq!(
+        mmu.load(&mut m.bus, 0x2000, 11, Width::Word).unwrap(),
+        0x8000_0400
+    );
     assert!(!m.bus.devices().unwrap().timers.system_irq());
 }
 
