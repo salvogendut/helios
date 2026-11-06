@@ -43,6 +43,8 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
   start/stop control and consistent doubleword reads/writes.
 - SS-5 system reset/status, guest software reset and watchdog status latching;
   a second polled SCC for the keyboard/mouse ports (input protocols pending).
+- microSPARC-II SBus arbitration, slot configuration and disabled-IOMMU
+  configuration registers; DVMA translation is pending.
 
 Unsupported emulator behavior remains a host stop, separate from guest traps.
 Implementation-specific ASRs, broader illegal-opcode classification, MMU/cache
@@ -135,6 +137,7 @@ Guest reset behavior and current watchdog limits are in [System reset](docs/rese
 - [System reset](docs/reset.md): reset-status register, guest reset and watchdog limits.
 - [Devices](docs/devices.md): console serial, IDPROM, NVRAM persistence and RTC.
 - [Interrupts and timers](docs/interrupts-timers.md): register maps, masking and guest time.
+- [I/O controls](docs/io-control.md): SBus arbitration and the IOMMU configuration subset.
 - [Firmware](docs/firmware.md): original Sun OBP development baseline, pinned downloads and probe results.
 - [Roadmap](docs/roadmap.md): milestones from this harness to a usable system.
 - [References](docs/references.md): specific MAME/QEMU sources and provenance.
@@ -151,9 +154,9 @@ cargo run --locked --offline -- boot local/firmware/sun-ss5.bin --steps 10000 --
 ```
 
 This short probe now reaches its 10000-step budget in OBP's timed keyboard
-polling loop. With a 30000000-step budget, OBP encounters an unmapped SBus
-control register at `0x10002000`, prints a diagnostic and requests software
-reset; the restarted path stops on unsupported ASI `0x06` TLB diagnostic access.
+polling loop. With a 30000000-step budget, OBP passes SBus arbitration setup
+and stops at data-cache tag initialization: ASI `0x0e`, PC `0x7000ac40`.
+That run completes 20004464 instructions without a trap or reset; no prompt yet.
 The fetched image is hash-verified and stays ignored.
 OpenBIOS remains a separate compatibility test until it is proved working.
 

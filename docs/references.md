@@ -30,6 +30,10 @@ test rather than assuming either emulator defines the hardware.
   [reset.md](reset.md) describes the functional subset and recovery limit. Sections
   3.5–3.6 define integer multiply/divide, including negative division-overflow
   method B on printed page 41. Sections 6.9 and 7.8 describe FLUSH/cache behavior.
+  Table 30, sections 5.7.1–5.7.2, 5.7.7, 5.7.10 and 9.4 define the implemented
+  I/O configuration subset. Figures 5.21/5.23 were checked visually to resolve
+  omitted bit labels and the SBAE reserved-bit typo; [io-control.md](io-control.md)
+  records the chosen masks and differences from QEMU.
 - [ST M48T08/M48T08Y/M48T18 datasheet](https://www.st.com/resource/en/datasheet/m48t18.pdf),
   DocID2411 Rev 11, June 2011: table 5 and sections 3.1–3.3 define the 8 KiB
   register layout, BCD calendar, R/W transfer latches and oscillator stop.
@@ -94,7 +98,7 @@ Reference revision: `f71afb409a87c4ecd0f9d63a5963eb645dfab780` (inspected 2026-1
 | [hw/intc/slavio_intctl.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/intc/slavio_intctl.c) | Source bits/levels, soft requests, mask aliases and generic multiprocessor comparison |
 | [hw/timer/slavio_timer.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/timer/slavio_timer.c) | Counter field layout, 500 ns ticks, acknowledgement and system/local IRQ wiring comparison |
 | [hw/misc/slavio_misc.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/misc/slavio_misc.c) | Word-only system control, software-reset request and reset-status comparison |
-| [hw/sparc/sun4m_iommu.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/sparc/sun4m_iommu.c) | Initial identification of OBP's next missing register, MID/SBus arbitration at `0x10002000`; implementation review pending |
+| [hw/sparc/sun4m_iommu.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/sparc/sun4m_iommu.c) | I/O configuration/register comparison; microSPARC-II differs in identity, six arbitration enables and shared slot 4; DVMA implementation review pending |
 
 For memory behavior, prefer the microSPARC-II manual where the generic QEMU
 implementation differs: 31-bit physical bypass, BM overriding EN for ASI 8/9,

@@ -34,8 +34,8 @@ mode. Compared with pinned QEMU slavio_timer.c; MAME's Sun timer model is sun4c.
   unsupported ASI06 word store. This is TLB diagnostic access (microSPARC-II
   section 5.14.1 and ASI table), not a generic cache flush to be ignored.
   Totals: 20035686 instructions including reset store, one trap, no IRQs, one
-  software reset; error latch clear. Next: implement SBus/IOMMU control behavior
-  for the FIRST fault, then follow the resulting firmware path.
+  software reset; error latch clear. This checkpoint is superseded by the
+  I/O configuration work; see io-control.md for the current cache-tag stop.
 - local/probes/user-timer-ss5 holds CLI output and an ignored Rust library probe
   source/log with first 500 steps, per-million timer snapshots, exceptional
   outcomes and 128-step context. It reproduces the CLI's console/stop without
@@ -43,7 +43,8 @@ mode. Compared with pinned QEMU slavio_timer.c; MAME's Sun timer model is sun4c.
 - New reference downloaded: /tmp/helios-qemu-sun4m-iommu.c at the existing pinned
   QEMU revision. Full register/DMA review remains pending. microSPARC-II 5.7.10
   calls SBAE six bits but lists overlapping reserved bits; QEMU masks five.
-  Resolve and document that discrepancy during the next hardware review.
+  Figure 5.23 was subsequently checked visually: it explicitly has bits 21:16.
+  The I/O configuration implementation follows the six-bit field (io-control.md).
 - Local nightly Cargo splits .rlib metadata into a sibling .rmeta; a standalone
   rustc probe needs both --extern helios=...rlib and --extern helios=...rmeta.
   Do not confuse a metadata-stub error with a Helios compilation failure.

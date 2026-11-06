@@ -3,12 +3,14 @@
 use crate::bus::{Bus, BusError, BusErrorKind, MapError, MemoryBus};
 use crate::devices::{
     interrupt::{InterruptController, Source},
+    io_control::{IoControl, IO_CONTROL_SIZE},
     nvram::{Nvram, NVRAM_SIZE},
     reset::ResetControl,
     serial::Serial,
     timer::Timers,
 };
 
+pub const IO_CONTROL_BASE: u64 = 0x1000_0000;
 pub const KEYBOARD_SERIAL_BASE: u64 = 0x7100_0000;
 pub const SERIAL_BASE: u64 = 0x7110_0000;
 pub const NVRAM_BASE: u64 = 0x7120_0000;
@@ -17,7 +19,8 @@ pub const SYSTEM_TIMER_BASE: u64 = 0x71d1_0000;
 pub const CPU_INTERRUPT_BASE: u64 = 0x71e0_0000;
 pub const SYSTEM_INTERRUPT_BASE: u64 = 0x71e1_0000;
 pub const RESET_BASE: u64 = 0x71f0_0000;
-const DEVICE_RANGES: [(u64, u64); 8] = [
+const DEVICE_RANGES: [(u64, u64); 9] = [
+    (IO_CONTROL_BASE, IO_CONTROL_BASE + IO_CONTROL_SIZE),
     (KEYBOARD_SERIAL_BASE, KEYBOARD_SERIAL_BASE + 8),
     (SERIAL_BASE, SERIAL_BASE + 8),
     (NVRAM_BASE, NVRAM_BASE + NVRAM_SIZE as u64),
@@ -30,6 +33,7 @@ const DEVICE_RANGES: [(u64, u64); 8] = [
 
 #[derive(Clone, Copy)]
 enum WordDevice {
+    IoControl,
     Timer(bool),
     Interrupt(bool),
     Reset,
@@ -37,6 +41,7 @@ enum WordDevice {
 
 #[derive(Debug)]
 pub struct Sun4mDevices {
+    pub io_control: IoControl,
     pub nvram: Nvram,
     pub serial: Serial,
     /// SCC channels A (keyboard) and B (mouse). Input protocols are pending.
@@ -80,6 +85,7 @@ impl SystemBus {
             return Err(MapError::Overlap);
         }
         self.devices = Some(Sun4mDevices {
+            io_control: IoControl::default(),
             nvram,
             serial: Serial::default(),
             keyboard_serial: Serial::default(),
@@ -110,6 +116,7 @@ impl SystemBus {
     }
     fn reset_io(&mut self) {
         if let Some(devices) = &mut self.devices {
+            devices.io_control.reset();
             devices.serial.reset();
             devices.keyboard_serial.reset();
             devices.interrupts.reset();
@@ -139,6 +146,7 @@ impl SystemBus {
     fn word_device(&self, address: u64) -> Option<(WordDevice, u64)> {
         self.devices.as_ref()?;
         for (base, size, device) in [
+            (IO_CONTROL_BASE, IO_CONTROL_SIZE, WordDevice::IoControl),
             (CPU_TIMER_BASE, 0x10, WordDevice::Timer(false)),
             (SYSTEM_TIMER_BASE, 0x14, WordDevice::Timer(true)),
             (CPU_INTERRUPT_BASE, 0x10, WordDevice::Interrupt(false)),
@@ -281,6 +289,7 @@ impl Bus for SystemBus {
             let devices = self.devices.as_mut().expect("decoded installed device");
             devices.sync_interrupts();
             let result = match device {
+                WordDevice::IoControl => devices.io_control.read(offset),
                 WordDevice::Timer(system) => devices.timers.read(system, offset),
                 WordDevice::Interrupt(system) => devices.interrupts.read(system, offset),
                 WordDevice::Reset => Ok(devices.reset.read()),
@@ -307,6 +316,7 @@ impl Bus for SystemBus {
             }
             let devices = self.devices.as_mut().expect("decoded installed device");
             let result = match device {
+                WordDevice::IoControl => devices.io_control.write(offset, value),
                 WordDevice::Timer(system) => devices.timers.write(system, offset, value),
                 WordDevice::Interrupt(system) => devices.interrupts.write(system, offset, value),
                 WordDevice::Reset => {

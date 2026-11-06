@@ -27,7 +27,7 @@ or assume host scheduling is guest timing.
 | `src/cpu.rs` | Integer interpreter, windows, privileged state, traps, interrupts and error state |
 | `src/bus.rs` | Physical bus contract, RAM/ROM mappings and external byte import |
 | `src/system_bus.rs` | Physical decoding, device widths, clock advancement and IRQ wiring |
-| `src/devices/` | NVRAM/RTC, two polled SCCs, interrupt control, timers and reset/status |
+| `src/devices/` | NVRAM/RTC, two polled SCCs, interrupt control, timers, reset/status and I/O configuration |
 | `src/mmu.rs` | ASI dispatch, SRMMU translation, TLB, permissions and fault registers |
 | `src/machine.rs` | Bare-metal/reset construction, RAM/PROM limits and demo images |
 | `src/main.rs` | CLI parsing, image files, trace printing and CPU step budget |
@@ -45,6 +45,9 @@ accepts an imported or customized NVRAM device. See [memory.md](docs/memory.md)
 and [devices.md](docs/devices.md) for reset state and platform limits.
 Guest software reset is serviced by the machine owner at a step boundary;
 see [reset.md](docs/reset.md) for retained state, trace outcomes and watchdog limits.
+The machine also installs the microSPARC-II [I/O control subset](docs/io-control.md).
+Its SBus/disabled-IOMMU configuration resets with the rest of I/O. DVMA translation
+is not implemented; enabling it stops before changing the register.
 
 ## Data path
 
@@ -68,7 +71,7 @@ are distinct errors. Failed bus accesses must not mutate memory or devices.
 Masked stores do not call the device read path. RAM's default narrow accessors
 are unsuitable for MMIO registers. `SystemBus` dispatches device accesses at
 their required width: bytes for serial/NVRAM, aligned words for timers/interrupt
-control/reset status. The processor user count also accepts aligned doublewords
+control/reset status and I/O configuration. The processor user count also accepts aligned doublewords
 when user mode is selected. Other widths, partial masked writes and atomics stop
 before any effects.
 It also prevents image loads and RAM/ROM mappings from
@@ -257,6 +260,8 @@ bounded large advances and a scalar tick oracle. The timer PROM handles both
 device sources and resumes its interrupted loop.
 Processor user-time tests check the 54-bit count, sticky overflow, run/stop,
 indivisible doubleword access, MMU protection and mode/reset transitions.
+I/O configuration tests check microSPARC-II field masks, all six arbitration
+enables, shared slot restrictions, reset and precise unsupported-operation stops.
 These are local regression checks, not a SPARC conformance suite or a completed
 QEMU/MAME differential comparison.
 

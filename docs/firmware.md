@@ -89,9 +89,23 @@ console and stop, and a bounded library probe with its source. That probe record
 the first 500 steps, timer samples every million steps, exceptional outcomes and
 128-step fault context, avoiding a multi-million-line trace. Its console matches
 the CLI run. The firmware, RAM, default NVRAM and step quantum are unchanged.
-Next work is the SBus/IOMMU control block, then TLB diagnostic behavior as
-indicated by the original firmware. Neither probe establishes full timer
+This identified the SBus/IOMMU control block as the next work. Neither probe establishes full timer
 mode-transition hardware behavior or firmware compatibility.
+
+After adding SBus arbitration and the I/O configuration subset, the same
+30000000-step probe completes **20004464 instructions**, with zero traps,
+interrupts or resets and no console output. The previous write to `0x10002000`
+now succeeds. At step 20004465, execution stops at PC=`0x7000ac40`,
+nPC=`0x7000ac44`, instruction=`0xc0a401c0`: an unsupported ASI `0x0e` word
+store during data-cache tag initialization. This is an emulator stop, not CPU
+error state; the CLI exits with status 1.
+
+The next work is the microSPARC-II cache diagnostic spaces, starting with the
+data-cache tag access on this normal initialization path. The ASI `0x06` TLB
+diagnostic limitation observed after the earlier guest reset remains a separate
+gap. Records under `local/probes/io-control-ss5/` retain configuration, CLI
+console/stop and the bounded library probe source/log. Firmware and machine
+settings are unchanged. This is still not a successful firmware boot.
 
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)

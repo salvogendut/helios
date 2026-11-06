@@ -27,7 +27,7 @@ were compared against QEMU's
 | Component | Reference physical base | Helios status |
 | --- | --- | --- |
 | RAM | `0x00000000` | Implemented in harness |
-| IOMMU | `0x10000000` | Planned |
+| SBus / IOMMU controls | `0x10000000` | Configuration subset; arbitration at `+0x2000`; DVMA translation pending |
 | CGsix / TurboGX framebuffer | SBus slot aperture, to be selected | Planned; no mapping installed |
 | Boot PROM / SLAVIO area | `0x70000000` | 1 MiB raw PROM aperture; remaining SLAVIO devices pending |
 | Keyboard/mouse serial | `0x71000000` | Second polled SCC; keyboard/mouse protocols pending |
@@ -45,7 +45,8 @@ not used as the CGsix register map. Use the card's own SBus-relative registers,
 PROM and interrupt wiring when implementing it.
 
 RAM, PROM, both SCCs, NVRAM/RTC, interrupt control, counter timers and reset/status are
-installed. See [devices.md](devices.md), [reset.md](reset.md) and [interrupts-timers.md](interrupts-timers.md)
+installed, alongside the [I/O configuration subset](io-control.md).
+See [devices.md](devices.md), [reset.md](reset.md) and [interrupts-timers.md](interrupts-timers.md)
 for exact apertures and limits. Remaining devices contain
 subregions and mirrors that need independent verification before implementation.
 In particular, reset instruction fetch and PROM access depend on CPU/MMU boot
