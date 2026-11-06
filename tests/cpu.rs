@@ -421,7 +421,8 @@ fn unsupported_instruction_bad_fetch_jump_and_store_stop_precisely() {
 #[test]
 fn sequential_pc_and_effective_addresses_wrap_at_32_bits() {
     let mut bus = MemoryBus::default();
-    bus.map_rom(0xffff_fffc, &NOP.to_be_bytes()).unwrap();
+    // Virtual PC wraps at 32 bits; microSPARC-II drives 31 physical bits.
+    bus.map_rom(0x7fff_fffc, &NOP.to_be_bytes()).unwrap();
     let mut cpu = Cpu::new(0xffff_fffc);
     cpu.step(&mut bus).unwrap();
     assert_eq!((cpu.pc(), cpu.npc()), (0, 4));

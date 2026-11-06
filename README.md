@@ -1,7 +1,10 @@
 # Helios
 
-Helios is a Rust emulator for Sun SPARC workstations. The first full-system
-target is the **SPARCstation 5 (sun4m, microSPARC-II / SPARC V8)**. The longer-term
+**HELIOS — Hardware Emulator for Legacy Implementations Of SPARC.**
+
+Named after the Greek sun god, Helios is a Rust emulator for Sun SPARC
+workstations. The first full-system target is the **SPARCstation 5 (sun4m,
+microSPARC-II / SPARC V8)**. The longer-term
 goal is to run its firmware and operating systems, including SunOS/Solaris and
 compatible BSD/Linux releases.
 
@@ -26,11 +29,14 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
   handler; faults with traps disabled latch CPU error state.
 - Word-backed RAM and ROM, big-endian byte lanes, checked mappings and accesses,
   raw image loading, instruction tracing, and focused CPU/bus tests.
+- Alternate-space byte, halfword and word loads/stores; microSPARC-II SRMMU
+  translation, access permissions, contexts, fault registers and TLB flush/probe.
+- CPU/MMU reset, boot-mode instruction mapping and a raw PROM runner.
 
 Unsupported emulator behavior remains a host stop, separate from guest traps.
-Hardware reset, SRMMU/ASIs, remaining integer instructions (including
-multiply/divide and atomics), FPU, external interrupts, timers, serial, NVRAM,
-SCSI, networking and graphics remain to be implemented. There is no firmware
+Remaining integer instructions (including doubleword accesses, multiply/divide
+and atomics), MMU/cache diagnostics, FPU, external interrupts, timers, serial,
+NVRAM, SCSI, networking and graphics remain to be implemented. There is no firmware
 or OS compatibility claim.
 
 ## Build and run
@@ -62,7 +68,8 @@ cargo run --release -- run local/program.bin --load-address 0x1000 --steps 1000 
 
 Entry defaults to the load address. `--entry` selects another address;
 `--ram-mib` changes the default 64 MiB allocation (maximum 256 MiB).
-The bare-metal harness maps only RAM at physical address zero, without an MMU.
+The bare-metal harness maps only RAM at physical address zero, with translation
+and boot mode disabled. microSPARC-II physical addresses are 31 bits wide.
 `run` accepts raw bytes, not ELF executables or workstation firmware images.
 Reaching the budget is a successful host stop, not a guest halt instruction.
 Each completed instruction or trap entry counts as one step. With `PSR.ET=1`,
@@ -71,10 +78,23 @@ error state and exit with status 1. Unsupported instructions also exit with
 status 1, without a guest trap. The harness starts in supervisor mode with traps
 disabled; guest code must install a trap table and enable traps to handle them.
 
+Inspect a raw PROM from CPU/MMU reset with a bounded run:
+
+```sh
+cargo run --release -- boot local/prom.bin --steps 1000 --trace
+```
+
+`boot` installs RAM and a read-only 1 MiB PROM aperture at `0x70000000`, starts
+PC/nPC at 0/4, and selects PROM for instruction-space accesses through boot
+mode. Ordinary data accesses still reach RAM. This is a memory-system harness;
+SS-5 peripherals and a working firmware prompt are still pending. See
+[Memory and reset](docs/memory.md) for implemented ASIs and known limits.
+
 ## Development
 
 - [HACKING.md](HACKING.md): architecture, invariants and validation commands.
 - [SPARCstation 5](docs/sparcstation5.md): target and reference memory map.
+- [Memory and reset](docs/memory.md): SRMMU, ASIs, fault behavior and PROM mapping.
 - [Roadmap](docs/roadmap.md): milestones from this harness to a usable system.
 - [References](docs/references.md): specific MAME/QEMU sources and provenance.
 

@@ -26,7 +26,8 @@ or assume host scheduling is guest timing.
 | --- | --- |
 | `src/cpu.rs` | Integer interpreter, register windows, privileged state, traps and error state |
 | `src/bus.rs` | Physical bus contract, RAM/ROM mappings and external byte import |
-| `src/machine.rs` | Bare-metal construction, target RAM limits and demo image |
+| `src/mmu.rs` | ASI dispatch, SRMMU translation, TLB, permissions and fault registers |
+| `src/machine.rs` | Bare-metal/reset construction, RAM/PROM limits and demo images |
 | `src/main.rs` | CLI parsing, image files, trace printing and CPU step budget |
 | `tests/` | Architectural and boundary behavior through the public library |
 
@@ -34,7 +35,9 @@ or assume host scheduling is guest timing.
 It creates a CPU at a requested entry address and zeroed RAM at address zero.
 It does not perform SS-5 power-on, install a PROM alias or initialize devices.
 The CPU starts with S=PS=1, ET=0, CWP=0, WIM=0, TBR=0 and Y=0. These are
-harness conventions, not a complete microSPARC-II reset model.
+harness conventions. `Machine::sun4m` installs a raw PROM and selects CPU/MMU
+reset; `Machine::reset` resets those components while retaining RAM and ROM.
+See [memory.md](docs/memory.md) for the reset state and platform limits.
 
 ## Data path
 
@@ -47,8 +50,9 @@ explicit byte boundaries. Do not scatter byte swaps through instruction code.
 
 Virtual/effective CPU addresses are 32-bit wrapping values. The physical bus
 uses `u64` so later MMU implementations can expose wider physical addresses
-without rewriting device interfaces. The current harness zero-extends effective
-addresses directly onto the bus; it does not implement virtual translation.
+without rewriting device interfaces. The microSPARC-II MMU currently drives
+31 physical address bits. CPU accesses pass through ASI dispatch; the physical
+bus remains responsible only for physical mappings and device access.
 
 Mappings are nonempty, word-aligned, nonoverlapping half-open ranges. RAM starts
 at zero; ROM writes fail. Image loading validates the entire destination within
@@ -93,8 +97,10 @@ permits a zero-to-three-instruction write delay; guest fixtures use the portable
 three-instruction spacing. STBAR completes immediately because the current
 single-owner memory implementation has no queued stores.
 
-An instruction that faults does not commit its normal effects. With ET=1,
-trap entry saves S in PS, sets S, clears ET, decrements CWP regardless of WIM,
+An instruction that faults does not commit its normal effects. MMU fault
+registers and page-table R/M updates are separate architectural side effects;
+a completed translation can update R/M before a physical target access fails.
+With ET=1, trap entry saves S in PS, sets S, clears ET, decrements CWP regardless of WIM,
 saves faulting PC/nPC in the new window's `%l1`/`%l2`, sets TBR.TT and transfers
 to TBR with nPC=TBR+4. The saved nPC retains a pending branch target when a
 delay-slot instruction faults. ICC, PIL and EF are preserved. The architecture
@@ -105,6 +111,7 @@ The implemented trap types are:
 
 | Cause | TT |
 | --- | --- |
+| MMU instruction / data access exception | `0x01` / `0x09` |
 | UNIMP or invalid WRPSR CWP; supervisor RETT with ET=1 | `0x02` |
 | Privileged instruction in user mode | `0x03` |
 | Window overflow / underflow | `0x05` / `0x06` |
@@ -112,17 +119,20 @@ The implemented trap types are:
 | Physical instruction / data bus error | `0x21` / `0x29` |
 | Taken Ticc | `0x80` OR low seven bits of the operand sum |
 
-Physical access errors include unmapped memory and rejected ROM stores. Future
-MMU access exceptions need distinct fault types and vectors `0x01`/`0x09`; do
-not conflate them with the current physical bus errors. Deferred store errors,
-external interrupts, FPU traps and general illegal-opcode classification are
+Physical access errors include unmapped memory and rejected ROM stores. MMU
+access exceptions use distinct fault types and vectors `0x01`/`0x09`. A bus
+failure while accessing a page table becomes an MMU translation fault; a bus
+failure at the translated target remains a physical access error. Deferred store
+errors, external interrupts, FPU traps and general illegal-opcode classification are
 not implemented. Missing emulator instructions, including unimplemented ASRs,
-still produce an `UnsupportedInstruction` host stop with no guest state change.
+still produce an `UnsupportedInstruction` host stop. Unimplemented control
+spaces produce `UnsupportedMemory`; neither is converted into a guest trap.
 
 With ET=0, a precise exception latches error state without ordinary trap entry:
 no window rotation or saved locals, and no change to TBR.TT except for a failing
 RETT. Further steps return the same fault without fetching. Reconstructing the
-bare-metal CPU clears that latch; full workstation reset is still pending.
+bare-metal CPU or performing CPU/MMU reset clears that latch. Device reset
+will be added as devices are implemented.
 
 RETT checks privilege, ET, the destination WIM bit, then target alignment before
 mutating state. On success it increments CWP, restores S from PS, sets ET and
@@ -152,7 +162,11 @@ annul behavior, CALL/JMPL, loads/stores, address wrapping and precise stops.
 Trap tests cover state-register masks, privilege checks, WIM bit seven, TBR.TT
 preservation, Ticc conditions, RETT priority, fault recovery in a branch delay
 slot and nested faults entering error mode. The hand-encoded loop and trap
-programs are end-to-end tests without an assembler dependency.
+programs are end-to-end tests without an assembler dependency. Memory tests
+cover all ACC/access-type combinations, three page sizes, contexts/global
+entries, stale TLB mappings, flush/probe, R/M, fault priority, no-fault mode and
+PROM reset. A guest handler installs a missing PTE and retries a faulting load
+in a branch delay slot; another guest switches from PROM to translated RAM.
 These are local regression checks, not a SPARC conformance suite or a completed
 QEMU/MAME differential comparison.
 

@@ -1,7 +1,8 @@
 //! SPARC V8 integer interpreter with privileged state and precise synchronous
-//! traps. ASIs, the MMU and external interrupts are not implemented yet.
+//! traps and microSPARC-II memory access. External interrupts are still pending.
 
 use crate::bus::{Bus, BusError, BusErrorKind};
+use crate::mmu::{MemoryError, MmuFault, Srmmu, Width};
 use std::fmt;
 
 pub const WINDOW_COUNT: usize = 8;
@@ -53,22 +54,26 @@ impl Icc {
 pub enum FaultKind {
     /// Missing emulator behavior, never delivered to the guest as an ISA trap.
     UnsupportedInstruction,
+    UnsupportedMemory(MemoryError),
     IllegalInstruction,
     PrivilegedInstruction,
     SoftwareTrap(u8),
     InstructionAccess(BusError),
     DataAccess(BusError),
+    InstructionMmu(MmuFault),
+    DataMmu(MmuFault),
     MisalignedJump(u32),
     WindowOverflow,
     WindowUnderflow,
 }
 
 impl FaultKind {
-    /// V8 trap type. Physical bus failures use access-error vectors; future MMU
-    /// faults must carry their own access-exception types (0x01 and 0x09).
+    /// V8 trap type. MMU exceptions and physical bus errors have distinct vectors.
     pub fn trap_type(self) -> Option<u8> {
         Some(match self {
-            Self::UnsupportedInstruction => return None,
+            Self::UnsupportedInstruction | Self::UnsupportedMemory(_) => return None,
+            Self::InstructionMmu(_) => 0x01,
+            Self::DataMmu(_) => 0x09,
             Self::IllegalInstruction => 0x02,
             Self::PrivilegedInstruction => 0x03,
             Self::WindowOverflow => 0x05,
@@ -145,6 +150,7 @@ pub struct Cpu {
     tbr: u32,
     y: u32,
     error_state: Option<CpuFault>,
+    pub mmu: Srmmu,
 }
 
 impl Cpu {
@@ -163,7 +169,16 @@ impl Cpu {
             tbr: 0,
             y: 0,
             error_state: None,
+            mmu: Srmmu::default(),
         }
+    }
+
+    /// CPU/MMU reset for the sun4m harness. Unspecified registers are zeroed
+    /// deterministically; the physical bus and its RAM/ROM remain owned by Machine.
+    pub fn reset_sun4m(&mut self) {
+        *self = Self::new(0);
+        self.wim = 1;
+        self.mmu = Srmmu::reset();
     }
 
     pub fn pc(&self) -> u32 {
@@ -200,7 +215,7 @@ impl Cpu {
     }
 
     /// A precise trap with ET=0 latches the cause and prevents further execution.
-    /// Recreate the bare-metal CPU to restart; workstation reset is still pending.
+    /// CPU/MMU reset or recreating the bare-metal CPU clears this latch.
     pub fn error_state(&self) -> Option<CpuFault> {
         self.error_state
     }
@@ -238,9 +253,10 @@ impl Cpu {
         if let Some(fault) = self.error_state {
             return Err(fault);
         }
-        let instruction = match bus.read32(u64::from(self.pc)) {
+        let asi = if self.psr_control & PSR_S != 0 { 9 } else { 8 };
+        let instruction = match self.mmu.load(bus, self.pc, asi, Width::Word) {
             Ok(word) => word,
-            Err(error) => return self.handle_fault(None, FaultKind::InstructionAccess(error)),
+            Err(error) => return self.handle_fault(None, Self::memory_fault(error, true)),
         };
         let step = Step::Executed {
             pc: self.pc,
@@ -250,6 +266,16 @@ impl Cpu {
         match self.execute(bus, instruction) {
             Ok(()) => Ok(step),
             Err(kind) => self.handle_fault(Some(instruction), kind),
+        }
+    }
+
+    fn memory_fault(error: MemoryError, fetch: bool) -> FaultKind {
+        match error {
+            MemoryError::Bus(error) if fetch => FaultKind::InstructionAccess(error),
+            MemoryError::Bus(error) => FaultKind::DataAccess(error),
+            MemoryError::Translation(error) if fetch => FaultKind::InstructionMmu(error),
+            MemoryError::Translation(error) => FaultKind::DataMmu(error),
+            other => FaultKind::UnsupportedMemory(other),
         }
     }
 
@@ -494,34 +520,43 @@ impl Cpu {
                 _ => return Err(FaultKind::UnsupportedInstruction),
             },
             3 => {
-                let address = u64::from(a.wrapping_add(b));
-                let value = self.read_reg(rd);
-                match op3 {
-                    0x00 => self.write_reg(rd, bus.read32(address).map_err(FaultKind::DataAccess)?),
-                    0x01 => self.write_reg(
-                        rd,
-                        u32::from(bus.read8(address).map_err(FaultKind::DataAccess)?),
-                    ),
-                    0x02 => self.write_reg(
-                        rd,
-                        u32::from(bus.read16(address).map_err(FaultKind::DataAccess)?),
-                    ),
-                    0x09 => self.write_reg(
-                        rd,
-                        bus.read8(address).map_err(FaultKind::DataAccess)? as i8 as i32 as u32,
-                    ),
-                    0x0a => self.write_reg(
-                        rd,
-                        bus.read16(address).map_err(FaultKind::DataAccess)? as i16 as i32 as u32,
-                    ),
-                    0x04 => bus.write32(address, value).map_err(FaultKind::DataAccess)?,
-                    0x05 => bus
-                        .write8(address, value as u8)
-                        .map_err(FaultKind::DataAccess)?,
-                    0x06 => bus
-                        .write16(address, value as u16)
-                        .map_err(FaultKind::DataAccess)?,
+                let operation = op3 & !0x10;
+                let width = match operation {
+                    0x00 | 0x04 => Width::Word,
+                    0x01 | 0x05 | 0x09 => Width::Byte,
+                    0x02 | 0x06 | 0x0a => Width::Half,
                     _ => return Err(FaultKind::UnsupportedInstruction),
+                };
+                let asi = if op3 & 0x10 != 0 {
+                    self.require_supervisor()?;
+                    if word & (1 << 13) != 0 {
+                        return Err(FaultKind::IllegalInstruction);
+                    }
+                    ((word >> 5) & 0xff) as u8
+                } else if self.psr_control & PSR_S != 0 {
+                    11
+                } else {
+                    10
+                };
+                let address = a.wrapping_add(b);
+                if matches!(operation, 0x04..=0x06) {
+                    let value = self.read_reg(rd);
+                    self.mmu
+                        .store(bus, address, asi, width, value)
+                        .map_err(|error| Self::memory_fault(error, false))?;
+                } else {
+                    let value = self
+                        .mmu
+                        .load(bus, address, asi, width)
+                        .map_err(|error| Self::memory_fault(error, false))?;
+                    self.write_reg(
+                        rd,
+                        match operation {
+                            0x09 => value as i8 as i32 as u32,
+                            0x0a => value as i16 as i32 as u32,
+                            _ => value,
+                        },
+                    );
                 }
             }
             _ => unreachable!("two-bit opcode"),

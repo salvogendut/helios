@@ -141,3 +141,32 @@ fn out_of_ram_and_empty_images_are_rejected() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("raw image is empty"));
 }
+
+#[test]
+fn boot_runner_uses_reset_prom_fetch_and_an_explicit_step_budget() {
+    let image = Image::new(&[1, 0, 0, 0, 1, 0, 0, 0]);
+    let output = helios(&[
+        "boot",
+        image.path(),
+        "--steps",
+        "2",
+        "--ram-mib",
+        "1",
+        "--trace",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("pc=00000000 npc=00000004 instruction=01000000"));
+    assert!(stdout.contains("PC=0x00000008"));
+    for args in [
+        vec!["boot", image.path(), "--entry", "0"],
+        vec!["boot", image.path(), "--load-address", "0"],
+        vec!["boot", image.path(), "--steps", "0"],
+    ] {
+        assert!(!helios(&args).status.success(), "{args:?}");
+    }
+}

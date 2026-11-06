@@ -11,6 +11,7 @@ Usage:
   helios demo [--trace]
   helios trap-demo [--trace]
   helios run FILE [--load-address N] [--entry N] [--steps N] [--ram-mib N] [--trace]
+  helios boot PROM [--steps N] [--ram-mib N] [--trace]
 
 FILE is a raw big-endian SPARC instruction/data image, loaded into RAM.
 Addresses accept decimal or 0x-prefixed hexadecimal. Entry defaults to the load
@@ -19,7 +20,8 @@ instruction or trap entry counts as one step. --trace prints instructions and
 traps. Unsupported behavior and CPU error state exit with status 1.
 Reaching the step budget exits successfully; it does not mean guest halt.
 
-Current mode is a bare-metal interpreter subset. Firmware/OS boot is not supported.";
+boot loads a raw PROM (up to 1 MiB) and starts the CPU/MMU at reset.
+Only RAM and PROM are installed: firmware/OS boot is not yet supported.";
 
 fn number(value: &str) -> Result<u64, Box<dyn Error>> {
     Ok(if let Some(hex) = value.strip_prefix("0x") {
@@ -80,7 +82,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             if args.next().is_some() {
                 return Err("info takes no options".into());
             }
-            println!("Helios {}\nTarget: {TARGET}\nStatus: bare-metal integer subset; no firmware or OS boot", env!("CARGO_PKG_VERSION"));
+            println!("Helios {}\nTarget: {TARGET}\nStatus: integer subset, SRMMU and reset/PROM harness; no firmware or OS boot", env!("CARGO_PKG_VERSION"));
         }
         Some("demo") => {
             let remaining: Vec<_> = args.collect();
@@ -118,8 +120,11 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
             println!("Trap demo passed: user TA 7 -> supervisor handler -> user RETT return");
         }
-        Some("run") => {
-            let file = args.next().ok_or("run requires a raw image filename")?;
+        Some(command @ ("run" | "boot")) => {
+            let boot = command == "boot";
+            let file = args
+                .next()
+                .ok_or("run/boot requires a raw image filename")?;
             let mut load = 0u32;
             let mut entry = None;
             let mut steps = 1000;
@@ -130,10 +135,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                     trace = true;
                     continue;
                 }
-                if !matches!(
-                    option.as_str(),
-                    "--load-address" | "--entry" | "--steps" | "--ram-mib"
-                ) {
+                if (boot && matches!(option.as_str(), "--load-address" | "--entry"))
+                    || !matches!(
+                        option.as_str(),
+                        "--load-address" | "--entry" | "--steps" | "--ram-mib"
+                    )
+                {
                     return Err(format!("unknown option: {option}").into());
                 }
                 let value = number(
@@ -164,8 +171,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             if bytes.is_empty() {
                 return Err("raw image is empty".into());
             }
-            let mut machine = Machine::bare_metal(ram_bytes, entry)?;
-            machine.load_image(load, &bytes)?;
+            let mut machine = if boot {
+                Machine::sun4m(ram_bytes, &bytes)?
+            } else {
+                let mut machine = Machine::bare_metal(ram_bytes, entry)?;
+                machine.load_image(load, &bytes)?;
+                machine
+            };
             execute(&mut machine, steps, trace)?;
         }
         Some(command) => return Err(format!("unknown command: {command}\n{HELP}").into()),

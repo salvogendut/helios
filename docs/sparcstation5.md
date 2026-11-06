@@ -3,7 +3,8 @@
 The first machine target is a uniprocessor SPARCstation 5, sun4m, with a
 microSPARC-II-compatible SPARC V8 core and eight register windows. This keeps
 the first platform focused while leaving other Sun families for later profiles.
-The current executable is only the bare-metal harness described in the README.
+The executable provides bare-metal and reset/PROM memory harnesses described
+in the README; workstation peripherals are still pending.
 
 QEMU's SS-5 profile selects `Fujitsu-MB86904` and limits RAM to 256 MiB.
 Helios uses 64 MiB as its default harness allocation. These settings and the
@@ -15,7 +16,7 @@ following addresses are drawn from QEMU's
 | RAM | `0x00000000` | Implemented in harness |
 | IOMMU | `0x10000000` | Planned |
 | TCX framebuffer | `0x50000000` | Planned |
-| Boot PROM / SLAVIO area | `0x70000000` | Planned |
+| Boot PROM / SLAVIO area | `0x70000000` | 1 MiB raw PROM aperture; remaining SLAVIO devices pending |
 | Keyboard/mouse serial | `0x71000000` | Planned |
 | Console serial | `0x71100000` | Planned |
 | NVRAM / RTC | `0x71200000` | Planned |
@@ -25,10 +26,11 @@ following addresses are drawn from QEMU's
 | ESP SCSI | `0x78800000` | Planned |
 | LANCE Ethernet | `0x78c00000` | Planned |
 
-This table is a reference inventory, not installed bus mappings. Devices contain
+Only the RAM and PROM mappings are installed from this reference inventory. Devices contain
 subregions and mirrors that need independent verification before implementation.
 In particular, reset instruction fetch and PROM access depend on CPU/MMU boot
-behavior; simply setting PC to the physical PROM base is not a reset model.
+behavior. Helios starts at virtual PC 0 with PCR.BM set; instruction accesses
+then use `0x70000000 | (VA & 0x0fffffff)`. See [memory.md](memory.md).
 
 Bring-up starts with a serial console. The first firmware milestone requires
 CPU privileged state and traps, SRMMU/ASIs, reset/PROM mapping, NVRAM/IDPROM,

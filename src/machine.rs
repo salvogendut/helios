@@ -1,17 +1,20 @@
-//! Bare-metal harness and target limits. SS-5 devices and reset mapping are not
-//! installed yet; no firmware boot is implied by constructing this machine.
+//! Bare-metal and sun4m memory harnesses. SS-5 peripherals are still pending;
+//! constructing a reset/PROM mapping does not imply firmware compatibility.
 
 use crate::bus::{BusError, MapError, MemoryBus};
 use crate::cpu::{Cpu, CpuFault, Step};
+use crate::mmu::PROM_BASE;
 use std::fmt;
 
 pub const TARGET: &str = "SPARCstation 5 (sun4m), SPARC V8 / microSPARC-II";
 pub const MAX_RAM_BYTES: usize = 256 * 1024 * 1024;
 pub const DEFAULT_RAM_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_PROM_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug)]
 pub enum MachineError {
     InvalidRamSize,
+    InvalidPromSize,
     Memory(MapError),
 }
 
@@ -22,6 +25,9 @@ impl fmt::Display for MachineError {
                 f.write_str("RAM must be a nonzero multiple of 4 bytes, at most 256 MiB")
             }
             Self::Memory(error) => error.fmt(f),
+            Self::InvalidPromSize => {
+                f.write_str("PROM must be a nonempty raw image of at most 1 MiB")
+            }
         }
     }
 }
@@ -35,6 +41,28 @@ pub struct Machine {
 }
 
 impl Machine {
+    /// Load a raw PROM into a 1 MiB read-only aperture, padded with 0xff.
+    /// Only RAM, PROM, CPU and MMU are installed at this stage.
+    pub fn sun4m(ram_bytes: usize, prom: &[u8]) -> Result<Self, MachineError> {
+        if prom.is_empty() || prom.len() > MAX_PROM_BYTES {
+            return Err(MachineError::InvalidPromSize);
+        }
+        let mut machine = Self::bare_metal(ram_bytes, 0)?;
+        let mut image = vec![0xff; MAX_PROM_BYTES];
+        image[..prom.len()].copy_from_slice(prom);
+        machine
+            .bus
+            .map_rom(PROM_BASE, &image)
+            .map_err(MachineError::Memory)?;
+        machine.reset();
+        Ok(machine)
+    }
+
+    /// Reset CPU/MMU state, retaining the physical memory contents and mappings.
+    pub fn reset(&mut self) {
+        self.cpu.reset_sun4m();
+    }
+
     pub fn bare_metal(ram_bytes: usize, entry: u32) -> Result<Self, MachineError> {
         if ram_bytes == 0 || ram_bytes % 4 != 0 || ram_bytes > MAX_RAM_BYTES {
             return Err(MachineError::InvalidRamSize);
