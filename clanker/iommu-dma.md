@@ -1,5 +1,8 @@
 # IOMMU translation and first OBP serial diagnostic
 
+Historical checkpoint: [fault-capture.md](fault-capture.md) records the following
+milestone, which resolves the timeout/capture gaps and advances OBP to LDDF.
+
 - Primary manual microSPARC-II rev1.1 sections 5.2.1–5.2.5, 5.6.6,
   5.7.1–5.7.4, 5.7.7/10, 5.8, 5.10, 9.1/4 and chapter11 table50.
   QEMU f71afb409a87c4ecd0f9d63a5963eb645dfab780 sun4m_iommu.c is a comparison,

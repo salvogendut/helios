@@ -45,6 +45,11 @@ test rather than assuming either emulator defines the hardware.
   Unlike QEMU's generic IOMMU fault path, invalid/protected DMA mappings return
   an SBus error acknowledge without synthesizing a CPU late-error interrupt.
   [dram-tlb.md](dram-tlb.md) records implemented behavior and functional limits.
+  Sections 5.3, 5.6.4, 5.7.5–5.7.9 and chapter 11 table 50 define SBus TO/BE,
+  asynchronous write capture and memory metadata. Figures 5.13/5.19/5.22 and
+  table 32 were checked visually; figure 5.22's ATO bit 15 overrides its prose's
+  reserved-bit typo. [fault-capture.md](fault-capture.md) distinguishes implemented
+  requests/capture from pending parity, late errors and bus-cycle timing.
 - [ST M48T08/M48T08Y/M48T18 datasheet](https://www.st.com/resource/en/datasheet/m48t18.pdf),
   DocID2411 Rev 11, June 2011: table 5 and sections 3.1–3.3 define the 8 KiB
   register layout, BCD calendar, R/W transfer latches and oscillator stop.
@@ -68,7 +73,13 @@ test rather than assuming either emulator defines the hardware.
   is less explicit; [interrupts-timers.md](interrupts-timers.md) records the choice.
   The SBus feature subset restricts two-word bursts to the processor count in
   user mode. Figures 6-16–6-18 define its 54-bit count, overflow flag, Run and
-  mode select; the mode-transition transfer state is not specified.
+  mode select; the mode-transition transfer state is not specified. The address
+  map and SBus feature subset define errors for reserved windows and invalid
+  widths, including the byte-only floppy aperture. Figure 6-9 defines IC at
+  processor-clear bit 15; figure 6-11 assigns module error to system bit 30.
+- [ISO/IEC 15205:2000 / IEEE 1496, table 9 excerpt](https://www.normsplash.com/Samples/CSA/158135716/CAN-CSA-ISO-IEC-15205-02-%28R2016%29-en-2.pdf):
+  primary SBus standard, archived excerpt pages 50–60; table 9 gives SIZ encoding
+  word=000, halfword=010 and byte=001, used by AFSR capture.
 - [Sun SPARCclassic Engine OEM Technical Manual, Part One, April 1993](https://bitsavers.trailing-edge.com/pdf/sun/sparc/801-3137-10_SPARCclassic_Engine_OEM_Technical_Manual_Part_One_Apr1993.pdf),
   801-3137-10: section 5's NCR89C105 overview and section 7's SLAVIO address map
   independently confirm the uniprocessor layout at `0x71d00000`/`0x71e00000`.

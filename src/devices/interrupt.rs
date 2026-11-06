@@ -4,9 +4,10 @@ use crate::bus::BusErrorKind;
 pub const MASK_ALL: u32 = 1 << 31;
 pub const MASK_BITS: u32 = 0xf05d_ff80;
 const SOFT_BITS: u32 = 0xfffe_0000;
+const MODULE_ERROR: u32 = 1 << 30;
 
 /// Level-sensitive inputs supported by the current sun4m wiring contract.
-/// Asynchronous hardware-error latching is a separate, unimplemented facility.
+/// Module errors use a separate latch, acknowledged by processor IC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Source {
@@ -45,6 +46,9 @@ impl Default for InterruptController {
 }
 
 impl InterruptController {
+    pub(crate) fn latch_module_error(&mut self) {
+        self.sources |= MODULE_ERROR;
+    }
     pub fn reset(&mut self) {
         *self = Self::default();
     }
@@ -75,6 +79,7 @@ impl InterruptController {
             (18, 4),
             (19, 10),
             (22, 11),
+            (30, 15),
         ] {
             if sources & (1 << bit) != 0 {
                 levels |= 1 << level;
@@ -117,13 +122,23 @@ impl InterruptController {
         if system {
             match offset {
                 8 => self.mask &= !(value & MASK_BITS),
-                12 => self.mask |= value & MASK_BITS,
+                12 => {
+                    self.mask |= value & MASK_BITS;
+                    if value & MODULE_ERROR != 0 {
+                        self.sources &= !MODULE_ERROR;
+                    }
+                }
                 0 | 4 | 16 => {} // read-only or reserved
                 _ => return Err(BusErrorKind::Unsupported("interrupt register offset")),
             }
         } else {
             match offset {
-                4 => self.soft &= !(value & SOFT_BITS),
+                4 => {
+                    self.soft &= !(value & SOFT_BITS);
+                    if value & (1 << 15) != 0 {
+                        self.sources &= !MODULE_ERROR;
+                    }
+                }
                 8 => self.soft |= value & SOFT_BITS,
                 0 | 12 => {}
                 _ => return Err(BusErrorKind::Unsupported("interrupt register offset")),

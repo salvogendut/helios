@@ -82,8 +82,7 @@ fn unimplemented_facilities_stop_without_fabricating_success_or_changing_configu
     io.write(0, 0x1c).unwrap();
     let before = io.clone();
     for offset in [
-        0x1000, 0x1004, 0x1050, 0x1054, 0x3000, 0x3004, 0x3008, 0x300c, 0x3010, 0x3014, 0x3018,
-        0x301c, 0x4000, 0x6000, 0x7000,
+        0x3000, 0x3004, 0x3008, 0x300c, 0x3010, 0x3014, 0x3018, 0x301c, 0x4000, 0x6000, 0x7000,
     ] {
         assert!(io.read(offset).unwrap_err().is_host_stop(), "{offset:#x}");
         assert!(
@@ -189,9 +188,9 @@ fn reset_prom_programs_sbus_controls_through_physical_bypass_and_reset_clears_th
 }
 
 #[test]
-fn unsupported_fault_capture_is_retryable_even_with_cpu_no_fault_mode() {
+fn unsupported_performance_register_is_retryable_even_with_cpu_no_fault_mode() {
     let mut m = Machine::sun4m(8192, &0xc4a0_4400u32.to_be_bytes()).unwrap();
-    m.cpu.write_reg(1, (IO_CONTROL_BASE + 0x1000) as u32);
+    m.cpu.write_reg(1, (IO_CONTROL_BASE + 0x3000) as u32);
     m.cpu.write_reg(2, 1);
     m.bus.write32(IO_CONTROL_BASE, 0x1c).unwrap();
     m.cpu

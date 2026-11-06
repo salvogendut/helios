@@ -1,5 +1,5 @@
 //! Single-transfer SBus DVMA interface for future device engines.
-use crate::bus::{Bus, BusError};
+use crate::bus::{Bus, BusError, MemoryRequest, MemoryRequestKind};
 use crate::machine::Machine;
 use crate::mmu::Width;
 use std::fmt;
@@ -86,6 +86,7 @@ impl Machine {
                 kind: DmaFault::Misaligned,
             });
         }
+        self.bus.set_cpu_supervisor(self.cpu.psr() & 0x80 != 0);
         let mapping = self
             .bus
             .devices()
@@ -99,6 +100,21 @@ impl Machine {
         if physical >= 0x1000_0000 {
             return Err(DmaError::Unsupported("non-DRAM DVMA target"));
         }
+        let kind = match (write, width) {
+            (false, _) => MemoryRequestKind::Read,
+            (true, Width::Byte) => MemoryRequestKind::WriteByte,
+            (true, Width::Half) => MemoryRequestKind::WriteHalf,
+            (true, Width::Word) => MemoryRequestKind::WriteWord,
+        };
+        self.bus.observe_memory_request(
+            physical,
+            MemoryRequest {
+                kind,
+                cpu: false,
+                boot_mode: self.cpu.mmu.control() & crate::mmu::PCR_BM != 0,
+                cacheable: false,
+            },
+        );
         Ok(physical)
     }
 }

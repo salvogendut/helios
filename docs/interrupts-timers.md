@@ -41,7 +41,7 @@ These registers accept aligned 32-bit loads/stores only. The CPU aperture is
 | Address | Read | Write |
 | --- | --- | --- |
 | `0x71e00000` | CPU pending: soft levels in bits 31:17, hard levels in 15:1 | Ignored |
-| `0x71e00004` | Zero | Write-one clear software pending bits |
+| `0x71e00004` | Zero | Write-one clear software pending bits; bit 15 acknowledges module error (IC) |
 | `0x71e00008` | Zero | Write-one set software pending bits |
 | `0x71e0000c` | Zero (reserved) | Ignored |
 | `0x71e10000` | System source pending | Ignored |
@@ -52,14 +52,17 @@ These registers accept aligned 32-bit loads/stores only. The CPU aperture is
 
 System mask bits are `0xf05dff80`; other bits read zero and writes have no effect.
 Reset clears pending state and sets all implemented mask bits. A mask changes
-delivery without erasing a held source. Pending reads show masked requests too.
+delivery without erasing a held level-sensitive source. The module-error latch
+is separately acknowledged by IC or its source-mask-set bit. Pending reads
+show masked requests too.
 The processor timer contributes hard level 14 without a separate source-mask
 bit. Mask All (bit 31) gates delivery of both timers and software requests.
 
 The software request for level n occupies bit `16+n`. It persists until cleared
 through the CPU clear alias; clearing soft requests does not acknowledge timer
-hardware. The chip's asynchronous-error/IC latch is not implemented, and there
-is no generated hard level-15 error source yet. Software level 15 is supported.
+hardware. CPU clear-pending IC bit 15 acknowledges the module-error latch
+without clearing software level 15. AFSR reads/writes do not acknowledge it;
+see [fault capture](fault-capture.md).
 Multiprocessor interrupt targeting is not part of this SS-5 profile.
 
 | System source bit | Source | CPU level |
@@ -70,12 +73,14 @@ Multiprocessor interrupt targeting is not part of this SS-5 profile.
 | 18 | SCSI | 4 |
 | 19 | System counter | 10 |
 | 22 | Floppy | 11 |
+| 30 | Module error latch | 15 |
 
-These level-sensitive inputs are available through `InterruptController` for
-wiring and tests. Sources sharing a level remain independent. The machine
-currently wires only the two counter timers; serial remains polled. Mask bits
-for unimplemented error and SuperSPARC-only sources are retained, but their
-pending bits stay clear. No absent device is fabricated by unmasking it.
+The level-sensitive inputs are available through `InterruptController` for
+wiring and tests; module errors use a separate latch. Sources sharing a level
+remain independent. The machine
+wires the two counter timers and asynchronous CPU SBus store errors; serial
+remains polled. SuperSPARC-only error masks are retained, but their pending
+bits stay clear. No absent device is fabricated by unmasking it.
 
 ## Counter timers
 

@@ -18,9 +18,9 @@ imposed by this model; a single 8 MiB module is allowed.
 An 8 MiB module mirrors four times within its aperture. All normal widths,
 doublewords and atomic exchanges use the same underlying words. Empty-bank
 accesses complete: reads return zero, writes have no storage to modify. Zero is
-a deterministic choice for hardware-undefined data; parity-error injection and
-the memory fault registers remain pending. This agrees with QEMU's empty-slot
-read value but follows the microSPARC-II bank decode, including smaller-module
+a deterministic choice for hardware-undefined data. [Memory-request capture](fault-capture.md)
+is implemented, while parity storage/checking and error generation remain pending.
+This agrees with QEMU's empty-slot read value but follows the microSPARC-II bank decode, including smaller-module
 mirrors. Addresses outside the DRAM aperture retain normal device/bus decoding.
 
 Reset preserves populated storage and bank layout. The whole aperture is

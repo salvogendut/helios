@@ -207,8 +207,9 @@ normal translation ending in a root PTE is an explicit unsupported stop. No
 SFSR records FT (invalid, protection, privilege, translation or access bus), AT
 (supervisor, instruction/data and read/write), walk level, FAV and overwrite.
 SFAR contains the virtual address for data and translation faults. Physical
-target errors use level zero because no descriptor access failed. Bus-error
-subtypes such as parity/SBus timeout need device-specific modeling later.
+target errors use level zero because no descriptor access failed. SBus timeout
+and slave error set TO/BE, including when preserved through a walk/probe fault.
+Parity errors remain pending; see [fault-capture.md](fault-capture.md).
 
 Translation faults have priority over data faults, which have priority over
 instruction faults when updating the registers. A higher-priority new fault
@@ -220,6 +221,9 @@ MMU failures use trap `0x01` for fetch and `0x09` for data instructions. LDA/STA
 faults still use the data trap even when their ASI selects instruction space.
 Physical target failures retain trap `0x21`/`0x29`. Misalignment uses `0x07`.
 An exception with PSR.ET=0 enters CPU error state; ET does not imply no-fault mode.
+Plain byte/halfword/word CPU SBus store errors complete asynchronously instead:
+AFSR/AFAR capture the physical address/cause and the NCR module-error latch
+requests level 15. These do not update SFSR/SFAR or depend on PCR.NF.
 
 PCR.NF suppresses memory faults except in ASI 8/9, while still updating SFSR/SFAR.
 A suppressed failed read returns zero; a failed store does nothing. Permission

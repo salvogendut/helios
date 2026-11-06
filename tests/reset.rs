@@ -75,7 +75,7 @@ fn reset_mmio_checks_all_widths_and_mapping_conflicts_before_side_effects() {
     );
     assert_eq!(
         m.bus.read32(RESET_BASE + 4).unwrap_err().kind,
-        BusErrorKind::Unmapped
+        BusErrorKind::SBusError
     );
     assert_eq!(m.bus.map_ram(RESET_BASE, 4), Err(MapError::Overlap));
     assert_eq!(m.bus.map_rom(RESET_BASE, &[0; 4]), Err(MapError::Overlap));

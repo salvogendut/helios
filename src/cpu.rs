@@ -323,6 +323,7 @@ impl Cpu {
             }
         }
         let asi = if self.psr_control & PSR_S != 0 { 9 } else { 8 };
+        bus.set_cpu_supervisor(self.psr_control & PSR_S != 0);
         let instruction = match self.mmu.load(bus, self.pc, asi, Width::Word) {
             Ok(word) => word,
             Err(error) => return self.handle_fault(None, Self::memory_fault(error, true)),

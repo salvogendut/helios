@@ -85,7 +85,8 @@ Physical table/target failures retain `BusError` and its physical address;
 Unlike QEMU's `iommu_bad_addr`, invalid/protected mappings do not synthesize an
 AFSR late error or a CPU level-15 interrupt. The manual's error table distinguishes
 these DMA errors from parity errors and asynchronous CPU SBus write failures.
-Those latter facilities require separate capture and interrupt wiring.
+CPU SBus store errors now have separate [capture and interrupt wiring](fault-capture.md);
+real memory-parity error generation remains pending.
 
 ## Limits and validation
 
@@ -97,11 +98,11 @@ bursts, DMA atomics, concurrent owners, device engines, cache snooping, bus-cycl
 timing or parity injection. Single-transfer failures do not partially write RAM;
 future multi-transfer engines must track partial completion themselves.
 
-Asynchronous fault registers (`+0x1000`, `+0x1004`), memory fault capture
-(`+0x1050`, `+0x1054`), performance/breakpoint registers (`+0x3000`–`+0x301c`)
-and local-graphics queue controls (`+0x4000`, `+0x6000`, `+0x7000`) still stop
-explicitly. Reserved holes are unmapped. No generic register array substitutes
-for these facilities.
+[Fault registers](fault-capture.md) at `+0x1000/+0x1004` and `+0x1050/+0x1054`
+now capture asynchronous CPU store errors and live memory-request metadata.
+Performance/breakpoint registers (`+0x3000`–`+0x301c`) and local-graphics queue
+controls (`+0x4000`, `+0x6000`, `+0x7000`) still stop explicitly. Reserved holes
+are unmapped. No generic register array substitutes for these facilities.
 
 Other documented differences from QEMU remain: IOCR version 4 rather than its
 SS-5 profile's 5; six SBAE bits rather than five; five slot registers with shared
@@ -111,6 +112,7 @@ six-master arbiter description resolve the prose's SBAE reserved-bit typo.
 Tests cover all eight ranges, first/last pages, table-base alignment, lane order,
 permissions, arbitration, bypass, reserved bits, stale mappings, CPU/I/O
 partitioning, diagnostic injection, selective flushes, reset and error isolation.
-The original ROM now passes IOCR enable writes, emits a fault-status diagnostic
-warning and stops at memory-fault capture. See [firmware.md](firmware.md).
+The original ROM now passes IOCR enable writes and both bus-error diagnostics
+without the previous warning/reset, then stops on a floating-point load.
+See [firmware.md](firmware.md).
 This does not establish working SCSI/Ethernet DMA or a firmware prompt.

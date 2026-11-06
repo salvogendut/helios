@@ -79,8 +79,9 @@ bus remains responsible only for physical mappings and device access.
 
 RAM/ROM mappings are nonempty, word-aligned, nonoverlapping half-open ranges. RAM starts
 at zero; ROM writes fail. Image loading validates the entire destination within
-one RAM region before modifying it. Unmapped, read-only and misaligned accesses
-are distinct errors. Failed bus accesses must not mutate memory or devices.
+one RAM region before modifying it. Unmapped, read-only, misaligned, SBus timeout
+and SBus slave-acknowledgement failures are distinct errors. Failed bus accesses
+must not mutate memory or devices, apart from the documented fault-capture state.
 Masked stores do not call the device read path. RAM's default narrow accessors
 are unsuitable for MMIO registers. `SystemBus` dispatches device accesses at
 their required width: bytes for serial/NVRAM, aligned words for timers/interrupt
@@ -201,9 +202,15 @@ The implemented trap types are:
 Physical access errors include unmapped memory and rejected ROM stores. MMU
 access exceptions use distinct fault types and vectors `0x01`/`0x09`. A bus
 hardware failure while accessing a page table becomes an MMU translation fault;
-a hardware failure at the translated target remains a physical access error. Deferred store
-errors, asynchronous hardware-error sources, FPU traps and general illegal-opcode classification are
-not implemented. Missing emulator instructions, including unimplemented ASRs,
+a read failure at the translated target remains a physical access error. Plain
+byte/halfword/word CPU stores that receive SBus hardware errors complete and
+capture AFSR/AFAR plus the NCR module-error latch, independently of PCR.NF.
+The next step can take interrupt 15; CPU SFSR/SFAR remain unchanged.
+MFSR/MFAR record CPU/DMA memory-request attributes through explicit bus hooks;
+raw host accesses do not overwrite them. See [fault-capture.md](docs/fault-capture.md).
+Parity checking, late errors, doubleword SBus store fault completion, FPU traps
+and general illegal-opcode classification remain pending. Missing emulator
+instructions, including unimplemented ASRs,
 still produce an `UnsupportedInstruction` host stop. Unimplemented control
 spaces produce `UnsupportedMemory`; neither is converted into a guest trap.
 
@@ -280,7 +287,9 @@ I/O configuration tests check microSPARC-II field masks, all six arbitration
 enables, shared slot restrictions, reset and precise unsupported-operation stops.
 DMA tests cover all eight ranges, table alignment, lane ordering, permissions,
 stale mappings, shared TLB partitions, diagnostic injection, selective flushes,
-slot bypass and separation of DMA errors from CPU traps.
+slot bypass and separation of DMA errors from CPU traps. Fault-capture tests
+cover TO/BE and walk/probe propagation, asynchronous stores, first/multiple
+errors, module interrupt acknowledgement, capture metadata/locks and resets.
 These are local regression checks, not a SPARC conformance suite or a completed
 QEMU/MAME differential comparison.
 

@@ -1,7 +1,7 @@
 //! microSPARC-II SRMMU. See docs/memory.md for the supported control spaces,
 //! implementation choices, and differences from generic SPARC Reference MMUs.
 
-use crate::bus::{Bus, BusError, BusErrorKind, IoTlbFlush};
+use crate::bus::{Bus, BusError, BusErrorKind, IoTlbFlush, MemoryRequest, MemoryRequestKind};
 use crate::cache::CacheDiagnostics;
 use crate::devices::io_control::IoMapping;
 use crate::dma::{DmaError, DmaFault};
@@ -24,6 +24,13 @@ pub enum Width {
 }
 
 impl Width {
+    fn store_kind(self) -> MemoryRequestKind {
+        match self {
+            Self::Byte => MemoryRequestKind::WriteByte,
+            Self::Half => MemoryRequestKind::WriteHalf,
+            Self::Word => MemoryRequestKind::WriteWord,
+        }
+    }
     fn alignment(self) -> u32 {
         match self {
             Self::Byte => 1,
@@ -50,6 +57,9 @@ pub struct MmuFault {
     pub level: u8,
     /// SFSR AT encoding: supervisor | instruction << 1 | write << 2.
     pub access_type: u8,
+    /// Physical failure during translation, when applicable. This preserves
+    /// SBus cause bits through page walks and fault-priority arbitration.
+    pub bus_error: Option<BusErrorKind>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +103,11 @@ struct Access {
     write: bool,
 }
 
+struct Translation {
+    physical: u64,
+    cacheable: bool,
+}
+
 impl Access {
     fn instruction(self) -> bool {
         matches!(self.asi, 8 | 9)
@@ -110,6 +125,7 @@ impl Access {
             access_type: u8::from(self.supervisor())
                 | (u8::from(self.instruction()) << 1)
                 | (u8::from(self.write) << 2),
+            bus_error: None,
         }
     }
 }
@@ -178,6 +194,50 @@ impl Default for Srmmu {
 }
 
 impl Srmmu {
+    fn request(
+        &self,
+        bus: &mut impl Bus,
+        physical: u64,
+        kind: MemoryRequestKind,
+        cpu: bool,
+        cacheable: bool,
+    ) {
+        bus.observe_memory_request(
+            physical,
+            MemoryRequest {
+                kind,
+                cpu,
+                boot_mode: self.control & PCR_BM != 0,
+                cacheable,
+            },
+        );
+    }
+
+    fn finish_store(
+        &mut self,
+        bus: &mut impl Bus,
+        access: Access,
+        bytes: u8,
+        result: Result<(), MemoryError>,
+    ) -> Result<(), MemoryError> {
+        if let Err(MemoryError::Bus(error)) = result {
+            if matches!(
+                error.kind,
+                BusErrorKind::SBusTimeout | BusErrorKind::SBusError
+            ) {
+                if bytes == 8 {
+                    return Err(MemoryError::Bus(BusError {
+                        kind: BusErrorKind::Unsupported("doubleword SBus fault completion"),
+                        ..error
+                    }));
+                }
+                if bus.capture_sbus_write_error(error, bytes) {
+                    return Ok(());
+                }
+            }
+        }
+        self.finish(access, result)
+    }
     pub fn reset() -> Self {
         Self {
             control: PCR_BM,
@@ -308,7 +368,13 @@ impl Srmmu {
             return;
         }
         let valid_address = fault.access_type & 2 == 0 || fault.kind == FaultType::Translation;
-        self.fault_status = (u32::from(fault.level) << 8)
+        let status = match fault.bus_error {
+            Some(BusErrorKind::SBusTimeout) => 1 << 11,
+            Some(BusErrorKind::SBusError) => 1 << 10,
+            _ => 0,
+        };
+        self.fault_status = status
+            | (u32::from(fault.level) << 8)
             | (u32::from(fault.access_type) << 5)
             | ((fault.kind as u32) << 2)
             | (u32::from(valid_address) << 1)
@@ -326,9 +392,18 @@ impl Srmmu {
         let fault = match result {
             Err(MemoryError::Translation(fault)) => fault,
             Err(MemoryError::Bus(error))
-                if matches!(error.kind, BusErrorKind::Unmapped | BusErrorKind::ReadOnly) =>
+                if matches!(
+                    error.kind,
+                    BusErrorKind::Unmapped
+                        | BusErrorKind::ReadOnly
+                        | BusErrorKind::SBusTimeout
+                        | BusErrorKind::SBusError
+                ) =>
             {
-                access.fault(FaultType::AccessBus, 0)
+                MmuFault {
+                    bus_error: Some(error.kind),
+                    ..access.fault(FaultType::AccessBus, 0)
+                }
             }
             _ => return result,
         };
@@ -373,7 +448,15 @@ impl Srmmu {
             asi,
             write: false,
         };
-        let result = self.translate(bus, access).and_then(|physical| {
+        let result = self.translate(bus, access).and_then(|translation| {
+            let physical = translation.physical;
+            self.request(
+                bus,
+                physical,
+                MemoryRequestKind::Read,
+                true,
+                translation.cacheable,
+            );
             match width {
                 Width::Byte => bus.read8(physical).map(u32::from),
                 Width::Half => bus.read16(physical).map(u32::from),
@@ -429,7 +512,15 @@ impl Srmmu {
             asi,
             write: true,
         };
-        let result = self.translate(bus, access).and_then(|physical| {
+        let result = self.translate(bus, access).and_then(|translation| {
+            let physical = translation.physical;
+            self.request(
+                bus,
+                physical,
+                width.store_kind(),
+                true,
+                translation.cacheable,
+            );
             match width {
                 Width::Byte => bus.write8(physical, value as u8),
                 Width::Half => bus.write16(physical, value as u16),
@@ -437,7 +528,7 @@ impl Srmmu {
             }
             .map_err(MemoryError::Bus)
         });
-        self.finish(access, result)
+        self.finish_store(bus, access, width.alignment() as u8, result)
     }
 
     pub fn load_doubleword(
@@ -458,9 +549,17 @@ impl Srmmu {
             write: false,
         };
         // Eight-byte alignment guarantees that both words occupy the same page.
-        let result = self
-            .translate(bus, access)
-            .and_then(|physical| bus.read_doubleword(physical).map_err(MemoryError::Bus));
+        let result = self.translate(bus, access).and_then(|translation| {
+            self.request(
+                bus,
+                translation.physical,
+                MemoryRequestKind::Read,
+                true,
+                translation.cacheable,
+            );
+            bus.read_doubleword(translation.physical)
+                .map_err(MemoryError::Bus)
+        });
         self.finish(access, result)
     }
 
@@ -483,11 +582,18 @@ impl Srmmu {
             asi,
             write: true,
         };
-        let result = self.translate(bus, access).and_then(|physical| {
-            bus.write_doubleword(physical, words)
+        let result = self.translate(bus, access).and_then(|translation| {
+            self.request(
+                bus,
+                translation.physical,
+                MemoryRequestKind::WriteDoubleword,
+                true,
+                translation.cacheable,
+            );
+            bus.write_doubleword(translation.physical, words)
                 .map_err(MemoryError::Bus)
         });
-        self.finish(access, result)
+        self.finish_store(bus, access, 8, result)
     }
 
     pub fn swap(
@@ -534,12 +640,29 @@ impl Srmmu {
             asi,
             write: true,
         };
-        let result = self.translate(bus, access).and_then(|physical| {
+        let result = self.translate(bus, access).and_then(|translation| {
+            let physical = translation.physical;
+            self.request(
+                bus,
+                physical,
+                MemoryRequestKind::Read,
+                true,
+                translation.cacheable,
+            );
             match value {
                 Some(value) => bus.swap32(physical, value),
                 None => bus.ldstub8(physical).map(u32::from),
             }
             .map_err(MemoryError::Bus)
+            .map(|old| {
+                let kind = if value.is_some() {
+                    MemoryRequestKind::WriteWord
+                } else {
+                    MemoryRequestKind::WriteByte
+                };
+                self.request(bus, physical, kind, true, translation.cacheable);
+                old
+            })
         });
         self.finish(access, result)
     }
@@ -642,6 +765,7 @@ impl Srmmu {
             if pte_address >= 0x1000_0000 {
                 return Err(DmaError::Unsupported("I/O page table outside DRAM"));
             }
+            self.request(bus, pte_address, MemoryRequestKind::Read, false, false);
             let pte = bus.read32(pte_address).map_err(DmaError::Bus)?;
             if pte & 2 == 0 {
                 return Err(DmaError::Fault {
@@ -672,12 +796,22 @@ impl Srmmu {
         Ok((u64::from(entry.pte & 0x07ff_ff00) << 4) | u64::from(address & 0xfff))
     }
 
-    fn translate(&mut self, bus: &mut impl Bus, access: Access) -> Result<u64, MemoryError> {
+    fn translate(
+        &mut self,
+        bus: &mut impl Bus,
+        access: Access,
+    ) -> Result<Translation, MemoryError> {
         if access.instruction() && self.control & PCR_BM != 0 {
-            return Ok(PROM_BASE | u64::from(access.address & 0x0fff_ffff));
+            return Ok(Translation {
+                physical: PROM_BASE | u64::from(access.address & 0x0fff_ffff),
+                cacheable: false,
+            });
         }
         if access.asi == 0x20 || self.control & PCR_EN == 0 {
-            return Ok(u64::from(access.address) & PHYSICAL_MASK);
+            return Ok(Translation {
+                physical: u64::from(access.address) & PHYSICAL_MASK,
+                cacheable: false,
+            });
         }
         self.validate_tlb_lookup()?;
         let hit = self
@@ -690,16 +824,17 @@ impl Srmmu {
             self.walk(bus, access)?
         };
         Self::permission(access, entry)?;
-        Self::touch(bus, access, &mut entry)?;
+        self.touch(bus, access, &mut entry)?;
         if let Some(index) = hit {
             self.tlb[index] = entry;
         } else {
             self.insert(entry);
         }
-        Ok(
-            ((u64::from(entry.pte & 0x07ff_ff00) << 4) & !u64::from(entry.offset_mask))
+        Ok(Translation {
+            physical: ((u64::from(entry.pte & 0x07ff_ff00) << 4) & !u64::from(entry.offset_mask))
                 | u64::from(access.address & entry.offset_mask),
-        )
+            cacheable: entry.pte & 0x80 != 0,
+        })
     }
 
     fn permission(access: Access, entry: Entry) -> Result<(), MemoryError> {
@@ -728,7 +863,12 @@ impl Srmmu {
         Ok(())
     }
 
-    fn touch(bus: &mut impl Bus, access: Access, entry: &mut Entry) -> Result<(), MemoryError> {
+    fn touch(
+        &self,
+        bus: &mut impl Bus,
+        access: Access,
+        entry: &mut Entry,
+    ) -> Result<(), MemoryError> {
         if entry.pte_address.is_none() {
             return if access.write && entry.lower & 1 == 0 {
                 Err(MemoryError::UnsupportedTlbModifiedUpdate)
@@ -747,6 +887,7 @@ impl Srmmu {
             let address = entry
                 .pte_address
                 .ok_or(MemoryError::UnsupportedTlbModifiedUpdate)?;
+            self.request(bus, address, MemoryRequestKind::WriteWord, true, false);
             bus.write32_masked(address, bits, bits)
                 .map_err(|error| Self::table_error(access, entry.level, error))?;
             entry.pte |= bits;
@@ -765,7 +906,14 @@ impl Srmmu {
         if error.kind.is_host_stop() {
             MemoryError::Bus(error)
         } else {
-            MemoryError::Translation(access.fault(FaultType::Translation, level))
+            MemoryError::Translation(Self::table_fault(access, level, error))
+        }
+    }
+
+    fn table_fault(access: Access, level: u8, error: BusError) -> MmuFault {
+        MmuFault {
+            bus_error: Some(error.kind),
+            ..access.fault(FaultType::Translation, level)
         }
     }
 
@@ -811,6 +959,7 @@ impl Srmmu {
     fn walk(&self, bus: &mut impl Bus, access: Access) -> Result<Entry, MemoryError> {
         let mut physical = self.root();
         for level in 0..=3 {
+            self.request(bus, physical, MemoryRequestKind::Read, true, false);
             let word = bus
                 .read32(physical)
                 .map_err(|error| Self::table_error(access, level, error))?;
@@ -859,13 +1008,14 @@ impl Srmmu {
         }
         let mut physical = self.root();
         for level in 0..=3 {
+            self.request(bus, physical, MemoryRequestKind::Read, true, false);
             let word = match bus.read32(physical) {
                 Ok(word) => word,
                 Err(error) => {
                     if error.kind.is_host_stop() {
                         return Err(MemoryError::Bus(error));
                     }
-                    self.record(access.fault(FaultType::Translation, level));
+                    self.record(Self::table_fault(access, level, error));
                     return Ok(0);
                 }
             };
@@ -881,7 +1031,7 @@ impl Srmmu {
                 1 if level < 3 => physical = Self::next_table(word, access.address, level),
                 2 if kind == 4 => {
                     let mut entry = self.entry(access.address, level, physical, word);
-                    match Self::touch(bus, access, &mut entry) {
+                    match self.touch(bus, access, &mut entry) {
                         Err(MemoryError::Translation(fault)) => {
                             self.record(fault);
                             return Ok(0);

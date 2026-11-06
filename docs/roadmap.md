@@ -9,7 +9,7 @@ observable acceptance criteria before its status can advance.
 | 0 — Foundation | Library/CLI, integer subset, word bus, runnable bare-metal demo and regression tests | Implemented |
 | 1 — CPU baseline | Complete V8 integer/privileged behavior, PSR/WIM/TBR/Y, precise traps/RETT, ASI dispatch, multiply/divide and atomics; independently checked bare-metal tests | In progress: core integer instruction groups, privileged state, synchronous traps, ASIs, doublewords and atomics implemented; implementation-specific ASRs and broader illegal-opcode classification pending |
 | 2 — Memory system | microSPARC-II reset/boot behavior and SRMMU, permissions, contexts, faults, TLB invalidation and required cache controls; translation/fault tests | In progress: translation, TLB flush/probe and cache diagnostic storage/invalidation implemented; DRAM banks and live TLB diagnostics implemented; injected PTP walks, M-bit rewalks and cache hits/fills pending |
-| 3 — Serial firmware | Original Sun OBP loading, NVRAM/IDPROM, Z8530, interrupt controller and timers; reproducible OBP prompt transcript | In progress: OBP passes IOMMU enable tests, emits a fault-status warning and stops at memory-fault capture; working prompt pending |
+| 3 — Serial firmware | Original Sun OBP loading, NVRAM/IDPROM, Z8530, interrupt controller and timers; reproducible OBP prompt transcript | In progress: OBP passes IOMMU and bus-error diagnostics, then stops at LDDF; FPU support and working prompt pending |
 | 4 — Storage and kernel | IOMMU, DMA, ESP SCSI, disk/CD-ROM targets and safe image writes; installer/kernel reaches serial userspace | In progress: IOMMU translation/flushes and RAM DMA API implemented; SCSI/Ethernet DMA engines and storage pending |
 | 5 — Usable workstation | Required FPU behavior, LANCE networking, CGsix/TurboGX framebuffer, keyboard/mouse and host frontend; documented guest compatibility matrix | Planned |
 | 6 — Performance and tooling | Profiling-driven optimization, optional JIT checked against interpreter, monitor/GDB, snapshots and automated guest runs | Planned |
@@ -36,17 +36,19 @@ Cache diagnostic storage and indexed invalidation now let OBP pass tag setup.
 The hardware DRAM bank model now handles the earlier out-of-RAM probe, and
 live TLB diagnostic entries plus replacement controls handle the following
 initialization/tests. IOMMU page translation, selective I/O flushes, shared TLB
-replacement and RAM DMA transfers now have focused tests. Original OBP completes
-21020690 instructions with one trap and one software reset. It emits its first
-serial output: a fault-status diagnostic warning (missing SFSR timeout bit), then
-stops at PC `0xffd27690` reading MFSR at `0x10001050`. Implement SBus timeout
-classification and memory/asynchronous fault capture next. No firmware prompt
-or storage DMA engine is working yet.
+replacement and RAM DMA transfers now have focused tests. SBus timeout versus
+slave-error classification, asynchronous CPU store capture and module interrupts,
+and memory-request capture now have regressions. Original OBP completes
+25373701 instructions with two diagnostic traps, no interrupts, no reset and no
+serial output. It passes the earlier fault-status checks and stops at
+PC `0x70002454`, instruction `0xc11c0011` (`LDDF`). Implement the V8/microSPARC-II
+FPU baseline next, starting with register state, transfers and architectural
+trap behavior. No firmware prompt or storage DMA engine is working yet.
 Ordinary cache hits/fills, injected PTP walks and diagnostic M-bit rewalks
 remain explicit gaps; diagnostic storage alone is not a complete cache model.
 [Firmware records](firmware.md) capture the images and bounded probes.
-Automatic partial CPU watchdog recovery and asynchronous hardware-error latches
-remain explicit gaps.
+Automatic partial CPU watchdog recovery, memory parity/error generation,
+SBus late errors and doubleword store fault completion remain explicit gaps.
 
 SunOS/Solaris, BSD and Linux versions will be recorded individually once tested.
 No guest release is currently supported. Additional sun4c, sun4m and sun4u

@@ -6,6 +6,10 @@ use std::fmt;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BusErrorKind {
     Unmapped,
+    /// An installed SBus controller received no slave acknowledgement.
+    SBusTimeout,
+    /// A selected SBus slave returned an error acknowledgement.
+    SBusError,
     Misaligned,
     ReadOnly,
     /// Emulator limitation or host backpressure, never a guest bus exception.
@@ -42,6 +46,26 @@ pub enum IoTlbFlush {
     Page(u32),
 }
 
+/// Memory-controller request codes (microSPARC-II table 32). Uncached narrow
+/// reads use a 64-bit DRAM read; cache-line fills are not modeled yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum MemoryRequestKind {
+    Read = 1,
+    WriteByte = 9,
+    WriteHalf = 10,
+    WriteWord = 11,
+    WriteDoubleword = 12,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemoryRequest {
+    pub kind: MemoryRequestKind,
+    pub cpu: bool,
+    pub boot_mode: bool,
+    pub cacheable: bool,
+}
+
 fn aligned(address: u64, alignment: u64) -> Result<(), BusError> {
     if address % alignment == 0 {
         Ok(())
@@ -60,6 +84,18 @@ fn aligned(address: u64, alignment: u64) -> Result<(), BusError> {
 /// them explicitly: generic read-then-write fallbacks can consume MMIO data before
 /// discovering a write failure. Future concurrent owners must serialize them.
 pub trait Bus {
+    /// CPU pin state for module fault capture, independent of alternate ASI
+    /// permissions. Debugger/raw bus accesses do not issue memory requests.
+    fn set_cpu_supervisor(&mut self, _supervisor: bool) {}
+
+    fn observe_memory_request(&mut self, _address: u64, _request: MemoryRequest) {}
+
+    /// Return true if a failed CPU store was accepted as an asynchronous module
+    /// error. A plain physical bus has no module-error controller.
+    fn capture_sbus_write_error(&mut self, _error: BusError, _bytes: u8) -> bool {
+        false
+    }
+
     fn take_io_tlb_flush(&mut self) -> Option<IoTlbFlush> {
         None
     }

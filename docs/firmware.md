@@ -159,8 +159,8 @@ hash, 128 MiB capacity, default NVRAM, no input and 100 ns step quantum are unch
 See [DRAM and TLB diagnostics](dram-tlb.md) for functional limits, including
 parity, fill-driven replacement timing, injected PTP walks and M-bit rewalks.
 
-With IOMMU translation and shared I/O TLB flushes implemented, the unchanged
-original ROM now completes **21020690 instructions**, with **one synchronous
+At the IOMMU translation/shared I/O TLB flush milestone, the unchanged
+original ROM completed **21020690 instructions**, with **one synchronous
 trap**, **zero interrupts**, **one software reset** and **125 serial bytes**.
 The same 30000000-step budget, four 32 MiB DSIMMs, default NVRAM, no serial
 input and 100 ns step quantum apply. No DMA device engine is running in this
@@ -184,15 +184,46 @@ OBP requests a software reset on attempt **20617884** and continues.
 
 The final host stop is attempt **21020692**, PC=`0xffd27690`, nPC=`0xffd27694`,
 instruction=`0xc8840400`: an ASI `20` word load from physical `0x10001050`
-(MFSR), which is still an unsupported memory-fault capture register. The CPU
+(MFSR), then an unsupported memory-fault capture register. The CPU
 error latch is clear and the CLI exits 1. There is no OBP prompt or successful
-POST/OS-boot claim. The next work is SBus timeout status and memory/asynchronous
-fault capture, preserving the distinction between CPU faults and device DMA errors.
+POST/OS-boot claim. This identified SBus timeout status and memory/asynchronous
+fault capture as the next work, preserving CPU/device DMA error separation.
 
 Records under `local/probes/iommu-ss5/` retain configuration, CLI console/stop,
 bounded library trace/source and the matching serial transcript. The firmware
 hash is unchanged. [I/O controls](io-control.md) describes the implemented DMA
 interface and remaining hardware limits.
+
+With [bus faults and capture registers](fault-capture.md) implemented, the
+unchanged original ROM completes **25373701 instructions**, with **two synchronous
+traps**, **zero interrupts**, **zero software resets** and **zero serial bytes**.
+The 30000000-step budget, four 32 MiB DSIMMs, default NVRAM, no serial input and
+100 ns step quantum are unchanged. The earlier `Suspect Swift Module` warning
+and recovery reset no longer occur.
+
+Both traps are diagnostic data-access errors (`0x29`):
+
+| Attempt | PC / instruction | Physical access | Recorded cause |
+| --- | --- | --- | --- |
+| 20588909 | `0x700063d0` / `0xc0850400` | ASI `20` word load from `0x7cc00000` | SBus timeout, SFSR.TO |
+| 20588995 | `0x700062b4` / `0xc0840400` | ASI `20` word load from `0x71400300` | NCR byte-only floppy aperture, SFSR.BE |
+
+The final host stop is attempt **25373704**, PC=`0x70002454`, nPC=`0x70002458`,
+instruction=`0xc11c0011`: `LDDF [%l0 + %l1], %f0` (register pair `%f0/%f1`).
+Here `%l0=0x2000`, `%l1=0`, PCR=`0x04004000` and PSR=`0x044010e6` (EF set).
+The effective and physical address is `0x2000`. FPU instructions are not yet
+implemented, so this is an `UnsupportedInstruction` host stop, with the CPU
+error latch clear and CLI exit status 1. The next milestone is FPU register
+state, transfers and trap behavior; POST completion and an OBP prompt remain
+unproved.
+
+Records under `local/probes/fault-capture-ss5/` retain configuration, CLI
+console/stop, bounded library trace/source and matching empty serial transcripts.
+The firmware hash is unchanged. The normal POST path no longer reaches the
+previous warning-recovery MFSR stop; capture registers, asynchronous store errors
+and module interrupts are validated separately by focused tests. This run also
+executes cache diagnostic data/tag stores, without establishing working ordinary
+cache hits/fills or real memory parity checking.
 
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)

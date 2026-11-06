@@ -1,6 +1,6 @@
 //! Machine-owned physical decoding. Device bytes never pass through RAM's
 //! word-based narrow-access defaults or a speculative read-modify-write.
-use crate::bus::{Bus, BusError, BusErrorKind, IoTlbFlush, MapError, MemoryBus};
+use crate::bus::{Bus, BusError, BusErrorKind, IoTlbFlush, MapError, MemoryBus, MemoryRequest};
 use crate::devices::{
     interrupt::{InterruptController, Source},
     io_control::{IoControl, IO_CONTROL_SIZE},
@@ -15,16 +15,18 @@ pub const IO_CONTROL_BASE: u64 = 0x1000_0000;
 pub const KEYBOARD_SERIAL_BASE: u64 = 0x7100_0000;
 pub const SERIAL_BASE: u64 = 0x7110_0000;
 pub const NVRAM_BASE: u64 = 0x7120_0000;
+pub const FLOPPY_BASE: u64 = 0x7140_0000;
 pub const CPU_TIMER_BASE: u64 = 0x71d0_0000;
 pub const SYSTEM_TIMER_BASE: u64 = 0x71d1_0000;
 pub const CPU_INTERRUPT_BASE: u64 = 0x71e0_0000;
 pub const SYSTEM_INTERRUPT_BASE: u64 = 0x71e1_0000;
 pub const RESET_BASE: u64 = 0x71f0_0000;
-const DEVICE_RANGES: [(u64, u64); 9] = [
+const DEVICE_RANGES: [(u64, u64); 10] = [
     (IO_CONTROL_BASE, IO_CONTROL_BASE + IO_CONTROL_SIZE),
     (KEYBOARD_SERIAL_BASE, KEYBOARD_SERIAL_BASE + 8),
     (SERIAL_BASE, SERIAL_BASE + 8),
     (NVRAM_BASE, NVRAM_BASE + NVRAM_SIZE as u64),
+    (FLOPPY_BASE, FLOPPY_BASE + 0x10_0000),
     (CPU_TIMER_BASE, CPU_TIMER_BASE + 0x10),
     (SYSTEM_TIMER_BASE, SYSTEM_TIMER_BASE + 0x14),
     (CPU_INTERRUPT_BASE, CPU_INTERRUPT_BASE + 0x10),
@@ -75,9 +77,57 @@ pub struct SystemBus {
     memory: MemoryBus,
     devices: Option<Sun4mDevices>,
     dram: Option<Ss5Dram>,
+    cpu_user: bool,
 }
 
 impl SystemBus {
+    fn check_floppy_access(&self, address: u64, bytes: u64) -> Result<(), BusError> {
+        if self.devices.is_some() && (FLOPPY_BASE..FLOPPY_BASE + 0x10_0000).contains(&address) {
+            if address % bytes != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
+            return Err(BusError {
+                address,
+                // NCR89C105 rejects wider transfers throughout the floppy
+                // aperture. Byte transfers need the still-unimplemented FDC.
+                kind: if bytes == 1 {
+                    BusErrorKind::Unsupported("floppy controller byte access")
+                } else {
+                    BusErrorKind::SBusError
+                },
+            });
+        }
+        Ok(())
+    }
+    fn physical_error(&self, error: BusError) -> BusError {
+        // microSPARC-II table 15: PA[30:28]=3..7 select SBus slots.
+        if self.devices.is_some()
+            && (0x3000_0000..0x8000_0000).contains(&error.address)
+            && error.kind == BusErrorKind::Unmapped
+        {
+            // Reserved NCR89C105 windows are decoded by an existing slave,
+            // unlike an empty SBus slot. Keep missing register mirrors and
+            // devices outside these documented holes separate.
+            let reserved_ncr = (0x7150_0000..0x7180_0000).contains(&error.address)
+                || (0x71c0_0000..0x71d0_0000).contains(&error.address)
+                || (0x71e0_0010..0x71e1_0000).contains(&error.address)
+                || (0x71e1_0014..0x71f0_0000).contains(&error.address)
+                || (0x71f0_0004..0x7200_0000).contains(&error.address);
+            BusError {
+                kind: if reserved_ncr {
+                    BusErrorKind::SBusError
+                } else {
+                    BusErrorKind::SBusTimeout
+                },
+                ..error
+            }
+        } else {
+            error
+        }
+    }
     pub fn install_ss5_dram(&mut self, dram: Ss5Dram) -> Result<(), MapError> {
         if self.dram.is_some() || self.memory.overlaps(0, APERTURE_BYTES) {
             return Err(MapError::Overlap);
@@ -137,6 +187,7 @@ impl SystemBus {
         }
     }
     fn reset_io(&mut self) {
+        self.cpu_user = false;
         if let Some(devices) = &mut self.devices {
             devices.io_control.reset();
             devices.serial.reset();
@@ -249,11 +300,44 @@ impl SystemBus {
 }
 
 impl Bus for SystemBus {
+    fn set_cpu_supervisor(&mut self, supervisor: bool) {
+        self.cpu_user = !supervisor;
+    }
+
+    fn observe_memory_request(&mut self, address: u64, request: MemoryRequest) {
+        if address < APERTURE_BYTES {
+            if let Some(devices) = &mut self.devices {
+                devices
+                    .io_control
+                    .memory_request(address, request, !self.cpu_user);
+            }
+        }
+    }
+
+    fn capture_sbus_write_error(&mut self, error: BusError, bytes: u8) -> bool {
+        if !matches!(
+            error.kind,
+            BusErrorKind::SBusTimeout | BusErrorKind::SBusError
+        ) || !matches!(bytes, 1 | 2 | 4)
+        {
+            return false;
+        }
+        if let Some(devices) = &mut self.devices {
+            devices
+                .io_control
+                .sbus_write_error(error, bytes, !self.cpu_user);
+            devices.interrupts.latch_module_error();
+            true
+        } else {
+            false
+        }
+    }
     fn take_io_tlb_flush(&mut self) -> Option<IoTlbFlush> {
         self.devices.as_mut()?.io_control.take_flush()
     }
 
     fn read8(&mut self, address: u64) -> Result<u8, BusError> {
+        self.check_floppy_access(address, 1)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.read8(address);
         }
@@ -278,9 +362,12 @@ impl Bus for SystemBus {
                     .map_err(|kind| BusError { address, kind });
             }
         }
-        self.memory.read8(address)
+        self.memory
+            .read8(address)
+            .map_err(|error| self.physical_error(error))
     }
     fn write8(&mut self, address: u64, value: u8) -> Result<(), BusError> {
+        self.check_floppy_access(address, 1)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.write8(address, value);
         }
@@ -305,23 +392,32 @@ impl Bus for SystemBus {
                     .map_err(|kind| BusError { address, kind });
             }
         }
-        self.memory.write8(address, value)
+        self.memory
+            .write8(address, value)
+            .map_err(|error| self.physical_error(error))
     }
     fn read16(&mut self, address: u64) -> Result<u16, BusError> {
+        self.check_floppy_access(address, 2)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.read16(address);
         }
         self.memory_only(address, 2)?;
-        self.memory.read16(address)
+        self.memory
+            .read16(address)
+            .map_err(|error| self.physical_error(error))
     }
     fn write16(&mut self, address: u64, value: u16) -> Result<(), BusError> {
+        self.check_floppy_access(address, 2)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.write16(address, value);
         }
         self.memory_only(address, 2)?;
-        self.memory.write16(address, value)
+        self.memory
+            .write16(address, value)
+            .map_err(|error| self.physical_error(error))
     }
     fn read32(&mut self, address: u64) -> Result<u32, BusError> {
+        self.check_floppy_access(address, 4)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.read32(address);
         }
@@ -344,9 +440,21 @@ impl Bus for SystemBus {
             return result.map_err(|kind| BusError { address, kind });
         }
         self.memory_only(address, 4)?;
-        self.memory.read32(address)
+        self.memory
+            .read32(address)
+            .map_err(|error| self.physical_error(error))
     }
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError> {
+        if mask != u32::MAX
+            && self.devices.is_some()
+            && (FLOPPY_BASE..FLOPPY_BASE + 0x10_0000).contains(&address)
+        {
+            return Err(BusError {
+                address,
+                kind: BusErrorKind::Unsupported("masked floppy access"),
+            });
+        }
+        self.check_floppy_access(address, 4)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.write32_masked(address, value, mask);
         }
@@ -377,9 +485,12 @@ impl Bus for SystemBus {
             return result.map_err(|kind| BusError { address, kind });
         }
         self.memory_only(address, 4)?;
-        self.memory.write32_masked(address, value, mask)
+        self.memory
+            .write32_masked(address, value, mask)
+            .map_err(|error| self.physical_error(error))
     }
     fn read_doubleword(&mut self, address: u64) -> Result<[u32; 2], BusError> {
+        self.check_floppy_access(address, 8)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.read_doubleword(address);
         }
@@ -392,9 +503,12 @@ impl Bus for SystemBus {
             }
         }
         self.memory_only(address, 8)?;
-        self.memory.read_doubleword(address)
+        self.memory
+            .read_doubleword(address)
+            .map_err(|error| self.physical_error(error))
     }
     fn write_doubleword(&mut self, address: u64, words: [u32; 2]) -> Result<(), BusError> {
+        self.check_floppy_access(address, 8)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.write_doubleword(address, words);
         }
@@ -407,20 +521,26 @@ impl Bus for SystemBus {
             }
         }
         self.memory_only(address, 8)?;
-        self.memory.write_doubleword(address, words)
+        self.memory
+            .write_doubleword(address, words)
+            .map_err(|error| self.physical_error(error))
     }
     fn swap32(&mut self, address: u64, value: u32) -> Result<u32, BusError> {
         if let Some(dram) = self.dram_at(address) {
             return dram.swap32(address, value);
         }
         self.memory_only(address, 4)?;
-        self.memory.swap32(address, value)
+        self.memory
+            .swap32(address, value)
+            .map_err(|error| self.physical_error(error))
     }
     fn ldstub8(&mut self, address: u64) -> Result<u8, BusError> {
         if let Some(dram) = self.dram_at(address) {
             return dram.ldstub8(address);
         }
         self.memory_only(address, 1)?;
-        self.memory.ldstub8(address)
+        self.memory
+            .ldstub8(address)
+            .map_err(|error| self.physical_error(error))
     }
 }

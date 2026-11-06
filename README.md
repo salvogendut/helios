@@ -48,6 +48,8 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
 - microSPARC-II instruction/data cache diagnostic storage and indexed
   invalidation; normal accesses still use coherent memory without cache fills.
 - SS-5 DRAM banks, smaller-module mirrors and empty-bank access behavior.
+- SBus timeout/error status, asynchronous CPU store capture and module-error
+  interrupts, plus live memory-request metadata in MFSR/MFAR.
 - TLB diagnostic ports backed by live translation entries and functional replacement
   controls; injected PTP walks and M-bit rewalks remain pending.
 
@@ -145,6 +147,7 @@ and the distinction from the contiguous RAM used by synthetic harnesses.
 - [HACKING.md](HACKING.md): architecture, invariants and validation commands.
 - [SPARCstation 5](docs/sparcstation5.md): target and reference memory map.
 - [Memory and reset](docs/memory.md): SRMMU, ASIs, fault behavior and PROM mapping.
+- [Fault capture](docs/fault-capture.md): SBus errors, asynchronous stores and memory-request capture.
 - [Cache diagnostics](docs/cache.md): diagnostic storage, invalidation and functional limits.
 - [DRAM and TLB diagnostics](docs/dram-tlb.md): DSIMM layout, diagnostic entries and replacement controls.
 - [System reset](docs/reset.md): reset-status register, guest reset and watchdog limits.
@@ -168,11 +171,11 @@ cargo run --locked --offline -- boot local/firmware/sun-ss5.bin --steps 10000 --
 
 This short probe now reaches its 10000-step budget in OBP's timed keyboard
 polling loop. With a 30000000-step budget, OBP passes the former memory-bank,
-TLB-diagnostic and IOMMU-enable stops. It completes 21020690 instructions with
-one trap and one software reset, emitting its first serial diagnostic warning:
-a missing SBus timeout status bit. It then stops at PC `0xffd27690` reading the
-unimplemented memory-fault status register. Fault-status capture is the next
-gap; there is no firmware prompt yet.
+TLB-diagnostic and IOMMU-enable stops. It completes 25373701 instructions with
+two diagnostic bus traps, no interrupts and no resets. The earlier fault-status
+warning is gone. It now stops at PC `0x70002454` on the unimplemented floating-point
+load `LDDF`; FPU support is the next POST boundary. There is no serial output or
+firmware prompt in this run.
 The fetched image is hash-verified and stays ignored.
 OpenBIOS remains a separate compatibility test until it is proved working.
 

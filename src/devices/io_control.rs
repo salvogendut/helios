@@ -1,5 +1,5 @@
 //! microSPARC-II SBus/IOMMU controls. See docs/io-control.md.
-use crate::bus::{BusErrorKind, IoTlbFlush};
+use crate::bus::{BusError, BusErrorKind, IoTlbFlush, MemoryRequest};
 use crate::dma::{DmaError, DmaFault};
 use std::collections::VecDeque;
 
@@ -15,6 +15,13 @@ pub struct IoControl {
     slots: [u32; 5],
     arbitration: u32,
     flushes: VecDeque<IoTlbFlush>,
+    async_status: u32,
+    async_address: u32,
+    async_locked: bool,
+    memory_status: u32,
+    memory_address: u32,
+    memory_status_locked: bool,
+    memory_address_locked: bool,
 }
 
 pub(crate) enum IoMapping {
@@ -27,10 +34,23 @@ impl IoControl {
         *self = Self::default();
     }
 
-    pub fn read(&self, offset: u64) -> Result<u32, BusErrorKind> {
+    pub fn read(&mut self, offset: u64) -> Result<u32, BusErrorKind> {
         match offset {
             0 => Ok(VERSION | self.control),
             4 => Ok(self.table_base),
+            0x1000 => {
+                self.async_locked = false;
+                Ok(self.async_status | 0x0080_0000)
+            }
+            0x1004 => Ok(self.async_address),
+            0x1050 => {
+                self.memory_status_locked = false;
+                Ok(self.memory_status)
+            }
+            0x1054 => {
+                self.memory_address_locked = false;
+                Ok(self.memory_address)
+            }
             0x1010 | 0x1014 | 0x1018 | 0x101c | 0x1020 => {
                 Ok(self.slots[((offset - 0x1010) / 4) as usize])
             }
@@ -53,6 +73,17 @@ impl IoControl {
                 }
             }
             4 => self.table_base = value & BASE_MASK,
+            0x1000 => {
+                self.async_status = value & 0xff0e_0000;
+                self.async_locked = value & (1 << 31) != 0;
+            }
+            0x1004 => self.async_address = value & 0x7fff_ffff,
+            0x1050 => {
+                self.memory_status = value & 0x8188_f8f0;
+                self.memory_status_locked = value & (1 << 31) != 0;
+                self.memory_address_locked = self.memory_status_locked;
+            }
+            0x1054 => self.memory_address = value & 0x7fff_ffff,
             0x1010 | 0x1014 | 0x1018 | 0x101c | 0x1020 => {
                 let slot = ((offset - 0x1010) / 4) as usize;
                 // SSCR4 serves masters 4 and 5; both must use translation.
@@ -69,6 +100,46 @@ impl IoControl {
 
     pub(crate) fn take_flush(&mut self) -> Option<IoTlbFlush> {
         self.flushes.pop_front()
+    }
+
+    pub(crate) fn memory_request(
+        &mut self,
+        address: u64,
+        request: MemoryRequest,
+        supervisor: bool,
+    ) {
+        if !self.memory_status_locked {
+            self.memory_status = (u32::from(supervisor) << 24)
+                | (u32::from(request.cpu) << 23)
+                | (u32::from(request.boot_mode) << 12)
+                | (u32::from(request.cacheable) << 11)
+                | ((request.kind as u32) << 4);
+        }
+        if !self.memory_address_locked {
+            self.memory_address = address as u32 & 0x7fff_ffff;
+        }
+    }
+
+    pub(crate) fn sbus_write_error(&mut self, error: BusError, bytes: u8, supervisor: bool) {
+        if self.async_locked {
+            self.async_status |= 1 << 19; // retain first address/cause, report multiple errors
+            return;
+        }
+        let size = match bytes {
+            1 => 1,
+            2 => 2,
+            4 => 0,
+            _ => unreachable!("plain SBus store size"),
+        };
+        let cause = match error.kind {
+            BusErrorKind::SBusTimeout => 1 << 29,
+            BusErrorKind::SBusError => 1 << 28,
+            _ => unreachable!("SBus hardware error"),
+        };
+        self.async_status =
+            (1 << 31) | cause | (size << 25) | (u32::from(supervisor) << 24) | (1 << 17);
+        self.async_address = error.address as u32 & 0x7fff_ffff;
+        self.async_locked = true;
     }
 
     pub(crate) fn mapping(&self, master: u8, address: u32) -> Result<IoMapping, DmaError> {
@@ -117,8 +188,6 @@ impl IoControl {
     fn unsupported_register(offset: u64) -> BusErrorKind {
         match offset {
             0x14 | 0x18 => BusErrorKind::Unsupported("read of write-only I/O TLB flush port"),
-            0x1000 | 0x1004 => BusErrorKind::Unsupported("asynchronous I/O fault register"),
-            0x1050 | 0x1054 => BusErrorKind::Unsupported("memory fault capture register"),
             0x3000 | 0x3004 | 0x3008 | 0x300c | 0x3010 | 0x3014 | 0x3018 | 0x301c => {
                 BusErrorKind::Unsupported("microSPARC-II performance/breakpoint register")
             }
