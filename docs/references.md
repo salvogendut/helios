@@ -14,12 +14,18 @@ test rather than assuming either emulator defines the hardware.
   chapters 4 and 7, B.26–B.29 and C.8 were checked for state registers, trap
   entry, RETT priority and error mode. Immediate state writes use the permitted
   zero-delay implementation choice; guest examples retain portable spacing.
+  B.1/B.4 and B.7/B.8 define doubleword transfers and atomic exchanges;
+  B.14, B.16–B.19 and B.32 define tagged arithmetic, MULScc, multiply/divide and
+  FLUSH. Chapter 7 distinguishes precise faults from optional partial effects
+  after non-resumable multi-access machine errors.
 - [Sun microSPARC-II User's Manual, revision 1.1, July 1994](https://temlib.org/pub/SparcStation/Hardware/Sparc32/microSPARC-II-UsersManual2.pdf):
   primary hardware manual hosted by Temlib. Chapter 5 (tables 9, 18, 19, 23–28
-  and 40) and chapter 11 define the target's 31-bit addressing, contexts,
+  and 40) and chapter 12 define the target's 31-bit addressing, contexts,
   permissions, probe/flush, fault state, NF, boot mapping and ASIs. The PCR
   figure/reserved-bit wording and root PTE descriptions have inconsistencies;
-  [memory.md](memory.md) states the implemented choices and limits.
+  [memory.md](memory.md) states the implemented choices and limits. Sections
+  3.5–3.6 define integer multiply/divide, including negative division-overflow
+  method B on printed page 41. Sections 6.9 and 7.8 describe FLUSH/cache behavior.
 - Local `../iris`, inspected at `b23f674c235b37c3ac83808085d28ac128bb79c4`:
   `HACKING.md`, `src/traits.rs`, and the machine/frontend boundaries. Architectural
   inspiration includes word-transparent data paths, functional hardware
@@ -35,7 +41,7 @@ Reference revision: `f71afb409a87c4ecd0f9d63a5963eb645dfab780` (inspected 2026-1
 | [SPARC system overview](https://www.qemu.org/docs/master/system/target-sparc.html) | Machine/peripheral inventory and firmware context |
 | [hw/sparc/sun4m.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/sparc/sun4m.c) | SS-5 profile, physical addresses, wiring and firmware interfaces |
 | [target/sparc/cpu.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/cpu.c) | MB86904 identity, window count and reset state |
-| [target/sparc/translate.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/translate.c) | Integer flags, decoding and control transfers |
+| [target/sparc/translate.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/translate.c) | Integer flags, multiply/divide, tagged arithmetic, doublewords, atomics and control transfers |
 | [target/sparc/win_helper.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/win_helper.c) | Window management and privileged state |
 | [target/sparc/mmu_helper.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/mmu_helper.c) | Independent SRMMU walk, permissions, R/M and fault comparison |
 | [target/sparc/ldst_helper.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/ldst_helper.c) | ASI dispatch, control registers, cache/TLB flush and bypass comparison |
@@ -60,7 +66,7 @@ inspected revision was `ed59c15fe78596ec6ff8fe04482ede78e6122e34`.
 
 | Source | Use |
 | --- | --- |
-| [src/devices/cpu/sparc/sparc.cpp](https://github.com/mamedev/mame/blob/cd883a1be2fe0d120bfe594b0efcab5751ae565b/src/devices/cpu/sparc/sparc.cpp) | Independent interpreter reference: arithmetic, register aliases, SAVE/RESTORE, branch annul and JMPL |
+| [src/devices/cpu/sparc/sparc.cpp](https://github.com/mamedev/mame/blob/cd883a1be2fe0d120bfe594b0efcab5751ae565b/src/devices/cpu/sparc/sparc.cpp) | Independent interpreter reference: arithmetic, register aliases, SAVE/RESTORE, branch annul, JMPL, tagged arithmetic, MULScc, doublewords and atomics |
 | [src/devices/cpu/sparc/sparc.h](https://github.com/mamedev/mame/blob/cd883a1be2fe0d120bfe594b0efcab5751ae565b/src/devices/cpu/sparc/sparc.h) | CPU state and implementation structure |
 | [src/mame/sun/sun4.cpp](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/mame/sun/sun4.cpp) | Sun machine context and device wiring |
 

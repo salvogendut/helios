@@ -7,7 +7,7 @@ synchronous memory access; cache timing, cache RAM diagnostics and peripherals
 are not implemented.
 
 The sources are the Sun **microSPARC-II User's Manual**, revision 1.1, July 1994,
-chapters 5 and 11, and SPARC V8 appendix H. Links and the pinned QEMU comparison
+chapters 5 and 12, and SPARC V8 appendix H. Links and the pinned QEMU comparison
 revision are in [references.md](references.md). Tests use newly written programs
 and synthetic page tables, without firmware or an external assembler.
 
@@ -17,7 +17,8 @@ and synthetic page tables, without firmware or an external assembler.
 fetches select ASI 8/9 and ordinary data accesses select ASI A/B according to
 PSR.S. Alternate-space instructions require supervisor mode and register
 addressing (`i=0`). Privilege/encoding checks happen before memory effects.
-Supported instructions are LDA/LDUBA/LDUHA/LDSBA/LDSHA and STA/STBA/STHA.
+Supported instructions are LDA/LDUBA/LDUHA/LDSBA/LDSHA/LDDA,
+STA/STBA/STHA/STDA and SWAPA/LDSTUBA.
 Alignment is checked before translation and is not suppressed by PCR.NF.
 The public MMU load/store methods assume that the CPU has checked privilege.
 
@@ -48,16 +49,46 @@ starts at physical `0x70000000`; unused bytes are filled with `0xff`, including
 an incomplete last word. ROM stores fail. No ELF loader, QEMU `fw_cfg`, NVRAM,
 serial port or complete firmware boot environment is implied by this command.
 
+## Doubleword and atomic accesses
+
+LDD/STD and their alternate forms require eight-byte alignment and an even
+register-pair number. Helios takes the permitted illegal-instruction trap for
+odd register pairs. The lower memory address supplies the even register; rd=0
+still transfers the second word through g1. Sources and effective addresses are
+captured before any destination register is written, including overlapping pairs.
+An aligned doubleword fits in one MMU page and uses one translation.
+
+SWAP exchanges a word with rd; LDSTUB returns an unsigned byte and stores `0xff`
+into that byte lane. Both operate even when rd=g0. SWAP requires word alignment;
+LDSTUB accepts any byte address. The ASI must be an implemented memory space
+(8–B or 20); applying a doubleword or atomic operation to MMU registers stops
+explicitly before control-register side effects.
+
+Each doubleword access or exchange is a single bus transaction. A rejected
+transaction leaves the destination registers and target memory unchanged. This
+is stricter than V8's permitted partial effects after some second-cycle machine
+errors; Helios does not model those non-resumable errors. MMU fault status and
+successful translation's R/M updates remain separate effects. SFSR/SFAR describe
+the whole transaction at its effective virtual address; the bus error can also
+identify a failing second physical word.
+
+Atomic operations check store permission before touching the target and use the
+store access type in SFSR. All writable data permissions also permit a read;
+instruction-space exchanges require both execute and write. R and M are set on
+successful translation. PCR.NF still records failures, returns zero for failed
+loads/exchanges (two zero words for LDD), and suppresses target writes. It never
+turns a read-only mapping into a writable one.
+
 ## Control spaces
 
 | ASI | Implemented access |
 | --- | --- |
 | `03` | Word load: probe; word store: TLB flush |
 | `04` | Word reads/writes of the registers below |
-| `08` / `09` | User / supervisor instruction space, byte/halfword/word |
-| `0a` / `0b` | User / supervisor data space, byte/halfword/word |
+| `08` / `09` | User / supervisor instruction space, byte/halfword/word/doubleword and atomics |
+| `0a` / `0b` | User / supervisor data space, byte/halfword/word/doubleword and atomics |
 | `10`–`14` | Word cache-flush stores, completed immediately with coherent memory |
-| `20` | Physical bypass, byte/halfword/word |
+| `20` | Physical bypass, byte/halfword/word/doubleword and atomics |
 
 For ASI 4, VA bits 12:8 select a register and bits 7:0 are ignored after alignment
 checking. Bits 31:13 must be zero.

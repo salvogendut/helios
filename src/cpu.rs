@@ -26,6 +26,15 @@ pub struct Icc {
 }
 
 impl Icc {
+    fn from_result(result: u32, overflow: bool, carry: bool) -> Self {
+        Self {
+            n: result >> 31 != 0,
+            z: result == 0,
+            v: overflow,
+            c: carry,
+        }
+    }
+
     fn matches(self, condition: u32) -> bool {
         let less = self.n ^ self.v;
         match condition {
@@ -65,6 +74,8 @@ pub enum FaultKind {
     MisalignedJump(u32),
     WindowOverflow,
     WindowUnderflow,
+    TagOverflow,
+    DivisionByZero,
 }
 
 impl FaultKind {
@@ -78,6 +89,8 @@ impl FaultKind {
             Self::PrivilegedInstruction => 0x03,
             Self::WindowOverflow => 0x05,
             Self::WindowUnderflow => 0x06,
+            Self::TagOverflow => 0x0a,
+            Self::DivisionByZero => 0x2a,
             Self::MisalignedJump(_) => 0x07,
             Self::InstructionAccess(e) | Self::DataAccess(e)
                 if e.kind == BusErrorKind::Misaligned =>
@@ -416,14 +429,75 @@ impl Cpu {
                         _ => unreachable!("validated ALU opcode"),
                     };
                     if op3 & 0x10 != 0 {
-                        self.icc = Icc {
-                            n: result >> 31 != 0,
-                            z: result == 0,
-                            v: overflow,
-                            c: carry,
-                        };
+                        self.icc = Icc::from_result(result, overflow, carry);
                     }
                     self.write_reg(rd, result);
+                }
+                0x0a | 0x0b | 0x1a | 0x1b => {
+                    let product = if op3 & 1 == 0 {
+                        u64::from(a) * u64::from(b)
+                    } else {
+                        (i64::from(a as i32) * i64::from(b as i32)) as u64
+                    };
+                    self.y = (product >> 32) as u32;
+                    self.write_reg(rd, product as u32);
+                    if op3 & 0x10 != 0 {
+                        self.icc = Icc::from_result(product as u32, false, false);
+                    }
+                }
+                0x0e | 0x0f | 0x1e | 0x1f => {
+                    if b == 0 {
+                        return Err(FaultKind::DivisionByZero);
+                    }
+                    let dividend = (u64::from(self.y) << 32) | u64::from(a);
+                    let (result, overflow) = if op3 & 1 == 0 {
+                        let quotient = dividend / u64::from(b);
+                        (
+                            quotient.min(u64::from(u32::MAX)) as u32,
+                            quotient > u64::from(u32::MAX),
+                        )
+                    } else {
+                        // Widen before dividing, including i64::MIN / -1.
+                        let dividend = i128::from(dividend as i64);
+                        let divisor = i128::from(b as i32);
+                        let quotient = dividend / divisor;
+                        let min = i128::from(i32::MIN);
+                        let max = i128::from(i32::MAX);
+                        // microSPARC-II uses V8 method B: a negative fractional
+                        // result below MIN also overflows when truncation is MIN.
+                        let overflow = quotient < min
+                            || quotient > max
+                            || (quotient == min && dividend % divisor != 0);
+                        (quotient.clamp(min, max) as i32 as u32, overflow)
+                    };
+                    self.write_reg(rd, result);
+                    if op3 & 0x10 != 0 {
+                        self.icc = Icc::from_result(result, overflow, false);
+                    }
+                    // V8 permits Y to be left unchanged; software must not rely
+                    // on its value after division. No remainder is exposed here.
+                }
+                0x20..=0x23 => {
+                    let ((result, carry), (_, arithmetic_overflow)) = if op3 & 1 == 0 {
+                        (a.overflowing_add(b), (a as i32).overflowing_add(b as i32))
+                    } else {
+                        (a.overflowing_sub(b), (a as i32).overflowing_sub(b as i32))
+                    };
+                    let overflow = arithmetic_overflow || (a | b) & 3 != 0;
+                    if op3 & 2 != 0 && overflow {
+                        return Err(FaultKind::TagOverflow);
+                    }
+                    self.write_reg(rd, result);
+                    self.icc = Icc::from_result(result, overflow, carry);
+                }
+                0x24 => {
+                    let shifted = (a >> 1) | (u32::from(self.icc.n ^ self.icc.v) << 31);
+                    let addend = if self.y & 1 != 0 { b } else { 0 };
+                    let (result, carry) = shifted.overflowing_add(addend);
+                    let (_, overflow) = (shifted as i32).overflowing_add(addend as i32);
+                    self.y = (a << 31) | (self.y >> 1);
+                    self.write_reg(rd, result);
+                    self.icc = Icc::from_result(result, overflow, carry);
                 }
                 0x25..=0x27 => {
                     let amount = b & 31;
@@ -503,6 +577,11 @@ impl Cpu {
                         return Err(FaultKind::SoftwareTrap((a.wrapping_add(b) & 0x7f) as u8));
                     }
                 }
+                0x3b => {
+                    // FLUSH: no instruction cache or queued stores. All prior
+                    // writes are already visible to subsequent fetches. This is
+                    // unprivileged, performs no data access and does not flush TLB.
+                }
                 0x3c | 0x3d => {
                     let saving = op3 == 0x3c;
                     let new_cwp =
@@ -522,8 +601,8 @@ impl Cpu {
             3 => {
                 let operation = op3 & !0x10;
                 let width = match operation {
-                    0x00 | 0x04 => Width::Word,
-                    0x01 | 0x05 | 0x09 => Width::Byte,
+                    0x00 | 0x03 | 0x04 | 0x07 | 0x0f => Width::Word,
+                    0x01 | 0x05 | 0x09 | 0x0d => Width::Byte,
                     0x02 | 0x06 | 0x0a => Width::Half,
                     _ => return Err(FaultKind::UnsupportedInstruction),
                 };
@@ -539,7 +618,31 @@ impl Cpu {
                     10
                 };
                 let address = a.wrapping_add(b);
-                if matches!(operation, 0x04..=0x06) {
+                if matches!(operation, 0x03 | 0x07) && rd & 1 != 0 {
+                    return Err(FaultKind::IllegalInstruction);
+                }
+                if operation == 0x03 {
+                    let words = self
+                        .mmu
+                        .load_doubleword(bus, address, asi)
+                        .map_err(|error| Self::memory_fault(error, false))?;
+                    self.write_reg(rd, words[0]);
+                    self.write_reg(rd + 1, words[1]);
+                } else if operation == 0x07 {
+                    let words = [self.read_reg(rd), self.read_reg(rd + 1)];
+                    self.mmu
+                        .store_doubleword(bus, address, asi, words)
+                        .map_err(|error| Self::memory_fault(error, false))?;
+                } else if matches!(operation, 0x0d | 0x0f) {
+                    let value = self.read_reg(rd);
+                    let result = if operation == 0x0f {
+                        self.mmu.swap(bus, address, asi, value)
+                    } else {
+                        self.mmu.load_store_byte(bus, address, asi)
+                    }
+                    .map_err(|error| Self::memory_fault(error, false))?;
+                    self.write_reg(rd, result);
+                } else if matches!(operation, 0x04..=0x06) {
                     let value = self.read_reg(rd);
                     self.mmu
                         .store(bus, address, asi, width, value)

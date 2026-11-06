@@ -50,6 +50,14 @@ pub struct MmuFault {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemoryOperation {
+    LoadDoubleword,
+    StoreDoubleword,
+    Swap,
+    LoadStoreByte,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryError {
     Bus(BusError),
     Translation(MmuFault),
@@ -62,6 +70,10 @@ pub enum MemoryError {
     UnsupportedRegister(u32),
     UnsupportedControl(u32),
     UnsupportedRootPte,
+    UnsupportedOperation {
+        asi: u8,
+        operation: MemoryOperation,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -296,8 +308,114 @@ impl Srmmu {
         self.finish(access, result)
     }
 
+    pub fn load_doubleword(
+        &mut self,
+        bus: &mut impl Bus,
+        address: u32,
+        asi: u8,
+    ) -> Result<[u32; 2], MemoryError> {
+        Self::aligned_to(address, 8)?;
+        Self::memory_space(asi, MemoryOperation::LoadDoubleword)?;
+        let access = Access {
+            address,
+            asi,
+            write: false,
+        };
+        // Eight-byte alignment guarantees that both words occupy the same page.
+        let result = self
+            .translate(bus, access)
+            .and_then(|physical| bus.read_doubleword(physical).map_err(MemoryError::Bus));
+        self.finish(access, result)
+    }
+
+    pub fn store_doubleword(
+        &mut self,
+        bus: &mut impl Bus,
+        address: u32,
+        asi: u8,
+        words: [u32; 2],
+    ) -> Result<(), MemoryError> {
+        Self::aligned_to(address, 8)?;
+        Self::memory_space(asi, MemoryOperation::StoreDoubleword)?;
+        let access = Access {
+            address,
+            asi,
+            write: true,
+        };
+        let result = self.translate(bus, access).and_then(|physical| {
+            bus.write_doubleword(physical, words)
+                .map_err(MemoryError::Bus)
+        });
+        self.finish(access, result)
+    }
+
+    pub fn swap(
+        &mut self,
+        bus: &mut impl Bus,
+        address: u32,
+        asi: u8,
+        value: u32,
+    ) -> Result<u32, MemoryError> {
+        Self::aligned(address, Width::Word)?;
+        self.exchange(bus, address, asi, Some(value))
+    }
+
+    pub fn load_store_byte(
+        &mut self,
+        bus: &mut impl Bus,
+        address: u32,
+        asi: u8,
+    ) -> Result<u32, MemoryError> {
+        self.exchange(bus, address, asi, None)
+    }
+
+    fn exchange(
+        &mut self,
+        bus: &mut impl Bus,
+        address: u32,
+        asi: u8,
+        value: Option<u32>,
+    ) -> Result<u32, MemoryError> {
+        Self::memory_space(
+            asi,
+            if value.is_some() {
+                MemoryOperation::Swap
+            } else {
+                MemoryOperation::LoadStoreByte
+            },
+        )?;
+        // All writable data permissions also permit reading; instruction-space
+        // writes require both execute and write. Check before issuing the bus
+        // transaction, and classify the access as a store for SFSR/R/M.
+        let access = Access {
+            address,
+            asi,
+            write: true,
+        };
+        let result = self.translate(bus, access).and_then(|physical| {
+            match value {
+                Some(value) => bus.swap32(physical, value),
+                None => bus.ldstub8(physical).map(u32::from),
+            }
+            .map_err(MemoryError::Bus)
+        });
+        self.finish(access, result)
+    }
+
+    fn memory_space(asi: u8, operation: MemoryOperation) -> Result<(), MemoryError> {
+        if matches!(asi, 8..=11 | 0x20) {
+            Ok(())
+        } else {
+            Err(MemoryError::UnsupportedOperation { asi, operation })
+        }
+    }
+
     fn aligned(address: u32, width: Width) -> Result<(), MemoryError> {
-        if address % width.alignment() != 0 {
+        Self::aligned_to(address, width.alignment())
+    }
+
+    fn aligned_to(address: u32, alignment: u32) -> Result<(), MemoryError> {
+        if address % alignment != 0 {
             Err(MemoryError::Bus(BusError {
                 address: u64::from(address),
                 kind: BusErrorKind::Misaligned,

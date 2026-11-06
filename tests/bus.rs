@@ -67,3 +67,52 @@ fn physical_addresses_are_not_truncated_to_32_bits() {
     assert_eq!(bus.read32(0).unwrap(), 0);
     assert_eq!(bus.read32(0x1_0000_0000).unwrap(), 0xfeed_beef);
 }
+
+#[test]
+fn doubleword_transfer_validates_both_words_before_writing() {
+    let mut bus = MemoryBus::default();
+    bus.map_ram(0, 4).unwrap();
+    bus.write32(0, 0x1122_3344).unwrap();
+    assert_eq!(
+        bus.write_doubleword(0, [1, 2]).unwrap_err().kind,
+        BusErrorKind::Unmapped
+    );
+    assert_eq!(bus.read32(0).unwrap(), 0x1122_3344);
+    bus.map_rom(4, &0x5566_7788u32.to_be_bytes()).unwrap();
+    assert_eq!(bus.read_doubleword(0).unwrap(), [0x1122_3344, 0x5566_7788]);
+    assert_eq!(
+        bus.write_doubleword(0, [1, 2]).unwrap_err().kind,
+        BusErrorKind::ReadOnly
+    );
+    assert_eq!(bus.read_doubleword(0).unwrap(), [0x1122_3344, 0x5566_7788]);
+    // Separate adjacent RAM mappings still form one valid doubleword.
+    bus.map_ram(8, 4).unwrap();
+    bus.map_ram(12, 4).unwrap();
+    bus.write_doubleword(8, [0xaabb_ccdd, 0xeeff_0011]).unwrap();
+    assert_eq!(bus.read_doubleword(8).unwrap(), [0xaabb_ccdd, 0xeeff_0011]);
+    assert_eq!(
+        bus.write_doubleword(12, [0, 0]).unwrap_err().kind,
+        BusErrorKind::Misaligned
+    );
+    assert_eq!(
+        bus.read_doubleword(12).unwrap_err().kind,
+        BusErrorKind::Misaligned
+    );
+}
+
+#[test]
+fn bus_exchanges_preserve_byte_lanes_and_reject_rom_without_mutation() {
+    let mut bus = MemoryBus::default();
+    bus.map_ram(0, 4).unwrap();
+    bus.map_rom(4, &0x1234_5678u32.to_be_bytes()).unwrap();
+    bus.write32(0, 0x0180_feff).unwrap();
+    for (offset, old) in [(0, 1), (1, 0x80), (2, 0xfe), (3, 0xff)] {
+        assert_eq!(bus.ldstub8(offset).unwrap(), old);
+    }
+    assert_eq!(bus.swap32(0, 0xdead_beef).unwrap(), u32::MAX);
+    assert_eq!(bus.read32(0).unwrap(), 0xdead_beef);
+    assert_eq!(bus.swap32(1, 0).unwrap_err().kind, BusErrorKind::Misaligned);
+    assert_eq!(bus.ldstub8(5).unwrap_err().address, 5);
+    assert_eq!(bus.swap32(4, 0).unwrap_err().kind, BusErrorKind::ReadOnly);
+    assert_eq!(bus.read32(4).unwrap(), 0x1234_5678);
+}

@@ -38,9 +38,17 @@ fn aligned(address: u64, alignment: u64) -> Result<(), BusError> {
 /// A failed access must have no side effects. Masked stores must not perform a
 /// read-modify-write through a device's potentially destructive read interface.
 /// MMIO devices may override narrow accesses when their register semantics differ.
+/// Doubleword transfers and exchanges are indivisible bus operations. Implement
+/// them explicitly: generic read-then-write fallbacks can consume MMIO data before
+/// discovering a write failure. Future concurrent owners must serialize them.
 pub trait Bus {
     fn read32(&mut self, address: u64) -> Result<u32, BusError>;
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError>;
+    /// The word at the lower address comes first, with no host endian conversion.
+    fn read_doubleword(&mut self, address: u64) -> Result<[u32; 2], BusError>;
+    fn write_doubleword(&mut self, address: u64, words: [u32; 2]) -> Result<(), BusError>;
+    fn swap32(&mut self, address: u64, value: u32) -> Result<u32, BusError>;
+    fn ldstub8(&mut self, address: u64) -> Result<u8, BusError>;
 
     fn write32(&mut self, address: u64, value: u32) -> Result<(), BusError> {
         self.write32_masked(address, value, u32::MAX)
@@ -191,6 +199,58 @@ impl MemoryBus {
 }
 
 impl Bus for MemoryBus {
+    fn read_doubleword(&mut self, address: u64) -> Result<[u32; 2], BusError> {
+        aligned(address, 8)?;
+        // This concrete bus contains only RAM/ROM: reads have no side effects.
+        Ok([self.read32(address)?, self.read32(address + 4)?])
+    }
+
+    fn write_doubleword(&mut self, address: u64, words: [u32; 2]) -> Result<(), BusError> {
+        aligned(address, 8)?;
+        // Validate both words, including separate adjacent mappings, before
+        // changing either. Mappings cannot change while this bus is borrowed.
+        for word_address in [address, address + 4] {
+            if self.region_mut(word_address)?.read_only {
+                return Err(BusError {
+                    address: word_address,
+                    kind: BusErrorKind::ReadOnly,
+                });
+            }
+        }
+        self.write32(address, words[0])?;
+        self.write32(address + 4, words[1])
+    }
+
+    fn swap32(&mut self, address: u64, value: u32) -> Result<u32, BusError> {
+        aligned(address, 4)?;
+        let region = self.region_mut(address)?;
+        if region.read_only {
+            return Err(BusError {
+                address,
+                kind: BusErrorKind::ReadOnly,
+            });
+        }
+        let word = &mut region.words[((address - region.base) / 4) as usize];
+        Ok(std::mem::replace(word, value))
+    }
+
+    fn ldstub8(&mut self, address: u64) -> Result<u8, BusError> {
+        let region = self
+            .region_mut(address & !3)
+            .map_err(|error| BusError { address, ..error })?;
+        if region.read_only {
+            return Err(BusError {
+                address,
+                kind: BusErrorKind::ReadOnly,
+            });
+        }
+        let word = &mut region.words[((address - region.base) / 4) as usize];
+        let shift = (3 - (address & 3)) * 8;
+        let old = (*word >> shift) as u8;
+        *word |= 0xff << shift;
+        Ok(old)
+    }
+
     fn read32(&mut self, address: u64) -> Result<u32, BusError> {
         let region = self.region_mut(address)?;
         Ok(region.words[((address - region.base) / 4) as usize])

@@ -23,21 +23,23 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
 - An integer instruction subset: SETHI/NOP, ADD/SUB/ADDX/SUBX and their `cc`
   variants; AND/OR/XOR/ANDN/ORN/XNOR and their `cc` variants; SLL/SRL/SRA;
   Bicc with delay slots and annul; CALL/JMPL; SAVE/RESTORE; LD/LDUB/LDUH/LDSB/LDSH
-  and ST/STB/STH.
+  and ST/STB/STH; LDD/STD; UMUL/SMUL/UDIV/SDIV and their `cc` variants;
+  MULScc; TADDcc/TSUBcc with optional overflow traps; SWAP/LDSTUB; FLUSH.
 - PSR/WIM/TBR/Y reads and writes, supervisor checks, Ticc, RETT, UNIMP and
   synchronous STBAR. Precise traps save PC/nPC, rotate windows and enter a guest
   handler; faults with traps disabled latch CPU error state.
 - Word-backed RAM and ROM, big-endian byte lanes, checked mappings and accesses,
   raw image loading, instruction tracing, and focused CPU/bus tests.
-- Alternate-space byte, halfword and word loads/stores; microSPARC-II SRMMU
+- Alternate-space byte, halfword, word and doubleword loads/stores and atomic
+  exchanges; microSPARC-II SRMMU
   translation, access permissions, contexts, fault registers and TLB flush/probe.
 - CPU/MMU reset, boot-mode instruction mapping and a raw PROM runner.
 
 Unsupported emulator behavior remains a host stop, separate from guest traps.
-Remaining integer instructions (including doubleword accesses, multiply/divide
-and atomics), MMU/cache diagnostics, FPU, external interrupts, timers, serial,
-NVRAM, SCSI, networking and graphics remain to be implemented. There is no firmware
-or OS compatibility claim.
+Implementation-specific ASRs, broader illegal-opcode classification, MMU/cache
+diagnostics, FPU, external interrupts, timers, serial, NVRAM, SCSI, networking
+and graphics remain to be implemented. There is no firmware or OS compatibility
+claim.
 
 ## Build and run
 

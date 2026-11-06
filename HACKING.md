@@ -61,6 +61,15 @@ are distinct errors. Failed bus accesses must not mutate memory or devices.
 Masked stores do not call the device read path. RAM's default narrow accessors
 are unsuitable for some MMIO registers; those devices must override them.
 
+The bus requires explicit doubleword read/write, word exchange and byte
+load-store operations. Doublewords use `[u32; 2]`, ordered by increasing guest
+address. MemoryBus checks both destinations before a doubleword store, including
+adjacent mappings. A failed transaction preserves memory and destination
+registers. Exchanges check writeability before consuming a read. Do not build
+future MMIO exchanges from separate read/write callbacks: a destructive read
+must not happen before a rejected write. The current single-owner bus serializes
+operations; concurrent device/DMA owners will need the same atomicity contract.
+
 ## CPU state and control flow
 
 Globals are shared across all eight windows and `%g0` always reads zero. Each
@@ -80,6 +89,32 @@ CALL and JMPL save the address of the control-transfer instruction as the link.
 Addition's C bit is carry-out; subtraction's C bit is borrow. Logical `cc`
 instructions clear C and V. Non-`cc` operations leave ICC unchanged. Register
 values and addresses use explicit wrapping arithmetic where the ISA requires it.
+
+## Multiply/divide, tagged arithmetic and instruction flushing
+
+UMUL/SMUL produce a 64-bit product in Y:rd. Their `cc` variants derive N/Z
+from the low word only and clear V/C. UDIV/SDIV divide Y:rs1 by a 32-bit divisor,
+truncate inexact signed results toward zero, and saturate overflowing quotients.
+Their `cc` variants derive N/Z from the saturated result, set V on overflow and
+clear C. Division by zero traps before modifying rd, Y or ICC, including rd=g0.
+
+microSPARC-II selects SPARC V8 negative-overflow method B: the mathematical
+result falling below -2^31 overflows even when truncation yields exactly -2^31.
+For example, `-4294967297 / 2` returns `0x80000000` with V=1; `-4294967296 / 2`
+returns the same value with V=0. Signed arithmetic widens before division so
+`i64::MIN / -1` cannot overflow the host. Helios retains Y after division, a V8
+implementation choice; guest software must not assume a preserved Y or remainder.
+
+MULScc shifts old rs1:Y using the old N XOR V bit, conditionally adds the second
+operand according to old Y bit 0, and updates Y and ICC even when rd=g0. Tagged
+add/subtract sets V for either signed arithmetic overflow or nonzero operand tag
+bits 1:0. The `TV` forms trap with rd and ICC unchanged; other forms commit the
+result and flags. Non-`cc` multiply/divide instructions preserve ICC.
+
+FLUSH is unprivileged and completes immediately under the coherent memory model.
+It performs no data translation or bus read, tolerates low address bits and does
+not invalidate the TLB. Subsequent instruction fetches observe preceding stores.
+See V8 B.14, B.16–B.19 and B.32, and microSPARC-II sections 3.5–3.6, 6.9 and 7.8.
 
 ## Privileged state and synchronous traps
 
@@ -112,10 +147,12 @@ The implemented trap types are:
 | Cause | TT |
 | --- | --- |
 | MMU instruction / data access exception | `0x01` / `0x09` |
-| UNIMP or invalid WRPSR CWP; supervisor RETT with ET=1 | `0x02` |
+| UNIMP, odd LDD/STD register pair, invalid WRPSR CWP or alternate-space `i=1`; supervisor RETT with ET=1 | `0x02` |
 | Privileged instruction in user mode | `0x03` |
 | Window overflow / underflow | `0x05` / `0x06` |
 | Misaligned memory access or jump | `0x07` |
+| Tagged arithmetic overflow (`TV` forms) | `0x0a` |
+| Integer division by zero | `0x2a` |
 | Physical instruction / data bus error | `0x21` / `0x29` |
 | Taken Ticc | `0x80` OR low seven bits of the operand sum |
 
@@ -167,6 +204,10 @@ cover all ACC/access-type combinations, three page sizes, contexts/global
 entries, stale TLB mappings, flush/probe, R/M, fault priority, no-fault mode and
 PROM reset. A guest handler installs a missing PTE and retries a faulting load
 in a branch delay slot; another guest switches from PROM to translated RAM.
+Integer tests cover signed/unsigned product halves, saturating division and the
+microSPARC-II negative boundary, precise arithmetic traps, 33-step MULScc
+products, tagged arithmetic, register-pair aliases, indivisible bus accesses,
+permission checks before atomic target access and self-modifying code with FLUSH.
 These are local regression checks, not a SPARC conformance suite or a completed
 QEMU/MAME differential comparison.
 
