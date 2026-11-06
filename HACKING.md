@@ -348,3 +348,10 @@ is separate from firmware-free CI. Floppy regressions exercise command/result
 backpressure, configuration/reset retention, delayed polling, missing-track-zero
 failure, seek status and level-11 interrupt acknowledgement; sector transfers
 and attached drives remain pending.
+
+
+MACIO initialization tests cover DMA2 reset/W1C/IRQ gating, address/count chaining,
+ESP FIFO and configuration, count/counter separation, reset retention and chip
+identification. DMA transfers and storage targets are still absent. The firmware
+can enumerate device nodes before those nodes have working I/O; report the
+serial transcript and actual register access, not just the node names.

@@ -438,6 +438,60 @@ its recovery monitor. This distinguishes successful DMA register probing from
 an implemented SCSI controller or disk. Local records are under
 `local/probes/macio-dma-ss5/`.
 
+## ESP initialization and full RAM test
+
+With the integrated NCR53C9X initialization subset, the unmodified original ROM
+finishes creating onboard device nodes, correctly handles four empty SBus-slot
+probes, and prints its normal machine banner:
+
+```text
+SPARCstation 5, No Keyboard
+ROM Rev. 2.15, 128 MB memory installed, Serial #1.
+Ethernet address 2:0:0:0:0:1, Host ID: 80000001.
+```
+
+The default NVRAM run then completes OBP's 128 MiB memory diagnostic without a
+reported RAM error. It attempts its default diagnostic network boot:
+
+```text
+Boot device: /iommu/sbus/ledma@5,8400010/le@5,8c00000  File and args:
+Data Access Error
+Type  help  for more information
+ok 1 2 + .
+3
+ok
+```
+
+The final data-access trap is at step **1009127039**, PC=`0xffd16718`, a word
+read of physical **0x78400010**, the unimplemented Ethernet DMA CSR. The
+`sd`, `st`, `le` and other printed node names alone do not establish working I/O.
+The four empty-slot timeouts earlier in enumeration are handled by OBP and print
+`Nothing there`; they do not abort device probing.
+
+Using the same original-ROM SHA-256, default NVRAM, four 32 MiB DSIMMs, and
+100 ns functional step time as the earlier checkpoint, a bounded library run
+reaches its first prompt at **1009351805** steps. It sends `1 2 + .` through
+TTYA only after that prompt, respecting receive FIFO capacity. The reply is
+`1 2 + .\r\n3 \r\nok `, with the second prompt at **1009623777** steps:
+
+- 1009614328 instructions, including the reset-requesting store;
+- 21 synchronous traps, 9428 interrupt entries and one software reset;
+- 3922 output bytes; PC=`0xffd1689c`, nPC=`0xffd168a0`, CPU error latch clear.
+
+Local evidence is under `local/probes/esp-ram-test-ss5/`: probe source,
+configuration metadata, raw serial output, trace/counts and a separate NVRAM
+export. The probe stops at the verified second prompt. A plain CLI run needs a
+larger budget than the early recovery checkpoint, for example:
+
+```sh
+cargo run --release --locked --offline -- boot local/firmware/sun-ss5.bin --steps 1100000000
+```
+
+The earlier timer POST warning (`expected 0000001e`) still occurs. This is a
+completed device-enumeration/RAM-test checkpoint followed by recovery from an
+unsupported network boot, not clean POST or working storage/networking. CGsix,
+SCSI targets/data DMA and Ethernet remain unfinished.
+
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)
 provide the bring-up workflow; register semantics still require chip-level

@@ -1,5 +1,6 @@
 //! Functional workstation devices. Host I/O and scheduling belong to the caller.
 pub mod auxiliary;
+pub mod esp;
 pub mod floppy;
 pub mod interrupt;
 pub mod io_control;

@@ -25,3 +25,5 @@
 - [afx-presence.md](afx-presence.md) — reference: board AFX-presence byte and the subsequent MACIO DMA control-register fault.
 
 - [MACIO DMA2 registers](macio-dma.md): SCSI DMA configuration, primary manual corrections and next ESP access.
+
+- [ESP initialization and RAM test](esp-initialization.md): completed enumeration, full original-OBP memory diagnostic and next Ethernet DMA access.

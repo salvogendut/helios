@@ -3,6 +3,7 @@
 use crate::bus::{Bus, BusError, BusErrorKind, IoTlbFlush, MapError, MemoryBus, MemoryRequest};
 use crate::devices::{
     auxiliary::Auxiliary,
+    esp::Esp,
     floppy::Floppy,
     interrupt::{InterruptController, Source},
     io_control::{IoControl, IO_CONTROL_SIZE},
@@ -31,7 +32,8 @@ pub const SYSTEM_INTERRUPT_BASE: u64 = 0x71e1_0000;
 pub const RESET_BASE: u64 = 0x71f0_0000;
 pub const MACIO_ID_BASE: u64 = 0x7800_0000;
 pub const SCSI_DMA_BASE: u64 = 0x7840_0000;
-const DEVICE_RANGES: [(u64, u64); 15] = [
+pub const ESP_BASE: u64 = 0x7880_0000;
+const DEVICE_RANGES: [(u64, u64); 16] = [
     (IO_CONTROL_BASE, IO_CONTROL_BASE + IO_CONTROL_SIZE),
     (AFX_PRESENCE_BASE, AFX_PRESENCE_BASE + 1),
     (KEYBOARD_SERIAL_BASE, KEYBOARD_SERIAL_BASE + 8),
@@ -47,6 +49,7 @@ const DEVICE_RANGES: [(u64, u64); 15] = [
     (RESET_BASE, RESET_BASE + 4),
     (MACIO_ID_BASE, MACIO_ID_BASE + 4),
     (SCSI_DMA_BASE, SCSI_DMA_BASE + 0x10),
+    (ESP_BASE, ESP_BASE + 0x40),
 ];
 
 #[derive(Clone, Copy)]
@@ -72,11 +75,13 @@ pub struct Sun4mDevices {
     pub timers: Timers,
     pub reset: ResetControl,
     pub scsi_dma: ScsiDma,
+    pub esp: Esp,
     rtc_phase_ns: u32,
 }
 
 impl Sun4mDevices {
     fn sync_interrupts(&mut self) {
+        self.scsi_dma.set_scsi_irq(self.esp.irq());
         self.interrupts
             .set_source(Source::Scsi, self.scsi_dma.irq());
         self.interrupts
@@ -87,6 +92,7 @@ impl Sun4mDevices {
     }
 
     fn advance_ns(&mut self, ns: u64) {
+        self.esp.advance_ns(ns);
         self.floppy.advance_ns(ns);
         self.timers.advance_ns(ns);
         let remainder = ns % 1_000_000_000 + u64::from(self.rtc_phase_ns);
@@ -109,7 +115,14 @@ impl SystemBus {
     fn check_macio_access(&mut self, address: u64, bytes: u64) -> Result<(), BusError> {
         let scsi = (SCSI_DMA_BASE..SCSI_DMA_BASE + 0x10).contains(&address);
         let id = (MACIO_ID_BASE..MACIO_ID_BASE + 4).contains(&address);
+        let esp = (ESP_BASE..ESP_BASE + 0x40).contains(&address);
         if let Some(devices) = &mut self.devices {
+            if esp && bytes != 1 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Unsupported("wide ESP access"),
+                });
+            }
             if scsi || id {
                 if address % bytes != 0 {
                     return Err(BusError {
@@ -117,7 +130,7 @@ impl SystemBus {
                         kind: BusErrorKind::Misaligned,
                     });
                 }
-                if bytes != 4 {
+                if (scsi && bytes != 4) || bytes > 4 {
                     if scsi {
                         devices.scsi_dma.slave_access_error();
                     }
@@ -213,6 +226,7 @@ impl SystemBus {
             timers: Timers::default(),
             reset: ResetControl::default(),
             scsi_dma: ScsiDma::default(),
+            esp: Esp::default(),
             rtc_phase_ns: 0,
         });
         Ok(())
@@ -242,6 +256,7 @@ impl SystemBus {
             devices.auxiliary.reset();
             devices.floppy.reset();
             devices.scsi_dma.reset();
+            devices.esp.reset();
             devices.serial.reset();
             devices.keyboard_serial.reset();
             devices.interrupts.reset();
@@ -255,6 +270,9 @@ impl SystemBus {
     }
     pub fn advance_seconds(&mut self, seconds: u64) {
         if let Some(devices) = &mut self.devices {
+            devices
+                .esp
+                .advance_ns(seconds.saturating_mul(1_000_000_000));
             devices
                 .floppy
                 .advance_ns(seconds.saturating_mul(1_000_000_000));
@@ -395,12 +413,24 @@ impl Bus for SystemBus {
 
     fn read8(&mut self, address: u64) -> Result<u8, BusError> {
         self.check_macio_access(address, 1)?;
+        if self.devices.is_some() && (MACIO_ID_BASE..MACIO_ID_BASE + 4).contains(&address) {
+            return Ok((0xfe81_0103u32 >> ((3 - (address - MACIO_ID_BASE)) * 8)) as u8);
+        }
         self.check_floppy_access(address, 1)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.read8(address);
         }
         self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
+            if (ESP_BASE..ESP_BASE + 0x40).contains(&address) {
+                let result = if devices.scsi_dma.reset_asserted() {
+                    Ok(0)
+                } else {
+                    devices.esp.read(address - ESP_BASE)
+                };
+                devices.sync_interrupts();
+                return result.map_err(|kind| BusError { address, kind });
+            }
             if address == AFX_PRESENCE_BASE {
                 // Original OBP afx-slot-empty? tests bit 0. The motherboard
                 // presence port exists even when the AFX slot is empty.
@@ -448,6 +478,15 @@ impl Bus for SystemBus {
         }
         self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
+            if (ESP_BASE..ESP_BASE + 0x40).contains(&address) {
+                let result = if devices.scsi_dma.reset_asserted() {
+                    Ok(())
+                } else {
+                    devices.esp.write(address - ESP_BASE, value)
+                };
+                devices.sync_interrupts();
+                return result.map_err(|kind| BusError { address, kind });
+            }
             if address == AFX_PRESENCE_BASE {
                 return Err(BusError {
                     address,
@@ -494,6 +533,9 @@ impl Bus for SystemBus {
     }
     fn read16(&mut self, address: u64) -> Result<u16, BusError> {
         self.check_macio_access(address, 2)?;
+        if self.devices.is_some() && (MACIO_ID_BASE..MACIO_ID_BASE + 4).contains(&address) {
+            return Ok((0xfe81_0103u32 >> ((2 - (address - MACIO_ID_BASE)) * 8)) as u16);
+        }
         self.check_floppy_access(address, 2)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.read16(address);
@@ -515,6 +557,7 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read32(&mut self, address: u64) -> Result<u32, BusError> {
+        self.check_macio_access(address, 4)?;
         self.check_floppy_access(address, 4)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.read32(address);
@@ -545,6 +588,7 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError> {
+        self.check_macio_access(address, 4)?;
         if mask != u32::MAX
             && self.devices.is_some()
             && (FLOPPY_BASE..FLOPPY_BASE + 0x10_0000).contains(&address)
@@ -575,7 +619,13 @@ impl Bus for SystemBus {
             let result = match device {
                 WordDevice::IoControl => devices.io_control.write(offset, value),
                 WordDevice::MacioId => Err(BusErrorKind::Unsupported("write to MACIO ID")),
-                WordDevice::ScsiDma => devices.scsi_dma.write(offset, value),
+                WordDevice::ScsiDma => {
+                    let result = devices.scsi_dma.write(offset, value);
+                    if result.is_ok() && devices.scsi_dma.reset_asserted() {
+                        devices.esp.reset();
+                    }
+                    result
+                }
                 WordDevice::Timer(system) => devices.timers.write(system, offset, value),
                 WordDevice::Interrupt(system) => devices.interrupts.write(system, offset, value),
                 WordDevice::Reset => {

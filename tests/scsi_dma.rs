@@ -1,6 +1,8 @@
 use helios::bus::{Bus, BusErrorKind, MapError};
 use helios::devices::{nvram::Nvram, scsi_dma::ScsiDma};
-use helios::system_bus::{SystemBus, MACIO_ID_BASE, SCSI_DMA_BASE, SYSTEM_INTERRUPT_BASE};
+use helios::system_bus::{
+    SystemBus, ESP_BASE, MACIO_ID_BASE, SCSI_DMA_BASE, SYSTEM_INTERRUPT_BASE,
+};
 
 #[test]
 fn csr_identity_masks_and_empty_fifo_invalidate() {
@@ -84,10 +86,10 @@ fn macio_width_errors_latch_slave_error_and_w1c_acknowledges_it() {
     let mut b = SystemBus::default();
     b.install_sun4m(Nvram::default()).unwrap();
     assert_eq!(b.read32(MACIO_ID_BASE).unwrap(), 0xfe81_0103);
-    assert_eq!(
-        b.read8(MACIO_ID_BASE).unwrap_err().kind,
-        BusErrorKind::SBusError
-    );
+    assert_eq!(b.read8(MACIO_ID_BASE).unwrap(), 0xfe);
+    assert_eq!(b.read8(MACIO_ID_BASE + 3).unwrap(), 0x03);
+    assert_eq!(b.read16(MACIO_ID_BASE).unwrap(), 0xfe81);
+    assert_eq!(b.read16(MACIO_ID_BASE + 2).unwrap(), 0x0103);
     assert_eq!(b.read32(SCSI_DMA_BASE).unwrap(), 0xa000_0000);
     b.write32(SCSI_DMA_BASE + 4, 0x1020_3040).unwrap();
     for e in [
@@ -121,14 +123,15 @@ fn scsi_irq_input_is_level_sensitive_and_gated_to_ncr_level_four() {
     b.install_sun4m(Nvram::default()).unwrap();
     b.write32(SYSTEM_INTERRUPT_BASE + 8, (1 << 31) | (1 << 18))
         .unwrap();
-    b.devices_mut().unwrap().scsi_dma.set_scsi_irq(true);
+    b.write8(ESP_BASE + 12, 0).unwrap();
+    b.write8(ESP_BASE + 12, 0x45).unwrap();
     assert_eq!(b.read32(SCSI_DMA_BASE).unwrap(), 0xa000_0001);
     assert_eq!(b.interrupt_levels(), 0);
     b.write32(SCSI_DMA_BASE, 0x10).unwrap();
     assert_eq!(b.interrupt_levels(), 1 << 4);
     b.write32(SCSI_DMA_BASE, 0x30).unwrap();
     assert_eq!(b.interrupt_levels(), 1 << 4);
-    b.devices_mut().unwrap().scsi_dma.set_scsi_irq(false);
+    assert_eq!(b.read8(ESP_BASE + 20).unwrap(), 8);
     assert_eq!(b.interrupt_levels(), 0);
     b.reset_devices();
     assert_eq!(b.read32(SCSI_DMA_BASE).unwrap(), 0xa000_0000);

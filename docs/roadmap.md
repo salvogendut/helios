@@ -9,8 +9,8 @@ observable acceptance criteria before its status can advance.
 | 0 — Foundation | Library/CLI, integer subset, word bus, runnable bare-metal demo and regression tests | Implemented |
 | 1 — CPU baseline | Complete V8 integer/privileged behavior, PSR/WIM/TBR/Y, precise traps/RETT, ASI dispatch, multiply/divide and atomics; independently checked bare-metal tests | In progress: core integer instruction groups, privileged state, synchronous traps, ASIs, doublewords and atomics implemented; implementation-specific ASRs and broader illegal-opcode classification pending |
 | 2 — Memory system | microSPARC-II reset/boot behavior and SRMMU, permissions, contexts, faults, TLB invalidation and required cache controls; translation/fault tests | In progress: translation, TLB flush/probe and cache diagnostic storage/invalidation implemented; DRAM banks and live TLB diagnostics implemented; injected PTP walks, M-bit rewalks and cache hits/fills pending |
-| 3 — Serial firmware | Original Sun OBP loading, NVRAM/IDPROM, Z8530, interrupt controller and timers; reproducible OBP prompt transcript | Serial recovery prompt reached and Forth response verified; timer warning and later device-probe error prevent claiming clean POST/normal boot |
-| 4 — Storage and kernel | IOMMU, DMA, ESP SCSI, disk/CD-ROM targets and safe image writes; installer/kernel reaches serial userspace | In progress: IOMMU translation/flushes and RAM DMA API implemented; SCSI/Ethernet DMA engines and storage pending |
+| 3 — Serial firmware | Original Sun OBP loading, NVRAM/IDPROM, Z8530, interrupt controller and timers; reproducible OBP prompt transcript | Device enumeration and 128 MiB RAM test complete; recovery prompt/Forth response verified after unsupported network boot; timer warning remains |
+| 4 — Storage and kernel | IOMMU, DMA, ESP SCSI, disk/CD-ROM targets and safe image writes; installer/kernel reaches serial userspace | In progress: IOMMU/RAM DMA API and MACIO SCSI initialization implemented; SCSI/Ethernet data engines and storage targets pending |
 | 5 — Usable workstation | Required FPU behavior, LANCE networking, CGsix/TurboGX framebuffer, keyboard/mouse and host frontend; documented guest compatibility matrix | FPU state/transfers/comparisons/division/addition/subtraction/multiplication/branches and deferred IEEE exceptions implemented; other arithmetic and remaining devices pending |
 | 6 — Performance and tooling | Profiling-driven optimization, optional JIT checked against interpreter, monitor/GDB, snapshots and automated guest runs | Planned |
 
@@ -41,10 +41,12 @@ slave-error classification, asynchronous CPU store capture and module interrupts
 and memory-request capture now have regressions. Original OBP exercises
 single/double arithmetic and deferred exception recovery, then software interrupt
 levels 1–15. The processor-timer warning remains, but chip-revision, auxiliary
-ports and floppy initialization/positioning now let OBP reach a serial recovery
-prompt after a later device-probe error. A Forth command returns `3` and another
-`ok`. The requested bring-up milestone is reached; clean POST, normal boot and
-storage DMA remain unfinished. Widening multiplication, square roots, conversions
+ports, floppy initialization and MACIO SCSI register initialization now let OBP
+complete device enumeration and its 128 MiB RAM test. Automatic network boot
+then faults at the unimplemented Ethernet DMA CSR and returns to the serial
+monitor. A Forth command returns `3` and another `ok`. The serial checkpoint is
+verified; clean POST, OS boot, CGsix and storage/network data transfers remain
+unfinished. Widening multiplication, square roots, conversions
 and quad/unfinished FPU traps also remain pending.
 Ordinary cache hits/fills, injected PTP walks and diagnostic M-bit rewalks
 remain explicit gaps; diagnostic storage alone is not a complete cache model.

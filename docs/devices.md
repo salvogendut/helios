@@ -224,7 +224,8 @@ is installed. RAM/ROM mappings cannot overlap this board input.
 ## NCR89C100 SCSI DMA initialization
 
 The onboard MACIO identifies itself with the read-only word `0xfe810103` at
-`0x78000000`. Its DMA2 SCSI registers at `0x78400000` implement the control/status,
+`0x78000000`. The ID also permits byte and halfword reads (NCR chip-level
+map table 2-7, footnote 3), with normal big-endian lanes. Its DMA2 SCSI registers at `0x78400000` implement the control/status,
 32-bit address and 24-bit byte-count registers. The hardwired DMA revision is
 `0xa`; reserved and read-only fields cannot be changed by stores. Reset remains
 asserted until software clears it and holds the interface idle. Address/count
@@ -246,7 +247,44 @@ ordinary narrow/doubleword accesses return SBus error. Atomic, masked and image
 operations stop explicitly without changing device state.
 
 Diagnostic FIFO accesses, reserved burst modes and illegal combinations of
-count/chaining or transfer-cycle modes stop before mutation. The SCSI controller,
+count/chaining or transfer-cycle modes stop before mutation.
 DMA requests, FIFO/data movement, terminal-count/error generation and the
 Ethernet/parallel channels remain pending. NCR's reset and W1C semantics take
 precedence over QEMU's generic DMA register array.
+
+## NCR53C9X SCSI controller initialization
+
+The integrated ESP/Fast SCSI core occupies `0x78800000..0x7880003f`, with byte
+registers on four-byte boundaries. Implemented behavior includes:
+
+- Separate transfer-count latches and running counter. DMA NOP loads the counter;
+  ordinary NOP does not. Zero encodes the maximum count and does not immediately
+  set terminal count. A compatibility-mode DMA NOP clears the disabled upper
+  counter byte in this functional model; no transfer engine decrements it yet.
+- A 16-byte FIFO, including empty reads, flush, and gross-error status on a
+  full-FIFO overwrite. FIFO overflow alone does not generate an IRQ.
+- Configuration 1/2/3, destination ID, timeout, synchronous parameters and clock
+  conversion. Configuration 2/3 retain all written bits as the manual specifies.
+- Family 0 / revision 2 identification, visible through the high counter only
+  with Features Enable, a DMA NOP, and no high-count write since chip reset.
+- Chip reset and the required following NOP; count/counter, destination and
+  timeout survive reset. FIFO flags/bottom element and configuration reset.
+- Enable/disable selection commands in the disconnected state, including the
+  disable command's function-complete interrupt. No target is attached.
+- SCSI bus reset detection and its optional interrupt, without clearing chip
+  configuration. A functional reset pulse uses 130 CCF clocks at the SS5's
+  40 MHz SCSI clock (26 us for CCF=8), following the manual's approximate pulse
+  duration and reset timing scale. Commands requiring a second pending event
+  stop explicitly; a complete command/interrupt queue is not implemented.
+
+Reading the interrupt register while IRQ is asserted acknowledges the event and
+clears latched status except terminal count. The level reaches DMA2 and then
+NCR CPU level 4. DMA2 reset holds the core reset; accesses complete without data
+transfer (reads choose zero) until reset is released. The NCR89C100 omits the
+standalone core's RESETO pin, so unacknowledged SCSI reset does not reset the CPU.
+
+The implementation supports byte accesses only. Padding, reserved/test registers,
+wide accesses, chip test mode, active selection, data-transfer commands and
+stacked interrupts stop before mutation. SCSI bus arbitration, targets, sector
+I/O and the DMA request/data path remain pending. Creating `sd` and `st` nodes
+in OBP is evidence of firmware enumeration, not working disks or tapes.
