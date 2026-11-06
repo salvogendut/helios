@@ -198,6 +198,36 @@ fn serial_demo_keeps_guest_bytes_separate_from_diagnostics_and_trace() {
 }
 
 #[test]
+fn timer_demo_reports_interrupts_separately_from_instructions_and_sync_traps() {
+    let output = helios(&["timer-demo", "--trace"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("pc="))
+            .count(),
+        254
+    );
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("interrupt="))
+            .count(),
+        2
+    );
+    assert!(stdout.contains("interrupt=10 vector=000011a0"));
+    assert!(stdout.contains("interrupt=14 vector=000011e0"));
+    assert!(stdout.contains("254 instructions, 0 traps, 2 interrupts"));
+    assert!(stdout.contains("Timer demo passed"));
+    assert!(!helios(&["timer-demo", "--unknown"]).status.success());
+}
+
+#[test]
 fn boot_feeds_serial_input_after_guest_initialization_and_saves_nvram() {
     let prom = Image::new(&helios::machine::serial_demo_image());
     let input = Image::new(b"?");

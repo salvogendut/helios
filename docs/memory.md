@@ -23,7 +23,8 @@ Alignment is checked before translation and is not suppressed by PCR.NF.
 The public MMU load/store methods assume that the CPU has checked privilege.
 
 `Cpu::new` and `Machine::bare_metal` start with translation and boot mode off.
-`Machine::sun4m` installs RAM, a raw PROM, serial and NVRAM/RTC, then resets:
+`Machine::sun4m` installs RAM, PROM, serial, NVRAM/RTC, interrupt control and timers,
+then resets:
 
 - PC=0, nPC=4; PSR.S=PSR.PS=1, ET=0, CWP=0; WIM=1.
 - TBR, Y, general registers and ICC are deterministically zero.
@@ -32,8 +33,9 @@ The public MMU load/store methods assume that the CPU has checked privilege.
 
 The deterministic values for otherwise unspecified state are emulator choices,
 not a claim about power-on RAM/register contents. `Machine::reset` retains RAM
-and ROM, NVRAM/RTC and completed serial output. It resets the CPU/MMU and serial
-controller; watchdog reset distinctions are pending.
+and ROM, NVRAM/RTC (including fractional time) and completed serial output.
+It resets CPU/MMU, serial, interrupt control and timers; watchdog reset
+distinctions are pending.
 
 The translation modes follow microSPARC-II table 40:
 
@@ -48,7 +50,8 @@ The translation modes follow microSPARC-II table 40:
 `boot FILE` accepts a nonempty raw image of at most 1 MiB. The PROM aperture
 starts at physical `0x70000000`; unused bytes are filled with `0xff`, including
 an incomplete last word. ROM stores fail. Console serial and NVRAM/RTC are also
-installed. An ELF loader, QEMU `fw_cfg` and complete firmware boot remain pending.
+installed, together with interrupt control and counter timers. An ELF loader,
+QEMU `fw_cfg` and complete firmware boot remain pending.
 
 ## Doubleword and atomic accesses
 
@@ -60,7 +63,8 @@ captured before any destination register is written, including overlapping pairs
 An aligned doubleword fits in one MMU page and uses one translation.
 
 The installed serial and NVRAM devices accept plain byte loads/stores only.
-Wider, masked and atomic MMIO operations stop before touching device state.
+Interrupt and timer registers require aligned word loads/stores. Other widths,
+partial masked stores and atomic MMIO operations stop before device effects.
 
 SWAP exchanges a word with rd; LDSTUB returns an unsigned byte and stores `0xff`
 into that byte lane. Both operate even when rd=g0. SWAP requires word alignment;

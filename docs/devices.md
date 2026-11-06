@@ -2,7 +2,9 @@
 
 `Machine::sun4m` installs the following physical byte apertures. These are a
 functional polling subset, tested with a synthetic PROM, not a firmware-boot
-compatibility claim. `Machine::bare_metal` continues to install RAM only.
+compatibility claim. The machine also installs word-accessed
+[interrupt control and timers](interrupts-timers.md).
+`Machine::bare_metal` continues to install RAM only.
 Sources and reference revisions are listed in [references.md](references.md).
 
 | Physical address | Device/register |
@@ -14,7 +16,7 @@ Sources and reference revisions are listed in [references.md](references.md).
 | `0x71201ff8`–`0x71201fff` | RTC control and seven calendar registers |
 
 The SCC ignores address bit zero within its eight-byte aperture. Wider, masked,
-doubleword and atomic device accesses are explicitly unsupported. `SystemBus`
+doubleword and atomic accesses to these byte devices are unsupported. `SystemBus`
 routes plain bytes directly; a status read cannot consume a neighboring data
 register. Mapping RAM/ROM or loading a raw image over a device is rejected.
 
@@ -40,10 +42,11 @@ clearing W loads all fields into the counter together. The seconds register's
 bit 7 stops the oscillator. Invalid BCD/calendar fields or unsupported test
 bits stop before a W-clear commits. Frequency calibration is unsupported.
 
-`Machine::advance_seconds` or `Nvram::advance_seconds` advances time explicitly;
-CPU instruction counts and host wall time do not currently advance it. Very
-large advances use bounded calendar work. Machine reset retains SRAM, clock
-state and latches. A future machine event clock will supply elapsed time.
+The machine supplies elapsed time from its deterministic 100 ns step quantum
+and `advance_ns`/`advance_seconds` APIs. The standalone `Nvram` device still uses
+explicit `advance_seconds` calls. Host wall time is never consulted. Very large
+advances use bounded calendar work. Machine reset retains SRAM, clock state,
+latches and its fraction of an RTC second. See [guest time](interrupts-timers.md).
 
 `Nvram::from_image` requires exactly 8192 bytes and valid supported clock fields.
 `Nvram::image` exports raw SRAM/register contents. With R/W clear, this includes
@@ -111,5 +114,6 @@ before creating the output. An interrupted host process is not a save point.
 Regressions exercise guest TX/RX, MMU-translated byte accesses, unsupported
 widths without destructive reads, backpressure/retry, channel reset, clock
 latches and calendar boundaries, identity checksums and CLI file behavior.
-Interrupt delivery and timers are the next platform milestone; no Sun PROM,
-OpenBIOS prompt or OS boot has been demonstrated.
+CPU interrupt delivery and counter timers have a separate synthetic PROM demo.
+Serial interrupt generation is still pending; no Sun PROM, OpenBIOS prompt or
+OS boot has been demonstrated.

@@ -5,3 +5,4 @@
 - [memory-system.md](memory-system.md) — reference: microSPARC-II ASI/SRMMU rules and QEMU differences.
 - [integer-operations.md](integer-operations.md) — rule: microSPARC-II division overflow and indivisible memory operations.
 - [device-state.md](device-state.md) — reference: SCC shared pointer, RTC latches and retryable device stops.
+- [interrupts-timers.md](interrupts-timers.md) — reference: NCR89C105 counters, CPU IRQ entry and deterministic time.

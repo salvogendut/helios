@@ -23,3 +23,4 @@ jobs:
       - run: cargo run --locked --offline -- demo
       - run: cargo run --locked --offline -- trap-demo
       - run: cargo run --locked --offline -- serial-demo
+      - run: cargo run --locked --offline -- timer-demo

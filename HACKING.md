@@ -24,10 +24,10 @@ or assume host scheduling is guest timing.
 
 | File | Responsibility |
 | --- | --- |
-| `src/cpu.rs` | Integer interpreter, register windows, privileged state, traps and error state |
+| `src/cpu.rs` | Integer interpreter, windows, privileged state, traps, interrupts and error state |
 | `src/bus.rs` | Physical bus contract, RAM/ROM mappings and external byte import |
-| `src/system_bus.rs` | Machine physical decoding, direct device byte access and mapping checks |
-| `src/devices/` | M48T08 NVRAM/RTC and Z8530 polling state, independent of host I/O |
+| `src/system_bus.rs` | Physical decoding, device widths, clock advancement and IRQ wiring |
+| `src/devices/` | NVRAM/RTC, polled serial, interrupt control and counter timers |
 | `src/mmu.rs` | ASI dispatch, SRMMU translation, TLB, permissions and fault registers |
 | `src/machine.rs` | Bare-metal/reset construction, RAM/PROM limits and demo images |
 | `src/main.rs` | CLI parsing, image files, trace printing and CPU step budget |
@@ -38,7 +38,8 @@ It creates a CPU at a requested entry address and zeroed RAM at address zero.
 It does not perform SS-5 power-on, install a PROM alias or initialize devices.
 The CPU starts with S=PS=1, ET=0, CWP=0, WIM=0, TBR=0 and Y=0. These are
 harness conventions. `Machine::sun4m` installs a raw PROM, console serial and
-NVRAM/RTC, then resets. `Machine::reset` resets CPU/MMU and serial state while
+NVRAM/RTC, timers and interrupt control, then resets. `Machine::reset` resets
+CPU/MMU, serial, timers and interrupt control while
 retaining RAM, ROM, NVRAM/RTC and completed serial output. `sun4m_with_nvram`
 accepts an imported or customized NVRAM device. See [memory.md](docs/memory.md)
 and [devices.md](docs/devices.md) for reset state and platform limits.
@@ -63,9 +64,10 @@ at zero; ROM writes fail. Image loading validates the entire destination within
 one RAM region before modifying it. Unmapped, read-only and misaligned accesses
 are distinct errors. Failed bus accesses must not mutate memory or devices.
 Masked stores do not call the device read path. RAM's default narrow accessors
-are unsuitable for MMIO registers. `SystemBus` dispatches byte accesses directly
-to the selected register; it rejects wider, masked and atomic device accesses
-before any effects. It also prevents image loads and RAM/ROM mappings from
+are unsuitable for MMIO registers. `SystemBus` dispatches device accesses at
+their required width: bytes for serial/NVRAM, aligned words for timers/interrupt
+control. Other widths, partial masked writes and atomics stop before any effects.
+It also prevents image loads and RAM/ROM mappings from
 overlapping installed devices.
 
 `BusErrorKind::Unsupported` and `WouldBlock` describe emulator limitations and
@@ -135,7 +137,10 @@ PSR reads combine the canonical ICC and CWP with supervisor/trap control, PIL
 and EF. MB86904 implementation/version bits are fixed at `0x04000000`.
 Reserved bits and EC read zero; there is no auxiliary coprocessor. EF is retained
 for the intended hardware FPU, whose instructions remain unimplemented. PIL is
-stored but external interrupt delivery is not implemented yet.
+used to mask external interrupt levels. With ET=1, an interrupt above PIL is
+eligible; level 15 bypasses PIL. With ET=0, every interrupt is ignored, including
+15, without entering error state. Entry preserves PIL and uses TT=`0x10 | level`.
+See [interrupts-timers.md](docs/interrupts-timers.md) for sampling and source rules.
 
 RD/WR PSR, WIM and TBR require supervisor mode, even when a read targets `%g0`.
 Y is accessible in user mode. State writes XOR their operands. WRPSR rejects an
@@ -168,12 +173,13 @@ The implemented trap types are:
 | Integer division by zero | `0x2a` |
 | Physical instruction / data bus error | `0x21` / `0x29` |
 | Taken Ticc | `0x80` OR low seven bits of the operand sum |
+| Eligible external interrupt | `0x10` OR level 1–15 |
 
 Physical access errors include unmapped memory and rejected ROM stores. MMU
 access exceptions use distinct fault types and vectors `0x01`/`0x09`. A bus
 hardware failure while accessing a page table becomes an MMU translation fault;
 a hardware failure at the translated target remains a physical access error. Deferred store
-errors, external interrupts, FPU traps and general illegal-opcode classification are
+errors, asynchronous hardware-error sources, FPU traps and general illegal-opcode classification are
 not implemented. Missing emulator instructions, including unimplemented ASRs,
 still produce an `UnsupportedInstruction` host stop. Unimplemented control
 spaces produce `UnsupportedMemory`; neither is converted into a guest trap.
@@ -190,11 +196,18 @@ performs a delayed jump. A handler uses `jmpl %l1, %g0; rett %l2` to retry the
 faulting instruction, or `jmpl %l2, %g0; rett %l2+4` to skip it. A failing RETT
 with ET=0 updates TT and enters error state. See V8 appendix B.26.
 
-`Cpu::step` and `Machine::step` return `Step::Executed` or `Step::TrapTaken`;
-the latter includes the original fault and vector and does not execute handler
-code yet. `Err(CpuFault)` denotes an emulator stop or latched CPU error state.
-Fetch faults have no instruction word. CLI `--steps` bounds both instruction
-completion and trap entry, and reports their counts separately.
+`Cpu::step` returns `Step::Executed` or `Step::TrapTaken`. Its
+`step_with_interrupts` variant also accepts a mask of asserted levels and returns
+`Step::InterruptTaken` with the interrupted PC/nPC, level and vector. Neither
+entry outcome executes handler code yet. `Err(CpuFault)` denotes an emulator
+stop or latched CPU error state. Fetch faults have no instruction word.
+
+`Machine::step` samples wired interrupt levels before CPU execution and advances
+device clocks by `STEP_NS` (100 ns) after a successful outcome. Errors do not
+advance time. This fixed quantum is a functional scheduling choice; no cycle
+accuracy is claimed. `advance_ns` and `advance_seconds` advance devices without
+executing the CPU. Fractional ticks and RTC seconds are retained. The CLI bounds
+and reports instructions, synchronous traps and interrupts separately.
 
 ## Validation
 
@@ -205,6 +218,7 @@ cargo test --locked --offline
 cargo run --locked --offline -- demo
 cargo run --locked --offline -- trap-demo --trace
 cargo run --locked --offline -- serial-demo
+cargo run --locked --offline -- timer-demo
 ```
 
 Tests cover big-endian lanes, mapping bounds, ROM protection, register windows,
@@ -228,6 +242,11 @@ reset, bounded queues and retry after backpressure. A synthetic PROM exercises
 identity reads and serial TX/RX from reset; translated MMIO tests verify that
 byte operations do not consume adjacent registers. CLI tests separate console
 bytes from diagnostics and preserve source files, including on guest errors.
+Interrupt tests cover every ET/PIL/level combination, priority, held lines,
+user/supervisor state, WIM-independent entry and branch-delay return. Timer tests
+check read acknowledgement, non-resetting limits behind the count, wraparound,
+bounded large advances and a scalar tick oracle. The timer PROM handles both
+device sources and resumes its interrupted loop.
 These are local regression checks, not a SPARC conformance suite or a completed
 QEMU/MAME differential comparison.
 

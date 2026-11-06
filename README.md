@@ -4,7 +4,8 @@
 
 Named after the Greek sun god, Helios is a Rust emulator for Sun SPARC
 workstations. The first full-system target is the **SPARCstation 5 (sun4m,
-microSPARC-II / SPARC V8)**. The longer-term
+85 MHz microSPARC-II / SPARC V8)** with **128 MiB RAM**, a **CGsix framebuffer**,
+SCSI disk and CD-ROM, Ethernet and two serial ports. The longer-term
 goal is to run its firmware and operating systems, including SunOS/Solaris and
 compatible BSD/Linux releases.
 
@@ -36,10 +37,12 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
 - CPU/MMU reset, boot-mode instruction mapping and a raw PROM runner.
 - Z8530 asynchronous polling on both console channels, bounded byte queues,
   and an M48T08 NVRAM/RTC with SS-5 IDPROM and explicit clock advancement.
+- CPU interrupt entry with ET/PIL masking, sun4m software interrupts and source
+  masks, and system/processor counter timers on a deterministic timebase.
 
 Unsupported emulator behavior remains a host stop, separate from guest traps.
 Implementation-specific ASRs, broader illegal-opcode classification, MMU/cache
-diagnostics, FPU, external interrupts, timers, SCSI, networking
+diagnostics, FPU, serial interrupt generation, 64-bit user timers, SCSI, networking
 and graphics remain to be implemented. There is no firmware or OS compatibility
 claim.
 
@@ -55,6 +58,7 @@ cargo run --locked --offline -- demo
 cargo run --locked --offline -- demo --trace
 cargo run --locked --offline -- trap-demo --trace
 cargo run --locked --offline -- serial-demo
+cargo run --locked --offline -- timer-demo --trace
 ```
 
 The demo executes the hand-encoded program in [examples/sum.s](examples/sum.s),
@@ -68,7 +72,12 @@ the return state after 14 CPU steps: 13 completed instructions and one trap entr
 The [serial demo](examples/serial.s) runs from a synthetic reset PROM, reads the
 SS-5 machine type and IDPROM checksum, configures TTYA, prints `HELIOS`, and
 echoes the supplied `!` byte followed by a newline. The host checks completion
-and identity after 256 steps. All three demos run without external firmware.
+and identity after 256 steps.
+
+The [timer demo](examples/timer.s) configures both counter timers from reset,
+handles interrupts at levels 10 and 14, acknowledges each timer and returns to
+the interrupted loop using `JMPL`/`RETT`. It verifies both handler counts and
+continued work after 256 steps. All four demos run without external firmware.
 
 Run your own raw big-endian program with an explicit CPU step budget:
 
@@ -77,12 +86,13 @@ cargo run --release -- run local/program.bin --load-address 0x1000 --steps 1000 
 ```
 
 Entry defaults to the load address. `--entry` selects another address;
-`--ram-mib` changes the default 64 MiB allocation (maximum 256 MiB).
+`--ram-mib` changes the default 128 MiB allocation (maximum 256 MiB).
 The bare-metal harness maps only RAM at physical address zero, with translation
 and boot mode disabled. microSPARC-II physical addresses are 31 bits wide.
 `run` accepts raw bytes, not ELF executables or workstation firmware images.
 Reaching the budget is a successful host stop, not a guest halt instruction.
-Each completed instruction or trap entry counts as one step. With `PSR.ET=1`,
+Each completed instruction, synchronous trap or interrupt entry counts as one
+step, with separate trace records and totals. With `PSR.ET=1`,
 implemented exceptions enter the guest handler; with `PSR.ET=0`, they enter CPU
 error state and exit with status 1. Unsupported instructions also exit with
 status 1, without a guest trap. The harness starts in supervisor mode with traps
@@ -104,9 +114,11 @@ mode. Ordinary data accesses use the physical map, including console serial at
 bytes to stdout and diagnostics/traces to stderr. Input comes from a file;
 interactive terminal input is pending. NVRAM uses an 8192-byte raw image and is
 saved at the step limit or an execution error when `--nvram-out` is supplied.
-The RTC advances only through the library's explicit time API at this stage.
-Interrupts, timers and a working firmware prompt remain pending. See
-[Memory and reset](docs/memory.md) and [Devices](docs/devices.md) for limits.
+The sun4m harness advances device time by 100 ns per completed step, including
+trap/interrupt entry. This is a functional scheduling convention, not CPU cycle
+timing. The library also exposes explicit time advancement. A working firmware
+prompt remains pending. See [Memory and reset](docs/memory.md),
+[Devices](docs/devices.md) and [Interrupts and timers](docs/interrupts-timers.md).
 
 ## Development
 
@@ -114,9 +126,23 @@ Interrupts, timers and a working firmware prompt remain pending. See
 - [SPARCstation 5](docs/sparcstation5.md): target and reference memory map.
 - [Memory and reset](docs/memory.md): SRMMU, ASIs, fault behavior and PROM mapping.
 - [Devices](docs/devices.md): console serial, IDPROM, NVRAM persistence and RTC.
+- [Interrupts and timers](docs/interrupts-timers.md): register maps, masking and guest time.
+- [Firmware](docs/firmware.md): original Sun OBP development baseline, pinned downloads and probe results.
 - [Roadmap](docs/roadmap.md): milestones from this harness to a usable system.
 - [References](docs/references.md): specific MAME/QEMU sources and provenance.
 
 Keep local firmware, disks and scratch programs under the ignored `local/`
 directory. The repository contains no firmware or operating-system images.
+
+Original Sun OBP is the primary firmware for development and accuracy checks.
+Fetch the selected SS-5 image from the user-specified archive with Python 3:
+
+```sh
+python3 tools/fetch_firmware.py sun-ss5
+cargo run --locked --offline -- boot local/firmware/sun-ss5.bin --steps 10000 --trace
+```
+
+This bounded probe currently stops at the unimplemented system reset/status
+register at `0x71f00000`. The fetched image is hash-verified and stays ignored.
+OpenBIOS remains a separate compatibility test until it is proved working.
 

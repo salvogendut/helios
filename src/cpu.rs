@@ -1,5 +1,5 @@
 //! SPARC V8 integer interpreter with privileged state and precise synchronous
-//! traps and microSPARC-II memory access. External interrupts are still pending.
+//! traps, external interrupts and microSPARC-II memory access.
 
 use crate::bus::{Bus, BusError, BusErrorKind};
 use crate::mmu::{MemoryError, MmuFault, Srmmu, Width};
@@ -142,6 +142,12 @@ pub enum Step {
         trap_type: u8,
         vector: u32,
     },
+    InterruptTaken {
+        pc: u32,
+        npc: u32,
+        level: u8,
+        vector: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -263,8 +269,35 @@ impl Cpu {
     }
 
     pub fn step(&mut self, bus: &mut impl Bus) -> Result<Step, CpuFault> {
+        self.step_with_interrupts(bus, 0)
+    }
+
+    /// Sample level-sensitive interrupt lines at the instruction boundary.
+    /// Bit n requests level n; bit zero is ignored. The source stays asserted
+    /// until its device is acknowledged. No instruction is fetched on entry.
+    pub fn step_with_interrupts(
+        &mut self,
+        bus: &mut impl Bus,
+        pending: u16,
+    ) -> Result<Step, CpuFault> {
         if let Some(fault) = self.error_state {
             return Err(fault);
+        }
+        let pending = pending & !1;
+        if pending != 0 && self.psr_control & PSR_ET != 0 {
+            let level = (15 - pending.leading_zeros()) as u8;
+            let pil = ((self.psr_control & PSR_PIL) >> 8) as u8;
+            if level == 15 || level > pil {
+                let pc = self.pc;
+                let npc = self.npc;
+                self.enter_trap(0x10 | level);
+                return Ok(Step::InterruptTaken {
+                    pc,
+                    npc,
+                    level,
+                    vector: self.tbr,
+                });
+            }
         }
         let asi = if self.psr_control & PSR_S != 0 { 9 } else { 8 };
         let instruction = match self.mmu.load(bus, self.pc, asi, Width::Word) {
@@ -312,22 +345,26 @@ impl Cpu {
             self.error_state = Some(fault);
             return Err(fault);
         }
+        self.enter_trap(trap_type);
+        Ok(Step::TrapTaken {
+            fault,
+            trap_type,
+            vector: self.tbr,
+        })
+    }
+
+    fn enter_trap(&mut self, trap_type: u8) {
         let previous_supervisor = self.psr_control & PSR_S != 0;
         self.psr_control = (self.psr_control & !(PSR_ET | PSR_PS))
             | PSR_S
             | if previous_supervisor { PSR_PS } else { 0 };
         // Trap entry ignores WIM, including when servicing window overflow.
         self.cwp = (self.cwp + WINDOW_COUNT - 1) % WINDOW_COUNT;
-        self.write_reg(17, fault.pc);
-        self.write_reg(18, fault.npc);
+        self.write_reg(17, self.pc);
+        self.write_reg(18, self.npc);
         self.tbr = (self.tbr & 0xffff_f000) | (u32::from(trap_type) << 4);
         self.pc = self.tbr;
         self.npc = self.pc.wrapping_add(4);
-        Ok(Step::TrapTaken {
-            fault,
-            trap_type,
-            vector: self.tbr,
-        })
     }
 
     fn require_supervisor(&self) -> Result<(), FaultKind> {

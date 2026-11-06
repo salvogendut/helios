@@ -1,8 +1,8 @@
 # Device state and endpoint boundaries
 
 - Checked 2026-11-06 against the revisions in docs/references.md. Human-facing
-  behavior and limits are in docs/devices.md. Next work is interrupt delivery
-  and timers, then evidence from firmware; no firmware prompt has been reached.
+  behavior and limits are in docs/devices.md. Interrupts and counter timers are
+  now implemented; see interrupts-timers.md. No firmware prompt has been reached.
 - Zilog SCC User's Manual 1992 section 2.3.4: one control pointer across both
   channels; direct data access preserves it. QEMU's per-channel pointer differs.
   RR2/WR2 and WR9 are shared. Use the Z8530 legacy read aliases, not ESCC extended
@@ -17,7 +17,8 @@
   before a destructive read. Bare-metal machines still install only RAM.
 - ST M48T08 R/W latches hold visible fields; internal time continues until ST
   stops the oscillator. W falling edge commits staged fields. RTC advancement
-  is explicit, independent of host wall time and instruction count. Year origin
+  is explicit in the standalone device; the machine now supplies deterministic
+  step time (see interrupts-timers.md). It never uses host wall time. Year origin
   1968 comes from QEMU sun4m wiring; the chip stores only a two-digit year.
 - NVRAM raw export is not a full snapshot with a hidden running counter. Import
   validates length/clock but preserves configuration and IDPROM checksum as-is.
@@ -28,5 +29,5 @@
   `/tmp/helios-qemu-sun_nvram.h`, `/tmp/helios-zilog-scc-1992.pdf` and `.txt`.
   ST PDF was read through the web tool. Local MAME devices are under
   `../mame/src/devices/machine/`. No implementation files were copied into Helios.
-- Validate with fmt/clippy/test and all three demos. CLI `boot` and `serial-demo`
+- Validate with fmt/clippy/test and all four demos. CLI `boot` and `serial-demo`
   use stdout for TTYA, stderr for diagnostics/trace; `run` keeps its prior output.

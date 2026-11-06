@@ -2,21 +2,57 @@
 //! word-based narrow-access defaults or a speculative read-modify-write.
 use crate::bus::{Bus, BusError, BusErrorKind, MapError, MemoryBus};
 use crate::devices::{
+    interrupt::{InterruptController, Source},
     nvram::{Nvram, NVRAM_SIZE},
     serial::Serial,
+    timer::Timers,
 };
 
 pub const SERIAL_BASE: u64 = 0x7110_0000;
 pub const NVRAM_BASE: u64 = 0x7120_0000;
-const DEVICE_RANGES: [(u64, u64); 2] = [
+pub const CPU_TIMER_BASE: u64 = 0x71d0_0000;
+pub const SYSTEM_TIMER_BASE: u64 = 0x71d1_0000;
+pub const CPU_INTERRUPT_BASE: u64 = 0x71e0_0000;
+pub const SYSTEM_INTERRUPT_BASE: u64 = 0x71e1_0000;
+const DEVICE_RANGES: [(u64, u64); 6] = [
     (SERIAL_BASE, SERIAL_BASE + 8),
     (NVRAM_BASE, NVRAM_BASE + NVRAM_SIZE as u64),
+    (CPU_TIMER_BASE, CPU_TIMER_BASE + 0x10),
+    (SYSTEM_TIMER_BASE, SYSTEM_TIMER_BASE + 0x14),
+    (CPU_INTERRUPT_BASE, CPU_INTERRUPT_BASE + 0x10),
+    (SYSTEM_INTERRUPT_BASE, SYSTEM_INTERRUPT_BASE + 0x14),
 ];
+
+#[derive(Clone, Copy)]
+enum WordDevice {
+    Timer(bool),
+    Interrupt(bool),
+}
 
 #[derive(Debug)]
 pub struct Sun4mDevices {
     pub nvram: Nvram,
     pub serial: Serial,
+    pub interrupts: InterruptController,
+    pub timers: Timers,
+    rtc_phase_ns: u32,
+}
+
+impl Sun4mDevices {
+    fn sync_interrupts(&mut self) {
+        self.interrupts
+            .set_source(Source::SystemTimer, self.timers.system_irq());
+        self.interrupts.set_cpu_timer(self.timers.processor_irq());
+    }
+
+    fn advance_ns(&mut self, ns: u64) {
+        self.timers.advance_ns(ns);
+        let remainder = ns % 1_000_000_000 + u64::from(self.rtc_phase_ns);
+        self.nvram
+            .advance_seconds(ns / 1_000_000_000 + remainder / 1_000_000_000);
+        self.rtc_phase_ns = (remainder % 1_000_000_000) as u32;
+        self.sync_interrupts();
+    }
 }
 
 #[derive(Debug, Default)]
@@ -37,6 +73,9 @@ impl SystemBus {
         self.devices = Some(Sun4mDevices {
             nvram,
             serial: Serial::default(),
+            interrupts: InterruptController::default(),
+            timers: Timers::default(),
+            rtc_phase_ns: 0,
         });
         Ok(())
     }
@@ -49,6 +88,52 @@ impl SystemBus {
     pub fn reset_devices(&mut self) {
         if let Some(devices) = &mut self.devices {
             devices.serial.reset();
+            devices.interrupts.reset();
+            devices.timers.reset();
+        }
+    }
+    pub fn advance_ns(&mut self, ns: u64) {
+        if let Some(devices) = &mut self.devices {
+            devices.advance_ns(ns);
+        }
+    }
+    pub fn advance_seconds(&mut self, seconds: u64) {
+        if let Some(devices) = &mut self.devices {
+            devices.timers.advance_seconds(seconds);
+            devices.nvram.advance_seconds(seconds);
+            devices.sync_interrupts();
+        }
+    }
+    pub fn interrupt_levels(&mut self) -> u16 {
+        if let Some(devices) = &mut self.devices {
+            devices.sync_interrupts();
+            devices.interrupts.levels()
+        } else {
+            0
+        }
+    }
+    fn word_device(&self, address: u64) -> Option<(WordDevice, u64)> {
+        self.devices.as_ref()?;
+        for (base, size, device) in [
+            (CPU_TIMER_BASE, 0x10, WordDevice::Timer(false)),
+            (SYSTEM_TIMER_BASE, 0x14, WordDevice::Timer(true)),
+            (CPU_INTERRUPT_BASE, 0x10, WordDevice::Interrupt(false)),
+            (SYSTEM_INTERRUPT_BASE, 0x14, WordDevice::Interrupt(true)),
+        ] {
+            if (base..base + size).contains(&address) {
+                return Some((device, address - base));
+            }
+        }
+        None
+    }
+    fn reject_narrow_word_device(&self, address: u64) -> Result<(), BusError> {
+        if self.word_device(address).is_some() {
+            Err(BusError {
+                address,
+                kind: BusErrorKind::Unsupported("device requires plain aligned word load/store"),
+            })
+        } else {
+            Ok(())
         }
     }
     fn overlaps_device(&self, address: u64, size: u64) -> bool {
@@ -94,7 +179,9 @@ impl SystemBus {
         if self.overlaps_device(address, size) {
             return Err(BusError {
                 address,
-                kind: BusErrorKind::Unsupported("device requires plain byte load/store"),
+                kind: BusErrorKind::Unsupported(
+                    "unsupported device access width or atomic operation",
+                ),
             });
         }
         Ok(())
@@ -103,6 +190,7 @@ impl SystemBus {
 
 impl Bus for SystemBus {
     fn read8(&mut self, address: u64) -> Result<u8, BusError> {
+        self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
             if (SERIAL_BASE..SERIAL_BASE + 8).contains(&address) {
                 return devices
@@ -120,6 +208,7 @@ impl Bus for SystemBus {
         self.memory.read8(address)
     }
     fn write8(&mut self, address: u64, value: u8) -> Result<(), BusError> {
+        self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
             if (SERIAL_BASE..SERIAL_BASE + 8).contains(&address) {
                 return devices
@@ -145,10 +234,47 @@ impl Bus for SystemBus {
         self.memory.write16(address, value)
     }
     fn read32(&mut self, address: u64) -> Result<u32, BusError> {
+        if address & 3 != 0 {
+            return Err(BusError {
+                address,
+                kind: BusErrorKind::Misaligned,
+            });
+        }
+        if let Some((device, offset)) = self.word_device(address) {
+            let devices = self.devices.as_mut().expect("decoded installed device");
+            devices.sync_interrupts();
+            let result = match device {
+                WordDevice::Timer(system) => devices.timers.read(system, offset),
+                WordDevice::Interrupt(system) => devices.interrupts.read(system, offset),
+            };
+            devices.sync_interrupts();
+            return result.map_err(|kind| BusError { address, kind });
+        }
         self.memory_only(address, 4)?;
         self.memory.read32(address)
     }
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError> {
+        if address & 3 != 0 {
+            return Err(BusError {
+                address,
+                kind: BusErrorKind::Misaligned,
+            });
+        }
+        if let Some((device, offset)) = self.word_device(address) {
+            if mask != u32::MAX {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Unsupported("masked device word store"),
+                });
+            }
+            let devices = self.devices.as_mut().expect("decoded installed device");
+            let result = match device {
+                WordDevice::Timer(system) => devices.timers.write(system, offset, value),
+                WordDevice::Interrupt(system) => devices.interrupts.write(system, offset, value),
+            };
+            devices.sync_interrupts();
+            return result.map_err(|kind| BusError { address, kind });
+        }
         self.memory_only(address, 4)?;
         self.memory.write32_masked(address, value, mask)
     }

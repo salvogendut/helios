@@ -2,7 +2,8 @@ use helios::bus::Bus;
 use helios::cpu::{Step, PSR_ET, PSR_S};
 use helios::devices::{nvram::Nvram, serial::Channel};
 use helios::machine::{
-    demo_image, serial_demo_image, trap_demo_image, Machine, DEFAULT_RAM_BYTES, TARGET,
+    demo_image, serial_demo_image, timer_demo_image, trap_demo_image, Machine, CPU_CLOCK_HZ,
+    DEFAULT_RAM_BYTES, TARGET,
 };
 use std::error::Error;
 use std::io::Write;
@@ -15,23 +16,25 @@ Usage:
   helios demo [--trace]
   helios trap-demo [--trace]
   helios serial-demo [--trace]
+  helios timer-demo [--trace]
   helios run FILE [--load-address N] [--entry N] [--steps N] [--ram-mib N] [--trace]
   helios boot PROM [--steps N] [--ram-mib N] [--trace]
                    [--serial-in FILE] [--nvram FILE] [--nvram-out NEW_FILE]
 
 FILE is a raw big-endian SPARC instruction/data image, loaded into RAM.
 Addresses accept decimal or 0x-prefixed hexadecimal. Entry defaults to the load
-address (default 0). Defaults: 1000 CPU steps, 64 MiB RAM. Each completed
-instruction or trap entry counts as one step. --trace prints instructions and
-traps. Unsupported behavior and CPU error state exit with status 1.
+address (default 0). Defaults: 1000 CPU steps, 128 MiB RAM. Each completed
+instruction, synchronous trap or interrupt entry counts as one step. --trace
+prints all three separately. Unsupported behavior and CPU error state exit with status 1.
 Reaching the step budget exits successfully; it does not mean guest halt.
 
 boot loads a raw PROM (up to 1 MiB) and starts the CPU/MMU at reset.
 boot and serial-demo send TTYA bytes to stdout and diagnostics to stderr.
 --serial-in supplies bytes as the guest enables and drains its receiver.
 NVRAM images contain 8192 bytes; --nvram-out creates a new file without overwriting.
-The RTC advances only through the library's explicit time API at this stage.
-Polled serial and NVRAM are installed; firmware/OS boot is not yet supported.";
+sun4m clocks advance 100 ns per completed step, a functional scheduling convention.
+The library can also advance device time explicitly. Polled serial, NVRAM/RTC,
+counter timers and interrupt control are installed; firmware/OS boot is not yet supported.";
 
 fn number(value: &str) -> Result<u64, Box<dyn Error>> {
     Ok(if let Some(hex) = value.strip_prefix("0x") {
@@ -57,6 +60,7 @@ fn execute(
 ) -> Result<(), Box<dyn Error>> {
     let mut instructions = 0u64;
     let mut traps = 0u64;
+    let mut interrupts = 0u64;
     let mut input_position = 0;
     let console = console_input.is_some();
     for _ in 0..steps {
@@ -114,10 +118,26 @@ fn execute(
                     );
                 }
             }
+            Step::InterruptTaken {
+                pc,
+                npc,
+                level,
+                vector,
+            } => {
+                interrupts += 1;
+                if trace {
+                    report(
+                        console,
+                        format_args!(
+                            "interrupt={level} vector={vector:08x} pc={pc:08x} npc={npc:08x}"
+                        ),
+                    );
+                }
+            }
         }
     }
     report(console, format_args!(
-        "Step budget reached ({steps}: {instructions} instructions, {traps} traps); PC={:#010x}, nPC={:#010x}",
+        "Step budget reached ({steps}: {instructions} instructions, {traps} traps, {interrupts} interrupts); PC={:#010x}, nPC={:#010x}",
         machine.cpu.pc(),
         machine.cpu.npc()
     ));
@@ -132,7 +152,8 @@ fn run() -> Result<(), Box<dyn Error>> {
             if args.next().is_some() {
                 return Err("info takes no options".into());
             }
-            println!("Helios {}\nTarget: {TARGET}\nStatus: integer subset, SRMMU, reset/PROM, polled serial and NVRAM/RTC; no firmware or OS boot", env!("CARGO_PKG_VERSION"));
+            println!("Helios {}\nTarget: {TARGET}\nStatus: integer subset, SRMMU, reset/PROM, polled serial, NVRAM/RTC, interrupts and counter timers; no firmware or OS boot", env!("CARGO_PKG_VERSION"));
+            println!("Profile: {} MHz microSPARC-II, {} MiB RAM, TTYA/TTYB\nPlanned devices: CGsix (TurboGX), SCSI disk and CD-ROM, LANCE Ethernet", CPU_CLOCK_HZ / 1_000_000, DEFAULT_RAM_BYTES / (1024 * 1024));
         }
         Some("demo") => {
             let remaining: Vec<_> = args.collect();
@@ -190,6 +211,28 @@ fn run() -> Result<(), Box<dyn Error>> {
             eprintln!(
                 "Serial demo passed: SS-5 IDPROM verified; TTYA transmitted and echoed input"
             );
+        }
+        Some("timer-demo") => {
+            let remaining: Vec<_> = args.collect();
+            let trace = match remaining.as_slice() {
+                [] => false,
+                [option] if option == "--trace" => true,
+                _ => return Err("usage: helios timer-demo [--trace]".into()),
+            };
+            let mut machine = Machine::sun4m(8192, &timer_demo_image())?;
+            execute(&mut machine, 256, trace, None)?;
+            if machine.cpu.read_reg(5) != 1
+                || machine.cpu.read_reg(7) != 1
+                || machine.cpu.read_reg(3) < 2
+                || machine.cpu.current_window() != 0
+                || machine.cpu.psr() & (PSR_S | PSR_ET) != PSR_S | PSR_ET
+            {
+                return Err(
+                    "timer demo failed: handler count or interrupted-loop return state differs"
+                        .into(),
+                );
+            }
+            println!("Timer demo passed: levels 10 and 14 acknowledged; interrupted loop resumed");
         }
         Some(command @ ("run" | "boot")) => {
             let boot = command == "boot";

@@ -18,6 +18,8 @@ test rather than assuming either emulator defines the hardware.
   B.14, B.16–B.19 and B.32 define tagged arithmetic, MULScc, multiply/divide and
   FLUSH. Chapter 7 distinguishes precise faults from optional partial effects
   after non-resumable multi-access machine errors.
+  Sections 7.3–7.4 and C.2/C.8 also define interrupt eligibility, ET/PIL, level
+  15, boundary sampling, saved PC/nPC and trap entry without modifying PIL.
 - [Sun microSPARC-II User's Manual, revision 1.1, July 1994](https://temlib.org/pub/SparcStation/Hardware/Sparc32/microSPARC-II-UsersManual2.pdf):
   primary hardware manual hosted by Temlib. Chapter 5 (tables 9, 18, 19, 23–28
   and 40) and chapter 12 define the target's 31-bit addressing, contexts,
@@ -37,6 +39,27 @@ test rather than assuming either emulator defines the hardware.
   SCC control/status registers. The pointer is shared across channels and a
   direct data-port access does not reset it. MAME agrees; the inspected QEMU
   model instead keeps a per-channel pointer. Helios uses the manual's behavior.
+- [NCR89C105 Chip Specification](https://www.ibiblio.org/pub/historic-linux/early-ports/Sparc/NCR/NCR89C105.txt),
+  primary chip documentation preserved in the historic Linux/SPARC archive and
+  referenced by QEMU: tables 6-21 through 6-25 and figures 6-8 through 6-18
+  define interrupt pending/masks, source levels, reset and counter timers.
+  The archived text has no revision header. Its explicit zero-limit overflow
+  interrupt rule differs from QEMU. Mask All's treatment of software requests
+  is less explicit; [interrupts-timers.md](interrupts-timers.md) records the choice.
+- [Sun SPARCclassic Engine OEM Technical Manual, Part One, April 1993](https://bitsavers.trailing-edge.com/pdf/sun/sparc/801-3137-10_SPARCclassic_Engine_OEM_Technical_Manual_Part_One_Apr1993.pdf),
+  801-3137-10: section 5's NCR89C105 overview and section 7's SLAVIO address map
+  independently confirm the uniprocessor layout at `0x71d00000`/`0x71e00000`.
+  This is a related machine's primary manual; QEMU's SS-5 profile confirms the
+  same bases for the selected target. Do not import its CPU or RAM profile.
+- [Sun SPARCstation 5 Service Manual, August 1994](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf),
+  801-6396-11: table 12-1 lists the 85 MHz system board, SCSI disk/CD-ROM options
+  and 1 MiB TGX card for the selected initial profile. Chapters 2–4 cover POST,
+  diagnostics and the serial tip connection; this is also the manual supplied
+  by the user during bring-up.
+- [Sun SPARCengine 5 OEM Technical Manual, September 1995](https://device.report/m/24e55e1efd74cebad92ef139a523192872b87937967e4567f9cdafcecf56e515.pdf),
+  801-7104-11: table 2-1 covers microSPARC-II clock variants; section 3.2.9.2
+  describes the 1 MiB TurboGX SBus card with BT458 RAMDAC. The selected 128 MiB
+  RAM configuration is a project default, not a claim about factory base RAM.
 - Local `../iris`, inspected at `b23f674c235b37c3ac83808085d28ac128bb79c4`:
   `HACKING.md`, `src/traits.rs`, and the machine/frontend boundaries. Architectural
   inspiration includes word-transparent data paths, functional hardware
@@ -60,6 +83,8 @@ Reference revision: `f71afb409a87c4ecd0f9d63a5963eb645dfab780` (inspected 2026-1
 | [hw/char/escc.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/char/escc.c) | SS-5 port offsets/stride, byte MMIO and serial initialization comparison |
 | [hw/rtc/m48t59.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/rtc/m48t59.c) | M48T08 variant, SRAM/clock decode and RTC comparison |
 | [include/hw/nvram/sun_nvram.h](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/include/hw/nvram/sun_nvram.h) | IDPROM layout, XOR checksum and distinction from OpenBIOS configuration partitions |
+| [hw/intc/slavio_intctl.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/intc/slavio_intctl.c) | Source bits/levels, soft requests, mask aliases and generic multiprocessor comparison |
+| [hw/timer/slavio_timer.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/timer/slavio_timer.c) | Counter field layout, 500 ns ticks, acknowledgement and system/local IRQ wiring comparison |
 
 For memory behavior, prefer the microSPARC-II manual where the generic QEMU
 implementation differs: 31-bit physical bypass, BM overriding EN for ASI 8/9,
@@ -68,9 +93,9 @@ reads, and exact-level probes. QEMU is an implementation comparison, not proof
 of those hardware details. No differential execution has been performed.
 
 For upcoming work, start with `hw/sparc/sun4m_iommu.c`,
-`hw/intc/slavio_intctl.c`, `hw/timer/slavio_timer.c`,
-`hw/dma/sparc32_dma.c`, `hw/scsi/esp.c`, `hw/net/lance.c`, and `hw/display/tcx.c`.
+`hw/dma/sparc32_dma.c`, `hw/scsi/esp.c`, and `hw/net/lance.c`.
 Verify each file at the selected revision before relying on its behavior.
+QEMU's TCX framebuffer is a different device from the selected CGsix card.
 
 ## MAME
 
@@ -85,11 +110,13 @@ inspected revision was `ed59c15fe78596ec6ff8fe04482ede78e6122e34`.
 | [src/mame/sun/sun4.cpp](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/mame/sun/sun4.cpp) | Sun machine context and device wiring |
 | [src/devices/machine/z80scc.cpp](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/machine/z80scc.cpp) | Independent SCC pointer/reset/register comparison and manual commentary |
 | [src/devices/machine/timekpr.cpp](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/machine/timekpr.cpp) | Independent timekeeper register/counter comparison |
+| [src/devices/bus/sbus/cgsix.cpp](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/bus/sbus/cgsix.cpp) | CGsix/TurboGX device family and SBus-relative map starting point; full behavior review pending |
 
 The inspected MAME sun4m machine registrations are unfinished; they are not a
 working SS-5 platform oracle. QEMU is the primary machine-level starting point,
 and MAME remains useful as an independent CPU/device reference. MAME's sun4c
-MMU must not be substituted for sun4m's SRMMU.
+MMU and timer/interrupt wiring must not be substituted for sun4m's. The local
+SPARC CPU implementation was also checked for ET/PIL gating and level-15 entry.
 
 ## Provenance
 
@@ -98,5 +125,8 @@ or IRIS implementation files are vendored, and no firmware is bundled. Hardware
 constants and instruction behavior are documented with their references above.
 Future source reuse must retain attribution and comply with the particular
 file's license; consult file headers instead of assigning one license to all
-reference projects. No differential reference run has been performed yet.
+reference projects. Firmware fetch sources, hashes and initial bounded runs are
+recorded in [firmware.md](firmware.md); the binaries remain under ignored local/.
+Original Sun OBP is the primary development baseline. No differential reference
+run or working firmware prompt has been demonstrated.
 

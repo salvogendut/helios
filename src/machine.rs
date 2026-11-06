@@ -1,5 +1,5 @@
 //! Bare-metal and sun4m harnesses with a polled console and NVRAM/RTC.
-//! Firmware compatibility still requires interrupt delivery and other devices.
+//! Timers and interrupt delivery share a deterministic functional timebase.
 
 use crate::bus::{BusError, MapError};
 use crate::cpu::{Cpu, CpuFault, Step};
@@ -10,8 +10,12 @@ use std::fmt;
 
 pub const TARGET: &str = "SPARCstation 5 (sun4m), SPARC V8 / microSPARC-II";
 pub const MAX_RAM_BYTES: usize = 256 * 1024 * 1024;
-pub const DEFAULT_RAM_BYTES: usize = 64 * 1024 * 1024;
+pub const DEFAULT_RAM_BYTES: usize = 128 * 1024 * 1024;
+/// Nominal SS5/85 hardware clock, independent of the interpreter's time quantum.
+pub const CPU_CLOCK_HZ: u64 = 85_000_000;
 pub const MAX_PROM_BYTES: usize = 1024 * 1024;
+/// Functional scheduling convention, not microSPARC cycle timing or a speed claim.
+pub const STEP_NS: u64 = 100;
 
 #[derive(Debug)]
 pub enum MachineError {
@@ -72,7 +76,7 @@ impl Machine {
         Ok(machine)
     }
 
-    /// Reset CPU/MMU and serial state. Retain RAM, ROM, NVRAM/RTC and bytes
+    /// Reset CPU/MMU, timers, interrupt controller and serial. Retain RAM, ROM, NVRAM/RTC and bytes
     /// already transmitted to the host endpoint.
     pub fn reset(&mut self) {
         self.cpu.reset_sun4m();
@@ -91,11 +95,14 @@ impl Machine {
         })
     }
 
-    /// RTC time is supplied by the owner until a machine event clock exists.
+    /// Advance all device clocks between steps without executing the CPU.
+    pub fn advance_ns(&mut self, ns: u64) {
+        self.bus.advance_ns(ns);
+    }
+
+    /// Whole-second advancement avoids overflow even for u64::MAX seconds.
     pub fn advance_seconds(&mut self, seconds: u64) {
-        if let Some(devices) = self.bus.devices_mut() {
-            devices.nvram.advance_seconds(seconds);
-        }
+        self.bus.advance_seconds(seconds);
     }
 
     pub fn load_image(&mut self, address: u32, bytes: &[u8]) -> Result<(), BusError> {
@@ -103,7 +110,10 @@ impl Machine {
     }
 
     pub fn step(&mut self) -> Result<Step, CpuFault> {
-        self.cpu.step(&mut self.bus)
+        let pending = self.bus.interrupt_levels();
+        let step = self.cpu.step_with_interrupts(&mut self.bus, pending)?;
+        self.bus.advance_ns(STEP_NS);
+        Ok(step)
     }
 }
 
@@ -216,5 +226,79 @@ pub fn serial_demo_image() -> Vec<u8> {
         slot.copy_from_slice(&word.to_be_bytes());
     }
     image[0x200..].copy_from_slice(b"HELIOS");
+    image
+}
+
+/// Synthetic reset PROM from examples/timer.s. Acknowledges level 10 and 14
+/// timer interrupts and returns with JMPL/RETT to the interrupted work loop.
+pub fn timer_demo_image() -> Vec<u8> {
+    let mut image = vec![0; 0x11e8];
+    for (address, words) in [
+        (
+            0x0,
+            &[
+                0x0500_0004u32, // sethi %hi(0x1000), %g2
+                0x8198_a000,    // wr %g2, 0, %tbr
+                0x8190_2000,    // wr %g0, 0, %wim
+                0x0100_0000,    // nop
+                0x0100_0000,    // nop
+                0x0100_0000,    // nop
+                0x031c_7440,    // sethi %hi(0x71d10000), %g1
+                0x8410_2c00,    // or %g0, 0xc00, %g2
+                0xc420_6000,    // st %g2, [%g1]
+                0x091c_7400,    // sethi %hi(0x71d00000), %g4
+                0x0500_0006,    // sethi %hi(0x1800), %g2
+                0xc421_2000,    // st %g2, [%g4]
+                0x0d1c_7840,    // sethi %hi(0x71e10000), %g6
+                0x0520_0200,    // sethi %hi(0x80080000), %g2
+                0xc421_a008,    // st %g2, [%g6+8]
+                0x8188_20a0,    // wr %g0, 0xa0, %psr
+                0x0100_0000,    // nop
+                0x0100_0000,    // nop
+                0x0100_0000,    // nop
+                0x8600_e001,    // add %g3, 1, %g3
+                0x10bf_ffff,    // ba work
+                0x0100_0000,    // nop
+            ][..],
+        ),
+        (
+            0x200,
+            &[
+                0xe000_6000u32, // ld [%g1], %l0
+                0xc020_6000,    // st %g0, [%g1]
+                0x8a01_6001,    // add %g5, 1, %g5
+                0x81c4_6000,    // jmpl %l1, %g0
+                0x81cc_a000,    // rett %l2
+            ][..],
+        ),
+        (
+            0x240,
+            &[
+                0xe001_2000u32, // ld [%g4], %l0
+                0xc021_2000,    // st %g0, [%g4]
+                0x8e01_e001,    // add %g7, 1, %g7
+                0x81c4_6000,    // jmpl %l1, %g0
+                0x81cc_a000,    // rett %l2
+            ][..],
+        ),
+        (
+            0x11a0,
+            &[
+                0x10bf_fc18u32, // ba system_handler
+                0x0100_0000,    // nop
+            ][..],
+        ),
+        (
+            0x11e0,
+            &[
+                0x10bf_fc18u32, // ba processor_handler
+                0x0100_0000,    // nop
+            ][..],
+        ),
+    ] {
+        for (slot, word) in image[address..].chunks_exact_mut(4).zip(words) {
+            slot.copy_from_slice(&word.to_be_bytes());
+        }
+    }
     image
 }
