@@ -8,6 +8,7 @@ use crate::devices::{
     io_control::{IoControl, IO_CONTROL_SIZE},
     nvram::{Nvram, NVRAM_SIZE},
     reset::ResetControl,
+    scsi_dma::ScsiDma,
     serial::Serial,
     timer::Timers,
 };
@@ -28,7 +29,9 @@ pub const SYSTEM_TIMER_BASE: u64 = 0x71d1_0000;
 pub const CPU_INTERRUPT_BASE: u64 = 0x71e0_0000;
 pub const SYSTEM_INTERRUPT_BASE: u64 = 0x71e1_0000;
 pub const RESET_BASE: u64 = 0x71f0_0000;
-const DEVICE_RANGES: [(u64, u64); 13] = [
+pub const MACIO_ID_BASE: u64 = 0x7800_0000;
+pub const SCSI_DMA_BASE: u64 = 0x7840_0000;
+const DEVICE_RANGES: [(u64, u64); 15] = [
     (IO_CONTROL_BASE, IO_CONTROL_BASE + IO_CONTROL_SIZE),
     (AFX_PRESENCE_BASE, AFX_PRESENCE_BASE + 1),
     (KEYBOARD_SERIAL_BASE, KEYBOARD_SERIAL_BASE + 8),
@@ -42,6 +45,8 @@ const DEVICE_RANGES: [(u64, u64); 13] = [
     (CPU_INTERRUPT_BASE, CPU_INTERRUPT_BASE + 0x10),
     (SYSTEM_INTERRUPT_BASE, SYSTEM_INTERRUPT_BASE + 0x14),
     (RESET_BASE, RESET_BASE + 4),
+    (MACIO_ID_BASE, MACIO_ID_BASE + 4),
+    (SCSI_DMA_BASE, SCSI_DMA_BASE + 0x10),
 ];
 
 #[derive(Clone, Copy)]
@@ -50,6 +55,8 @@ enum WordDevice {
     Timer(bool),
     Interrupt(bool),
     Reset,
+    MacioId,
+    ScsiDma,
 }
 
 #[derive(Debug)]
@@ -64,11 +71,14 @@ pub struct Sun4mDevices {
     pub interrupts: InterruptController,
     pub timers: Timers,
     pub reset: ResetControl,
+    pub scsi_dma: ScsiDma,
     rtc_phase_ns: u32,
 }
 
 impl Sun4mDevices {
     fn sync_interrupts(&mut self) {
+        self.interrupts
+            .set_source(Source::Scsi, self.scsi_dma.irq());
         self.interrupts
             .set_source(Source::Floppy, self.floppy.irq());
         self.interrupts
@@ -96,6 +106,30 @@ pub struct SystemBus {
 }
 
 impl SystemBus {
+    fn check_macio_access(&mut self, address: u64, bytes: u64) -> Result<(), BusError> {
+        let scsi = (SCSI_DMA_BASE..SCSI_DMA_BASE + 0x10).contains(&address);
+        let id = (MACIO_ID_BASE..MACIO_ID_BASE + 4).contains(&address);
+        if let Some(devices) = &mut self.devices {
+            if scsi || id {
+                if address % bytes != 0 {
+                    return Err(BusError {
+                        address,
+                        kind: BusErrorKind::Misaligned,
+                    });
+                }
+                if bytes != 4 {
+                    if scsi {
+                        devices.scsi_dma.slave_access_error();
+                    }
+                    return Err(BusError {
+                        address,
+                        kind: BusErrorKind::SBusError,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
     fn check_floppy_access(&self, address: u64, bytes: u64) -> Result<(), BusError> {
         if self.devices.is_some() && (FLOPPY_BASE..FLOPPY_BASE + 0x10_0000).contains(&address) {
             if address % bytes != 0 {
@@ -178,6 +212,7 @@ impl SystemBus {
             interrupts: InterruptController::default(),
             timers: Timers::default(),
             reset: ResetControl::default(),
+            scsi_dma: ScsiDma::default(),
             rtc_phase_ns: 0,
         });
         Ok(())
@@ -206,6 +241,7 @@ impl SystemBus {
             devices.io_control.reset();
             devices.auxiliary.reset();
             devices.floppy.reset();
+            devices.scsi_dma.reset();
             devices.serial.reset();
             devices.keyboard_serial.reset();
             devices.interrupts.reset();
@@ -244,6 +280,8 @@ impl SystemBus {
             (CPU_INTERRUPT_BASE, 0x10, WordDevice::Interrupt(false)),
             (SYSTEM_INTERRUPT_BASE, 0x14, WordDevice::Interrupt(true)),
             (RESET_BASE, 4, WordDevice::Reset),
+            (MACIO_ID_BASE, 4, WordDevice::MacioId),
+            (SCSI_DMA_BASE, 0x10, WordDevice::ScsiDma),
         ] {
             if (base..base + size).contains(&address) {
                 return Some((device, address - base));
@@ -356,6 +394,7 @@ impl Bus for SystemBus {
     }
 
     fn read8(&mut self, address: u64) -> Result<u8, BusError> {
+        self.check_macio_access(address, 1)?;
         self.check_floppy_access(address, 1)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.read8(address);
@@ -402,6 +441,7 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn write8(&mut self, address: u64, value: u8) -> Result<(), BusError> {
+        self.check_macio_access(address, 1)?;
         self.check_floppy_access(address, 1)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.write8(address, value);
@@ -453,6 +493,7 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read16(&mut self, address: u64) -> Result<u16, BusError> {
+        self.check_macio_access(address, 2)?;
         self.check_floppy_access(address, 2)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.read16(address);
@@ -463,6 +504,7 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn write16(&mut self, address: u64, value: u16) -> Result<(), BusError> {
+        self.check_macio_access(address, 2)?;
         self.check_floppy_access(address, 2)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.write16(address, value);
@@ -491,6 +533,8 @@ impl Bus for SystemBus {
                 WordDevice::Timer(system) => devices.timers.read(system, offset),
                 WordDevice::Interrupt(system) => devices.interrupts.read(system, offset),
                 WordDevice::Reset => Ok(devices.reset.read()),
+                WordDevice::MacioId => Ok(0xfe81_0103),
+                WordDevice::ScsiDma => devices.scsi_dma.read(offset),
             };
             devices.sync_interrupts();
             return result.map_err(|kind| BusError { address, kind });
@@ -530,6 +574,8 @@ impl Bus for SystemBus {
             let devices = self.devices.as_mut().expect("decoded installed device");
             let result = match device {
                 WordDevice::IoControl => devices.io_control.write(offset, value),
+                WordDevice::MacioId => Err(BusErrorKind::Unsupported("write to MACIO ID")),
+                WordDevice::ScsiDma => devices.scsi_dma.write(offset, value),
                 WordDevice::Timer(system) => devices.timers.write(system, offset, value),
                 WordDevice::Interrupt(system) => devices.interrupts.write(system, offset, value),
                 WordDevice::Reset => {
@@ -546,6 +592,7 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read_doubleword(&mut self, address: u64) -> Result<[u32; 2], BusError> {
+        self.check_macio_access(address, 8)?;
         self.check_floppy_access(address, 8)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.read_doubleword(address);
@@ -564,6 +611,7 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn write_doubleword(&mut self, address: u64, words: [u32; 2]) -> Result<(), BusError> {
+        self.check_macio_access(address, 8)?;
         self.check_floppy_access(address, 8)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.write_doubleword(address, words);

@@ -77,6 +77,16 @@ test rather than assuming either emulator defines the hardware.
   multiplication (always completed in hardware, possibly via Meiko restart)
   from FsMULd's possible unfinished exception. The current emulator implements
   FMULs/d without multiplier pipeline timing; widening multiplication is pending.
+- [Sun SBus I/O Chipset Data Manual, NCR89C100, revision 1.0](https://bitsavers.trailing-edge.com/pdf/sun/sparc/801-3137-10_SPARCclassic_Engine_OEM_Technical_Manual_Part_Three_IO_Chipset_Apr1993.pdf):
+  chip-level address map and chapter 3 pages 3-6–3-7 and 3-26–3-33 define MACIO
+  identification, slave widths and the DMA2 SCSI register subset. Page 3-26 was
+  inspected visually: D_WRITE is bit 8, omitted from the archived
+  [DMA2 text](https://www.ibiblio.org/pub/historic-linux/early-ports/Sparc/NCR/DMA2.txt).
+  The [NCR89C100 text](https://www.ibiblio.org/pub/historic-linux/early-ports/Sparc/NCR/NCR89C100.txt)
+  also records the integrated SCSI/Ethernet cores and board-relative decoding.
+  See [devices.md](devices.md#ncr89c100-scsi-dma-initialization) for implemented
+  behavior and limitations. Pinned QEMU `hw/dma/sparc32_dma.c` is a comparison;
+  its shared CSR mask and reset pulse do not override the primary manual.
 - [Intel 82077AA datasheet](https://ardent-tool.com/datasheets/Intel_82077AA.pdf),
   Intel document 290166: sections 2.1–2.2, 5.2–5.3, 6.4, 7.4 and 8.2 define
   command/result handshakes, reset retention, configuration, polling suppression,

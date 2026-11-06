@@ -5,5 +5,6 @@ pub mod interrupt;
 pub mod io_control;
 pub mod nvram;
 pub mod reset;
+pub mod scsi_dma;
 pub mod serial;
 pub mod timer;

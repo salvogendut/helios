@@ -430,6 +430,14 @@ still contains a `Data Access Error`; the fault has moved to the next device.
 The 200-million-step CLI remains at its prompt loop; no clean boot is claimed.
 Evidence is under `local/probes/afx-presence-ss5/`.
 
+The subsequent DMA2 register implementation moves the failure to the actual
+SCSI controller: step **93375980** takes CPU level 15 after a byte write to the
+ESP command register at physical **0x7880000c**. The I/O controller captures
+AFSR `0xa3820000`, AFAR `0x7880000c`. OBP reports `Level 15 Interrupt` and enters
+its recovery monitor. This distinguishes successful DMA register probing from
+an implemented SCSI controller or disk. Local records are under
+`local/probes/macio-dma-ss5/`.
+
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)
 provide the bring-up workflow; register semantics still require chip-level

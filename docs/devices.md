@@ -220,3 +220,33 @@ The board's exact decode, other bits, write behavior and wider accesses have
 not been established from schematics; only the observed byte read is modeled.
 Writes and wider accesses stop explicitly. No TCX framebuffer or register RAM
 is installed. RAM/ROM mappings cannot overlap this board input.
+
+## NCR89C100 SCSI DMA initialization
+
+The onboard MACIO identifies itself with the read-only word `0xfe810103` at
+`0x78000000`. Its DMA2 SCSI registers at `0x78400000` implement the control/status,
+32-bit address and 24-bit byte-count registers. The hardwired DMA revision is
+`0xa`; reserved and read-only fields cannot be changed by stores. Reset remains
+asserted until software clears it and holds the interface idle. Address/count
+reset values are unspecified by the manual; Helios chooses zero.
+
+The current/next address and byte-count latches support the documented initial
+chaining sequence. Loading the first next address transfers it and the next
+count into the current latches. Later loads remain pending. Address validity and
+DMA readiness are computed from these latches and the enable bit. Enabling DMA
+does not fabricate requests or move memory. The SCSI controller's IRQ input is
+level-sensitive, gated by D_INT_EN, and wired to NCR source 18 / CPU level 4.
+
+The FIFO is empty until a transfer engine is implemented, so invalidation has
+no drain delay. D_INVALIDATE reads zero and clears both address-valid bits in
+chaining mode. It does not acknowledge the controller IRQ. D_SLAVE_ERR latches
+incorrect slave widths and clears on a write of one; it is not a DMA memory
+error and does not assert the DMA IRQ. DMA registers require aligned words;
+ordinary narrow/doubleword accesses return SBus error. Atomic, masked and image
+operations stop explicitly without changing device state.
+
+Diagnostic FIFO accesses, reserved burst modes and illegal combinations of
+count/chaining or transfer-cycle modes stop before mutation. The SCSI controller,
+DMA requests, FIFO/data movement, terminal-count/error generation and the
+Ethernet/parallel channels remain pending. NCR's reset and W1C semantics take
+precedence over QEMU's generic DMA register array.

@@ -18,7 +18,7 @@ implementation references; the SPARC architecture manual defines ISA behavior.
 ## Current status
 
 Original Sun OBP now reaches a **responsive `ok` prompt on serial TTYA**.
-It currently enters the monitor after a device-probe `Data Access Error`, with
+It currently enters the monitor after a device-probe fault (currently `Level 15 Interrupt`), with
 an earlier processor-timer diagnostic warning. Full POST and OS boot remain
 unverified. The library also verifies `1 2 + .` returns `3` and another prompt.
 See the [reproducible firmware checkpoint](docs/firmware.md#serial-ok-prompt).
@@ -54,6 +54,8 @@ The implemented foundation includes:
 - NCR89C105 auxiliary LED/link/mux output latches, floppy density input and
   terminal-count pulse events, plus NCR82077 initialization, timed seek/recalibrate
   completion and interrupts. No floppy drive or media engine is attached.
+- NCR89C100 identification and DMA2 SCSI configuration, address/count chaining
+  latches and IRQ gating; the controller and DMA transfer engine remain pending.
 - SS-5 system reset/status, guest software reset and watchdog status latching;
   a second polled SCC for the keyboard/mouse ports (input protocols pending).
 - microSPARC-II IOMMU page translation, I/O TLB flushes, SBus arbitration and

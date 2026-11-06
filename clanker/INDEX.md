@@ -23,3 +23,5 @@
 - [auxiliary-port.md](auxiliary-port.md) — reference: NCR auxiliary pin state, terminal-count events and original-ROM initialization.
 - [floppy-serial-prompt.md](floppy-serial-prompt.md) — milestone: NCR82077 subset and verified original-OBP serial `ok` with Forth response; requested stopping point reached.
 - [afx-presence.md](afx-presence.md) — reference: board AFX-presence byte and the subsequent MACIO DMA control-register fault.
+
+- [MACIO DMA2 registers](macio-dma.md): SCSI DMA configuration, primary manual corrections and next ESP access.
