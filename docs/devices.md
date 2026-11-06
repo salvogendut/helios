@@ -207,3 +207,16 @@ relative seek, terminal-count transfer termination or power-down is implemented.
 AuxIO1's terminal-count events remain available for the future media engine.
 These limits do not prevent OBP from initializing the controller, observing
 recalibration failure, and continuing to its serial monitor.
+
+## SS-5 AFX slot-presence input
+
+The board-level presence byte at `0x6e000000` reads zero for the selected SBus
+CGsix profile: no AFX card is attached. Its presence port exists independently
+of a framebuffer. Original OBP's `afx-slot-empty?` reads this byte and tests
+bit 0; the pinned QEMU SS-5 map independently identifies the same address.
+The microSPARC-II manual appendix A describes the separate static PRES-L pin,
+and the SPARCengine 5 manual distinguishes AFX and SBus card configurations.
+The board's exact decode, other bits, write behavior and wider accesses have
+not been established from schematics; only the observed byte read is modeled.
+Writes and wider accesses stop explicitly. No TCX framebuffer or register RAM
+is installed. RAM/ROM mappings cannot overlap this board input.

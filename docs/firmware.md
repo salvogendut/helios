@@ -416,7 +416,19 @@ cargo run --release --locked --offline -- boot local/firmware/sun-ss5.bin --step
 `local/probes/obp-ok-ss5/` retains firmware/configuration metadata, bounded
 library probe source and log, raw serial transcript, CLI output and a separate
 NVRAM export. The proof run stops after the second prompt. No firmware or NVRAM
-image is committed. User-requested hardware bring-up stops at this checkpoint.
+image is committed. This was the first requested stopping checkpoint; subsequent work continues below.
+
+## AFX presence and the next MACIO access
+
+On resumed bring-up, tracing identifies the `0x6e000000` read as OBP's named
+`afx-slot-empty?` routine, not an ESP register. The board now reports an empty
+AFX slot for the SBus CGsix configuration. OBP passes that check and reaches
+physical `0x78400000`, the onboard MACIO SCSI DMA control/status register.
+That missing word read raises trap `0x29` at step **93375626**, PC=`0xffd16718`,
+nPC=`0xffef0000`, instruction=`0xc8012000`. The serial recovery transcript
+still contains a `Data Access Error`; the fault has moved to the next device.
+The 200-million-step CLI remains at its prompt loop; no clean boot is claimed.
+Evidence is under `local/probes/afx-presence-ss5/`.
 
 The service manual's
 [POST and serial diagnostics](https://docs.oracle.com/cd/E19127-01/sparc5.ws/801-6396-11/801-6396-11.pdf)

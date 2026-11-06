@@ -132,7 +132,10 @@ test rather than assuming either emulator defines the hardware.
   8/32 MiB module sizes.
 - [Sun SPARCengine 5 OEM Technical Manual, September 1995](https://device.report/m/24e55e1efd74cebad92ef139a523192872b87937967e4567f9cdafcecf56e515.pdf),
   801-7104-11: table 2-1 covers microSPARC-II clock variants; section 3.2.9.2
-  describes the 1 MiB TurboGX SBus card with BT458 RAMDAC. The selected 128 MiB
+  describes the 1 MiB TurboGX SBus card with BT458 RAMDAC. Sections 3.2.7.4/3.2.9 distinguish AFX from SBus graphics; microSPARC-II
+  appendix A describes the static PRES-L pin. Original pinned OBP
+  `afx_present-pa`/`afx-slot-empty?` establishes the board byte address and bit-0
+  empty-slot check; its broader register behavior remains unverified. The selected 128 MiB
   RAM configuration is a project default, not a claim about factory base RAM.
 - Local `../iris`, inspected at `b23f674c235b37c3ac83808085d28ac128bb79c4`:
   `HACKING.md`, `src/traits.rs`, and the machine/frontend boundaries. Architectural

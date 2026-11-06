@@ -14,6 +14,9 @@ use crate::devices::{
 use crate::dram::{Ss5Dram, APERTURE_BYTES};
 
 pub const IO_CONTROL_BASE: u64 = 0x1000_0000;
+/// SS-5 board-level AFX presence byte. The selected SBus CGsix profile has
+/// no AFX card. Only the firmware-observed byte read is implemented.
+pub const AFX_PRESENCE_BASE: u64 = 0x6e00_0000;
 pub const KEYBOARD_SERIAL_BASE: u64 = 0x7100_0000;
 pub const SERIAL_BASE: u64 = 0x7110_0000;
 pub const NVRAM_BASE: u64 = 0x7120_0000;
@@ -25,8 +28,9 @@ pub const SYSTEM_TIMER_BASE: u64 = 0x71d1_0000;
 pub const CPU_INTERRUPT_BASE: u64 = 0x71e0_0000;
 pub const SYSTEM_INTERRUPT_BASE: u64 = 0x71e1_0000;
 pub const RESET_BASE: u64 = 0x71f0_0000;
-const DEVICE_RANGES: [(u64, u64); 12] = [
+const DEVICE_RANGES: [(u64, u64); 13] = [
     (IO_CONTROL_BASE, IO_CONTROL_BASE + IO_CONTROL_SIZE),
+    (AFX_PRESENCE_BASE, AFX_PRESENCE_BASE + 1),
     (KEYBOARD_SERIAL_BASE, KEYBOARD_SERIAL_BASE + 8),
     (SERIAL_BASE, SERIAL_BASE + 8),
     (NVRAM_BASE, NVRAM_BASE + NVRAM_SIZE as u64),
@@ -358,6 +362,11 @@ impl Bus for SystemBus {
         }
         self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
+            if address == AFX_PRESENCE_BASE {
+                // Original OBP afx-slot-empty? tests bit 0. The motherboard
+                // presence port exists even when the AFX slot is empty.
+                return Ok(0);
+            }
             if (FLOPPY_BASE..FLOPPY_BASE + 0x10_0000).contains(&address) {
                 let result = devices.floppy.read(address - FLOPPY_BASE);
                 devices.sync_interrupts();
@@ -399,6 +408,12 @@ impl Bus for SystemBus {
         }
         self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
+            if address == AFX_PRESENCE_BASE {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Unsupported("write to AFX presence port"),
+                });
+            }
             if (FLOPPY_BASE..FLOPPY_BASE + 0x10_0000).contains(&address) {
                 let result = devices.floppy.write(address - FLOPPY_BASE, value);
                 devices.sync_interrupts();
