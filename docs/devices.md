@@ -61,10 +61,10 @@ clock can be exported but will be rejected on import until repaired.
 ## Z8530 polling subset
 
 There are two independent SCC instances: console TTYA/TTYB and keyboard/mouse.
-The latter exposes the same polled register and byte-queue behavior; keyboard
-commands, mouse packets and host input translation are pending. The CLI connects
-only TTYA. Installing the second SCC lets OBP initialize its registers without
-an artificial unmapped-address trap.
+The latter exposes the same polled register and byte-queue behavior. An optional
+Sun Type 5 keyboard implements command replies and key stations on channel A;
+mouse packets remain pending. The headless CLI connects only TTYA. The desktop
+frontend attaches the keyboard and CGsix card; see [graphics.md](graphics.md).
 
 Both channels have separate receive/transmit state and a shared control-register
 pointer. WR2 (interrupt vector) and WR9 (master/reset control) are also shared.

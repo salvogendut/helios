@@ -248,7 +248,7 @@ inspected revision was `ed59c15fe78596ec6ff8fe04482ede78e6122e34`.
 | [src/mame/sun/sun4.cpp](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/mame/sun/sun4.cpp) | Sun machine context and device wiring |
 | [src/devices/machine/z80scc.cpp](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/machine/z80scc.cpp) | Independent SCC pointer/reset/register comparison and manual commentary |
 | [src/devices/machine/timekpr.cpp](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/machine/timekpr.cpp) | Independent timekeeper register/counter comparison |
-| [src/devices/bus/sbus/cgsix.cpp](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/bus/sbus/cgsix.cpp) | CGsix/TurboGX device family and SBus-relative map starting point; full behavior review pending |
+| [src/devices/bus/sbus/cgsix.cpp](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/bus/sbus/cgsix.cpp) | TurboGX ROM identity, ROP/mode fields, cursor and timing comparison; incomplete acceleration is not a correctness oracle |
 
 The inspected MAME sun4m machine registrations are unfinished; they are not a
 working SS-5 platform oracle. QEMU is the primary machine-level starting point,
@@ -288,6 +288,9 @@ Future source reuse must retain attribution and comply with the particular
 file's license; consult file headers instead of assigning one license to all
 reference projects. Firmware fetch sources, hashes and initial bounded runs are
 recorded in [firmware.md](firmware.md); the binaries remain under ignored local/.
-Original Sun OBP is the primary development baseline. No differential reference
-run or working firmware prompt has been demonstrated.
+Original Sun OBP is the primary development baseline. Serial and graphical
+firmware prompts have been demonstrated; no differential reference run has
+been performed. [Graphics references](graphics.md#evidence-and-references)
+record Linux's CG6 driver, the LSI SGX/BT458 manual, Sun FCode and the keyboard
+specification used for the graphical console implementation.
 

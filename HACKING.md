@@ -339,6 +339,14 @@ CPU model. Firmware tests must additionally record the firmware hash, machine
 configuration, serial transcript and stopping condition. Keep performance
 measurements separate from correctness checks.
 
+The optional desktop crate is deliberately outside the headless package's
+dependency graph. Validate it separately with `cargo fmt --manifest-path
+helios-ui/Cargo.toml --check`, `cargo clippy --manifest-path helios-ui/Cargo.toml
+--locked --offline --all-targets -- -D warnings` and `cargo test --manifest-path
+helios-ui/Cargo.toml --locked --offline` after fetching its dependencies once.
+CI runs both packages on stable and Rust 1.74. Graphical firmware verification
+requires the two ignored original ROMs; see [graphics.md](docs/graphics.md).
+
 
 The optional original-OBP serial checkpoint is documented in
 [firmware.md](docs/firmware.md#serial-ok-prompt). It reaches a recovery monitor,

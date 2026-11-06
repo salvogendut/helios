@@ -4,10 +4,12 @@ Use **original Sun OBP firmware** for development and hardware-accuracy checks.
 OpenBIOS is a separate compatibility test until it is proved working. Firmware
 must not be patched to bypass missing hardware, and QEMU-specific interfaces
 must not redefine the SS-5 model. A successful isolated probe is not a firmware
-compatibility claim. Original OBP now reaches a responsive serial monitor after
-an initialization error; OpenBIOS has not reached a prompt. The current
-[serial checkpoint](#serial-ok-prompt) distinguishes this from successful POST
-or OS boot. Earlier checkpoints below are retained as historical evidence.
+compatibility claim. Original OBP now reaches responsive serial and graphical
+monitors, with keyboard-entered Forth commands on the TurboGX console.
+OpenBIOS has not reached a prompt. The latest [graphical checkpoint](#graphical-obp-console)
+and [serial/timer/Ethernet checkpoint](#timer-and-ethernet-bring-up) distinguish
+this from full hardware compatibility or OS boot. Earlier checkpoints below
+are retained as historical evidence.
 
 The selected machine is an SS5/85: 85 MHz microSPARC-II, 128 MiB RAM, CGsix,
 SCSI disk/CD-ROM, Ethernet and serial. Pending devices remain absent; the
@@ -590,3 +592,58 @@ Ignored `local/probes/timer-ethernet-ss5/` contains the probe, exact configurati
 console/step logs, both RARP frames and exported NVRAM. Synthetic regressions
 cover timer timing/flags, DMA errors, packet ordering/CRC, loopback, IDPROM and
 serial BREAK. No OS, storage target, CGsix display or network boot is claimed.
+
+## Graphical OBP console
+
+The TurboGX console milestone adds the original card's FCode ROM alongside the
+SS-5 PROM above. The selected ROM is `sunw,501-2325.bin` from MAME's `turbogx`
+set, archived in [retrobios at ae7feba5398fb1258b381d2a0a1c7779f7630d5f](https://github.com/abdess/retrobios/blob/ae7feba5398fb1258b381d2a0a1c7779f7630d5f/bios/Arcade/Arcade/turbogx.zip).
+Its CRC32 `bbdc45f8` and SHA-1
+`e4a51d78e199cd57f2fcb9d45b25dfae2bd537e4` match the pinned MAME ROM declaration.
+The 32768-byte raw image has SHA-256
+`3fb9a8dbe7c8621dd9a65246ac78d9353a492c41862c1dd61656fb03d1a16259`.
+
+```sh
+python3 tools/fetch_firmware.py turbogx
+```
+
+The helper fetches the pinned ZIP, reads only the named member, checks its size
+and SHA-256, and writes `local/firmware/turbogx.bin` with a provenance JSON file.
+`--source` accepts an already-downloaded ZIP. Existing different files are never
+replaced. The archive is third-party provenance, not a manufacturer certificate;
+no firmware is committed.
+
+With fresh default NVRAM, 128 MiB RAM, the 1 MiB card at physical `0x30000000`
+and a Type 5 US keyboard, the original OBP 2.15 ROM:
+
+1. Identifies the keyboard and discovers `cgsix` in SBus slot 1.
+2. Runs the option ROM, draws the color Sun banner and reports 128 MiB RAM,
+   MAC `8:0:20:c0:ff:ee` and host ID `80c0ffee`.
+3. Completes its memory test and sends RARP requests during automatic network boot.
+4. Accepts Sun Stop-A, returns to the on-screen `ok` prompt, and evaluates
+   keyboard-entered `1 2 + .` as `3` before another `ok`.
+
+The initial 128 MiB proof queued Stop-A after the second RARP frame at step
+1034794122 and captured the arithmetic response at step 1048000000. It recorded
+1047989913 instructions (including the software-reset store), 3 synchronous
+guest traps, 10084 interrupt entries and one software reset, with no host error.
+The traps came from firmware probing empty SBus slots/mappings. Keyboard
+presence changes the early firmware diagnostic path; this run does not establish
+that the previously observed serial-only parallel-port POST gap is fixed.
+
+Follow-up probes exercise the bounded keyboard FIFO and use OBP's own `setenv`
+commands to disable automatic boot and diagnostics in an exported NVRAM image.
+The final 128 MiB run completed this sequence at step 1061371506, with 1061361284
+ordinary instruction completions, 3 synchronous traps, 10218 interrupt entries
+and one software reset. Its snapshot shows the arithmetic result and both
+accepted settings followed by `ok`.
+The native window can reload that image with 128 MiB RAM and display `ok`
+directly. The default machine configuration is not changed by these test images.
+Live desktop interaction also confirmed the current storage boundary:
+`probe-scsi-all` stops on an unsupported ESP selection/transfer command at
+physical `0x7880000c`, PC `ffd16898`. The window preserves the image and now
+names that stop reason in its title; this is not a completed SCSI probe.
+Ignored `local/probes/graphics-ss5/` contains the local probe sources, logs,
+snapshots and NVRAM exports. See [graphics.md](graphics.md) for invocation,
+register behavior and limitations. SCSI transfers, OS boot, mouse input and
+complete graphics acceleration remain unsupported.

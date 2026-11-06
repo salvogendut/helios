@@ -1,4 +1,5 @@
 /target/
+/helios-ui/target/
 /local/
 *.profraw
 

@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Fetch a pinned Sun SS-5 PROM or QEMU SPARC32 OpenBIOS for local testing.
+"""Fetch a pinned Sun SS-5 PROM, TurboGX ROM or QEMU OpenBIOS for local testing.
 
 OpenBIOS conversion handles one verified image, not arbitrary ELF executables.
 Only Python's standard library is needed; firmware stays in ignored local/.
 """
 import argparse
 import hashlib
+import io
 import json
 from pathlib import Path
 import struct
 import urllib.request
+import zipfile
 
 REVISION = "f71afb409a87c4ecd0f9d63a5963eb645dfab780"
 URL = f"https://raw.githubusercontent.com/qemu/qemu/{REVISION}/pc-bios/openbios-sparc32"
@@ -20,6 +22,10 @@ SUN_REVISION = "a6f20b0740cfb4440d36ac04d7ad67e0207a73d4"
 SUN_URL = f"https://raw.githubusercontent.com/andarazoroflove/sparc/{SUN_REVISION}/ss5.bin"
 SUN_SHA256 = "e7f40845504c65f4011278aa3e97a9810aa36775e6c199b715839fbc25eec45e"
 SUN_BLOB = "98aa7fef3c66b720081950b09e7609e9b178213a"
+TGX_REVISION = "ae7feba5398fb1258b381d2a0a1c7779f7630d5f"
+TGX_URL = f"https://raw.githubusercontent.com/abdess/retrobios/{TGX_REVISION}/bios/Arcade/Arcade/turbogx.zip"
+TGX_SHA256 = "3fb9a8dbe7c8621dd9a65246ac78d9353a492c41862c1dd61656fb03d1a16259"
+TGX_MEMBER = "sunw,501-2325.bin"
 
 
 def sha256(data):
@@ -59,12 +65,12 @@ def write_or_verify(path, data):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("firmware", choices=["sun-ss5", "openbios"])
+    parser.add_argument("firmware", choices=["sun-ss5", "turbogx", "openbios"])
     parser.add_argument("--source", type=Path, help="verify and use an already downloaded image")
     parser.add_argument("--output-dir", type=Path,
                         default=Path(__file__).resolve().parents[1] / "local" / "firmware")
     args = parser.parse_args()
-    url = SUN_URL if args.firmware == "sun-ss5" else URL
+    url = {"sun-ss5": SUN_URL, "turbogx": TGX_URL, "openbios": URL}[args.firmware]
     if args.source is None:
         with urllib.request.urlopen(url, timeout=30) as response:
             downloaded = response.read(2 * PROM_SIZE + 1)
@@ -82,6 +88,20 @@ def main():
                     "git_blob": blob, "raw_sha256": sha256(raw), "size": len(raw),
                     "firmware": "Sun SS-5 PROM from user-specified archive (ss5.bin)",
                     "physical_prom_base": 0x70000000}
+    elif args.firmware == "turbogx":
+        # Read the named member only; never extract archive paths to disk.
+        with zipfile.ZipFile(io.BytesIO(downloaded)) as archive:
+            if archive.getinfo(TGX_MEMBER).file_size != 32768:
+                raise ValueError("unexpected TurboGX ROM size")
+            raw = archive.read(TGX_MEMBER)
+        if sha256(raw) != TGX_SHA256:
+            raise ValueError("firmware differs from the pinned TurboGX ROM")
+        prefix = "turbogx"
+        manifest = {"source_url": TGX_URL, "repository_revision": TGX_REVISION,
+                    "archive_member": TGX_MEMBER, "raw_sha256": sha256(raw),
+                    "raw_sha1": hashlib.sha1(raw).hexdigest(), "size": len(raw),
+                    "firmware": "Sun TurboGX 1 MiB FCode ROM (MAME turbogx)",
+                    "physical_rom_base": 0x30000000}
     else:
         raw, layout = prepare(downloaded)
         prefix = "openbios-sparc32"

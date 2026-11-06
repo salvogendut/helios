@@ -24,3 +24,20 @@ jobs:
       - run: cargo run --locked --offline -- trap-demo
       - run: cargo run --locked --offline -- serial-demo
       - run: cargo run --locked --offline -- timer-demo
+
+  desktop:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain: [stable, '1.74.0']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+      - run: sudo apt-get update && sudo apt-get install -y libx11-dev pkg-config
+      - run: cargo fetch --manifest-path helios-ui/Cargo.toml --locked --target x86_64-unknown-linux-gnu
+      - run: cargo fmt --manifest-path helios-ui/Cargo.toml --check
+      - run: cargo clippy --manifest-path helios-ui/Cargo.toml --locked --offline --all-targets -- -D warnings
+      - run: cargo test --manifest-path helios-ui/Cargo.toml --locked --offline

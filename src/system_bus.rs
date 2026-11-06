@@ -3,12 +3,14 @@
 use crate::bus::{Bus, BusError, BusErrorKind, IoTlbFlush, MapError, MemoryBus, MemoryRequest};
 use crate::devices::{
     auxiliary::Auxiliary,
+    cgsix::{Cgsix, VRAM_BYTES, VRAM_OFFSET},
     esp::Esp,
     ethernet::Ethernet,
     ethernet_dma::EthernetDma,
     floppy::Floppy,
     interrupt::{InterruptController, Source},
     io_control::{IoControl, IO_CONTROL_SIZE},
+    keyboard::Keyboard,
     nvram::{Nvram, NVRAM_SIZE},
     reset::ResetControl,
     scsi_dma::ScsiDma,
@@ -18,6 +20,8 @@ use crate::devices::{
 use crate::dram::{Ss5Dram, APERTURE_BYTES};
 
 pub const IO_CONTROL_BASE: u64 = 0x1000_0000;
+pub const CGSIX_BASE: u64 = 0x3000_0000; // SS5 external SBus slot 1
+const CGSIX_SIZE: u64 = 0x0200_0000;
 /// SS-5 board-level AFX presence byte. The selected SBus CGsix profile has
 /// no AFX card. Only the firmware-observed byte read is implemented.
 pub const AFX_PRESENCE_BASE: u64 = 0x6e00_0000;
@@ -76,8 +80,9 @@ pub struct Sun4mDevices {
     pub io_control: IoControl,
     pub nvram: Nvram,
     pub serial: Serial,
-    /// SCC channels A (keyboard) and B (mouse). Input protocols are pending.
+    /// SCC channels A (keyboard) and B (mouse). Mouse protocol is pending.
     pub keyboard_serial: Serial,
+    pub keyboard: Option<Keyboard>,
     pub interrupts: InterruptController,
     pub timers: Timers,
     pub reset: ResetControl,
@@ -104,6 +109,9 @@ impl Sun4mDevices {
     }
 
     fn advance_ns(&mut self, ns: u64) {
+        if let Some(keyboard) = &mut self.keyboard {
+            keyboard.advance_ns(ns, &mut self.keyboard_serial);
+        }
         self.ethernet.advance_ns(ns);
         self.esp.advance_ns(ns);
         self.floppy.advance_ns(ns);
@@ -124,6 +132,7 @@ pub struct SystemBus {
     cpu_user: bool,
     prom_cycles: Option<u64>,
     prom_phase: u64,
+    cgsix: Option<Cgsix>,
 }
 
 /// SS5/85 SBus clock (CPU / 4), SPARCengine 5 table 2-1.
@@ -132,6 +141,28 @@ pub const SBUS_CLOCK_HZ: u64 = 21_250_000;
 pub const PROM_BYTE_CYCLES: u64 = 6;
 
 impl SystemBus {
+    pub fn install_cgsix(&mut self, card: Cgsix) -> Result<(), MapError> {
+        if self.cgsix.is_some() || self.memory.overlaps(CGSIX_BASE, CGSIX_BASE + CGSIX_SIZE) {
+            return Err(MapError::Overlap);
+        }
+        self.cgsix = Some(card);
+        Ok(())
+    }
+    pub fn cgsix(&self) -> Option<&Cgsix> {
+        self.cgsix.as_ref()
+    }
+    fn sync_cgsix_irq(&mut self) {
+        if let (Some(devices), Some(card)) = (&mut self.devices, &self.cgsix) {
+            devices.interrupts.set_source(Source::SBus5, card.irq());
+        }
+    }
+    fn cgsix_at(&mut self, address: u64) -> Option<&mut Cgsix> {
+        if (CGSIX_BASE..CGSIX_BASE + CGSIX_SIZE).contains(&address) {
+            self.cgsix.as_mut()
+        } else {
+            None
+        }
+    }
     pub(crate) fn begin_cpu_step(&mut self) {
         self.prom_cycles = Some(0);
     }
@@ -269,6 +300,7 @@ impl SystemBus {
             nvram,
             serial: Serial::default(),
             keyboard_serial: Serial::default(),
+            keyboard: None,
             interrupts: InterruptController::default(),
             timers: Timers::default(),
             reset: ResetControl::default(),
@@ -299,6 +331,9 @@ impl SystemBus {
         }
     }
     fn reset_io(&mut self) {
+        if let Some(card) = &mut self.cgsix {
+            card.reset();
+        }
         self.cpu_user = false;
         self.prom_cycles = None;
         self.prom_phase = 0;
@@ -312,17 +347,33 @@ impl SystemBus {
             devices.ethernet.reset();
             devices.serial.reset();
             devices.keyboard_serial.reset();
+            if let Some(keyboard) = &mut devices.keyboard {
+                keyboard.reset();
+            }
             devices.interrupts.reset();
             devices.timers.reset();
         }
     }
     pub fn advance_ns(&mut self, ns: u64) {
+        if let Some(card) = &mut self.cgsix {
+            card.advance_ns(ns);
+        }
         if let Some(devices) = &mut self.devices {
             devices.advance_ns(ns);
         }
+        self.sync_cgsix_irq();
     }
     pub fn advance_seconds(&mut self, seconds: u64) {
+        if let Some(card) = &mut self.cgsix {
+            card.advance_ns(seconds.saturating_mul(1_000_000_000));
+        }
         if let Some(devices) = &mut self.devices {
+            if let Some(keyboard) = &mut devices.keyboard {
+                keyboard.advance_ns(
+                    seconds.saturating_mul(1_000_000_000),
+                    &mut devices.keyboard_serial,
+                );
+            }
             devices
                 .ethernet
                 .advance_ns(seconds.saturating_mul(1_000_000_000));
@@ -336,8 +387,10 @@ impl SystemBus {
             devices.nvram.advance_seconds(seconds);
             devices.sync_interrupts();
         }
+        self.sync_cgsix_irq();
     }
     pub fn interrupt_levels(&mut self) -> u16 {
+        self.sync_cgsix_irq();
         if let Some(devices) = &mut self.devices {
             devices.sync_interrupts();
             devices.interrupts.levels()
@@ -375,10 +428,13 @@ impl SystemBus {
         }
     }
     fn overlaps_device(&self, address: u64, size: u64) -> bool {
-        self.devices.is_some()
-            && DEVICE_RANGES
-                .iter()
-                .any(|&(start, end)| address < end && address.saturating_add(size) > start)
+        (self.cgsix.is_some()
+            && address < CGSIX_BASE + CGSIX_SIZE
+            && address.saturating_add(size) > CGSIX_BASE)
+            || self.devices.is_some()
+                && DEVICE_RANGES
+                    .iter()
+                    .any(|&(start, end)| address < end && address.saturating_add(size) > start)
     }
     fn map_check(&self, address: u64, size: usize) -> Result<(), MapError> {
         if address.checked_add(size as u64).is_none() {
@@ -469,6 +525,12 @@ impl Bus for SystemBus {
     }
 
     fn read8(&mut self, address: u64) -> Result<u8, BusError> {
+        if let Some(card) = self.cgsix_at(address) {
+            return card
+                .read(address - CGSIX_BASE, 1)
+                .map(|v| v as u8)
+                .map_err(|kind| BusError { address, kind });
+        }
         self.check_macio_access(address, 1)?;
         if self.devices.is_some() && (MACIO_ID_BASE..MACIO_ID_BASE + 4).contains(&address) {
             return Ok((0xfe81_0103u32 >> ((3 - (address - MACIO_ID_BASE)) * 8)) as u8);
@@ -530,6 +592,16 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write8(&mut self, address: u64, value: u8) -> Result<(), BusError> {
+        if let Some(card) = self.cgsix_at(address) {
+            let shift = (3 - address % 4) * 8;
+            return card
+                .write(
+                    (address - CGSIX_BASE) & !3,
+                    u32::from(value) << shift,
+                    255 << shift,
+                )
+                .map_err(|kind| BusError { address, kind });
+        }
         self.check_macio_access(address, 1)?;
         self.check_floppy_access(address, 1)?;
         if let Some(dram) = self.dram_at(address) {
@@ -591,6 +663,12 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read16(&mut self, address: u64) -> Result<u16, BusError> {
+        if let Some(card) = self.cgsix_at(address) {
+            return card
+                .read(address - CGSIX_BASE, 2)
+                .map(|v| v as u16)
+                .map_err(|kind| BusError { address, kind });
+        }
         self.check_macio_access(address, 2)?;
         if (ETHERNET_BASE..ETHERNET_BASE + 4).contains(&address) {
             if let Some(devices) = &mut self.devices {
@@ -619,6 +697,22 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write16(&mut self, address: u64, value: u16) -> Result<(), BusError> {
+        if let Some(card) = self.cgsix_at(address) {
+            if address & 1 != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
+            let shift = (2 - address % 4) * 8;
+            return card
+                .write(
+                    (address - CGSIX_BASE) & !3,
+                    u32::from(value) << shift,
+                    65535 << shift,
+                )
+                .map_err(|kind| BusError { address, kind });
+        }
         self.check_macio_access(address, 2)?;
         if (ETHERNET_BASE..ETHERNET_BASE + 4).contains(&address) {
             if let Some(devices) = &mut self.devices {
@@ -641,6 +735,11 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read32(&mut self, address: u64) -> Result<u32, BusError> {
+        if let Some(card) = self.cgsix_at(address) {
+            return card
+                .read(address - CGSIX_BASE, 4)
+                .map_err(|kind| BusError { address, kind });
+        }
         self.check_macio_access(address, 4)?;
         self.check_floppy_access(address, 4)?;
         if let Some(dram) = self.dram_at(address) {
@@ -675,6 +774,13 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError> {
+        if let Some(card) = self.cgsix_at(address) {
+            let result = card
+                .write(address - CGSIX_BASE, value, mask)
+                .map_err(|kind| BusError { address, kind });
+            self.sync_cgsix_irq();
+            return result;
+        }
         if mask != u32::MAX
             && self.devices.is_some()
             && (ETHERNET_BASE..ETHERNET_BASE + 4).contains(&address)
@@ -745,6 +851,30 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read_doubleword(&mut self, address: u64) -> Result<[u32; 2], BusError> {
+        if let Some(card) = self.cgsix_at(address) {
+            let offset = address - CGSIX_BASE;
+            if address & 7 != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
+            if offset >= 32768 && !(VRAM_OFFSET..VRAM_OFFSET + VRAM_BYTES as u64).contains(&offset)
+            {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Unsupported("CGsix register doubleword"),
+                });
+            }
+            return Ok([
+                card.read(offset, 4)
+                    .map_err(|kind| BusError { address, kind })?,
+                card.read(offset + 4, 4).map_err(|kind| BusError {
+                    address: address + 4,
+                    kind,
+                })?,
+            ]);
+        }
         self.check_macio_access(address, 8)?;
         self.check_floppy_access(address, 8)?;
         if let Some(dram) = self.dram_at(address) {
@@ -766,6 +896,29 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write_doubleword(&mut self, address: u64, words: [u32; 2]) -> Result<(), BusError> {
+        if let Some(card) = self.cgsix_at(address) {
+            let offset = address - CGSIX_BASE;
+            if address & 7 != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
+            if !(VRAM_OFFSET..VRAM_OFFSET + VRAM_BYTES as u64).contains(&offset) {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Unsupported("CGsix register doubleword"),
+                });
+            }
+            card.write(offset, words[0], u32::MAX)
+                .map_err(|kind| BusError { address, kind })?;
+            return card
+                .write(offset + 4, words[1], u32::MAX)
+                .map_err(|kind| BusError {
+                    address: address + 4,
+                    kind,
+                });
+        }
         self.check_macio_access(address, 8)?;
         self.check_floppy_access(address, 8)?;
         if let Some(dram) = self.dram_at(address) {

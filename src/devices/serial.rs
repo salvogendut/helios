@@ -214,6 +214,9 @@ impl Serial {
     pub fn take_output(&mut self, channel: Channel) -> Vec<u8> {
         self.ports[channel.index()].output.drain(..).collect()
     }
+    pub(crate) fn pop_output(&mut self, channel: Channel) -> Option<u8> {
+        self.ports[channel.index()].output.pop_front()
+    }
 
     pub fn read(&mut self, offset: u64) -> Result<u8, BusErrorKind> {
         if offset >= 8 {

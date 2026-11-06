@@ -25,9 +25,17 @@ monitor, where `1 2 + .` returns `3`. The remaining POST fault is an unimplement
 parallel-port DMA register. OS boot remains unverified. See the
 [latest firmware checkpoint](docs/firmware.md#timer-and-ethernet-bring-up).
 
+The optional **graphical console** now runs the original TurboGX FCode ROM and
+Sun Type 5 keyboard protocol. With 128 MiB RAM, OBP displays its banner and
+`ok` prompt; keyboard Stop-A interrupts network boot and `1 2 + .` returns `3`
+on screen. See [graphics and keyboard](docs/graphics.md) for the supported
+device subset and [the graphical checkpoint](docs/firmware.md#graphical-obp-console).
+
 The implemented foundation includes:
 
 - A dependency-free Rust library and headless CLI.
+- An optional native framebuffer window, CGsix indexed VRAM/palette/cursor,
+  console drawing operations and a Sun keyboard on the second SCC.
 - Eight overlapping register windows, `%g0`, PC/nPC, and integer condition codes.
 - An integer instruction subset: SETHI/NOP, ADD/SUB/ADDX/SUBX and their `cc`
   variants; AND/OR/XOR/ANDN/ORN/XNOR and their `cc` variants; SLL/SRL/SRA;
@@ -62,7 +70,7 @@ The implemented foundation includes:
 - NCR89C100 Ethernet DMA and NCR92C990 initialization, single-buffer packets,
   CRC, filtering and internal loopback through the IOMMU. See [Ethernet](docs/ethernet.md).
 - SS-5 system reset/status, guest software reset and watchdog status latching;
-  a second polled SCC for the keyboard/mouse ports (input protocols pending).
+  a second polled SCC with an optional Type 5 keyboard (mouse protocol pending).
 - microSPARC-II IOMMU page translation, I/O TLB flushes, SBus arbitration and
   slot bypass, with byte/halfword/word DMA access to RAM through the shared TLB.
   The chip revision and virtual-address compare configuration are readable.
@@ -78,7 +86,7 @@ Unsupported emulator behavior remains a host stop, separate from guest traps.
 Implementation-specific ASRs, broader illegal-opcode classification, remaining TLB
 diagnostic modes, cache hit/fill behavior, remaining FPU arithmetic/conversions, quad-operation traps,
 serial interrupt generation, SCSI transfers, a host network backend
-and graphics remain to be implemented. There is no firmware or OS compatibility
+and broader graphics acceleration remain to be implemented. There is no general firmware or OS compatibility
 claim.
 
 ## Build and run
@@ -87,6 +95,20 @@ Use Rust 1.74 or newer with Cargo. The core needs no host GUI libraries or
 downloaded crates; nightly features are not required.
 The executable embeds [sun_ascii.txt](sun_ascii.txt) and prints its Sun logo and
 the HELIOS name on stderr at startup, keeping guest serial bytes on stdout.
+
+To use the graphical firmware console on an X11/XWayland desktop:
+
+```sh
+python3 tools/fetch_firmware.py sun-ss5
+python3 tools/fetch_firmware.py turbogx
+cargo run --release --manifest-path helios-ui/Cargo.toml -- \
+  local/firmware/sun-ss5.bin local/firmware/turbogx.bin
+```
+
+After the memory test, hold **Pause** and press **A** for Sun Stop-A to reach
+`ok`. Close the window to exit; Escape goes to the guest. The desktop frontend
+has separate dependencies and a lockfile. Its build requirements, key mapping
+and optional NVRAM persistence are in [graphics.md](docs/graphics.md).
 
 ```sh
 cargo test --locked --offline
@@ -175,6 +197,7 @@ and the distinction from the contiguous RAM used by synthetic harnesses.
 - [DRAM and TLB diagnostics](docs/dram-tlb.md): DSIMM layout, diagnostic entries and replacement controls.
 - [System reset](docs/reset.md): reset-status register, guest reset and watchdog limits.
 - [Devices](docs/devices.md): console serial, IDPROM, NVRAM persistence and RTC.
+- [Graphics and keyboard](docs/graphics.md): TurboGX, Type 5 keyboard and native console window.
 - [Interrupts and timers](docs/interrupts-timers.md): register maps, masking and guest time.
 - [I/O controls](docs/io-control.md): IOMMU translation, shared TLB, DMA access and current limits.
 - [Firmware](docs/firmware.md): original Sun OBP development baseline, pinned downloads and probe results.

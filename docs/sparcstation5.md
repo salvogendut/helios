@@ -9,12 +9,13 @@ The executable provides bare-metal and reset/PROM memory harnesses described
 in the README, with a polled console, NVRAM/RTC, interrupt control and counter
 timers and system reset/status; other peripherals are pending.
 
-The graphics target is a standard 1 MiB TurboGX card in the CGsix family.
-Its SBus slot assignment and device aperture will be fixed when the card is
-implemented. The SS-5 service manual lists the 85 MHz board and 1 MiB TGX option;
+The graphics target is a standard 1 MiB TurboGX card in the CGsix family, now
+implemented as a console subset in SBus slot 1 at physical `0x30000000`.
+The native frontend attaches it with a Type 5 US keyboard; see
+[graphics.md](graphics.md). The SS-5 service manual lists the 85 MHz board and 1 MiB TGX option;
 the SPARCengine 5 OEM manual describes this card's BT458 RAMDAC and 8-bit output.
 See [references.md](references.md). Disk capacity and media are configuration
-choices for the storage milestone. Graphics and SCSI data transfers remain planned. Ethernet has a headless
+choices for the storage milestone. SCSI data transfers remain planned. Ethernet has a headless
 packet endpoint; see [ethernet.md](ethernet.md) for its implemented subset.
 
 `CPU_CLOCK_HZ` records the nominal 85 MHz clock. The interpreter's 100 ns step
@@ -67,6 +68,6 @@ Original Sun OBP is the primary firmware for development and hardware accuracy.
 OpenBIOS remains a separate compatibility test until proved working. QEMU
 supplies it with interfaces such as `fw_cfg`; those must not redefine SS-5
 hardware behavior. [firmware.md](firmware.md) records the pinned images and
-bounded probe results. Original OBP reaches a responsive serial recovery prompt;
+bounded probe results. Original OBP reaches responsive serial and graphical prompts;
 OpenBIOS remains unproven, and no OS boot is supported.
 
