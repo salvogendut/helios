@@ -21,13 +21,17 @@ This is an executable foundation, **not yet a bootable SPARCstation**. It has:
   variants; AND/OR/XOR/ANDN/ORN/XNOR and their `cc` variants; SLL/SRL/SRA;
   Bicc with delay slots and annul; CALL/JMPL; SAVE/RESTORE; LD/LDUB/LDUH/LDSB/LDSH
   and ST/STB/STH.
+- PSR/WIM/TBR/Y reads and writes, supervisor checks, Ticc, RETT, UNIMP and
+  synchronous STBAR. Precise traps save PC/nPC, rotate windows and enter a guest
+  handler; faults with traps disabled latch CPU error state.
 - Word-backed RAM and ROM, big-endian byte lanes, checked mappings and accesses,
   raw image loading, instruction tracing, and focused CPU/bus tests.
 
-Faults stop execution with the instruction, PC and nPC available for diagnosis.
-They do not yet enter a SPARC trap handler. Hardware reset, privileged state,
-SRMMU/ASIs, FPU, interrupts, timers, serial, NVRAM, SCSI, networking and graphics
-remain to be implemented. There is no firmware or OS compatibility claim.
+Unsupported emulator behavior remains a host stop, separate from guest traps.
+Hardware reset, SRMMU/ASIs, remaining integer instructions (including
+multiply/divide and atomics), FPU, external interrupts, timers, serial, NVRAM,
+SCSI, networking and graphics remain to be implemented. There is no firmware
+or OS compatibility claim.
 
 ## Build and run
 
@@ -39,13 +43,18 @@ cargo test --locked --offline
 cargo run --locked --offline -- info
 cargo run --locked --offline -- demo
 cargo run --locked --offline -- demo --trace
+cargo run --locked --offline -- trap-demo --trace
 ```
 
 The demo executes the hand-encoded program in [examples/sum.s](examples/sum.s),
 adds 1 through 10, and verifies that guest RAM at `0x100` contains **55** after
 43 instructions. It requires no ROM image or SPARC assembler.
 
-Run your own raw big-endian program with an explicit instruction budget:
+The [trap demo](examples/trap.s) installs a trap table, enters user mode, executes
+`TA 7`, runs a supervisor handler and returns through `JMPL`/`RETT`. It verifies
+the return state after 14 CPU steps: 13 completed instructions and one trap entry.
+
+Run your own raw big-endian program with an explicit CPU step budget:
 
 ```sh
 cargo run --release -- run local/program.bin --load-address 0x1000 --steps 1000 --trace
@@ -56,7 +65,11 @@ Entry defaults to the load address. `--entry` selects another address;
 The bare-metal harness maps only RAM at physical address zero, without an MMU.
 `run` accepts raw bytes, not ELF executables or workstation firmware images.
 Reaching the budget is a successful host stop, not a guest halt instruction.
-Unsupported instructions and access faults exit with status 1.
+Each completed instruction or trap entry counts as one step. With `PSR.ET=1`,
+implemented exceptions enter the guest handler; with `PSR.ET=0`, they enter CPU
+error state and exit with status 1. Unsupported instructions also exit with
+status 1, without a guest trap. The harness starts in supervisor mode with traps
+disabled; guest code must install a trap table and enable traps to handle them.
 
 ## Development
 

@@ -81,7 +81,7 @@ fn faults_and_bad_cli_input_are_unsuccessful() {
     let output = helios(&["run", image.path(), "--steps", "1"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("UnsupportedInstruction"));
+    assert!(stderr.contains("CPU error state: IllegalInstruction"));
     assert!(stderr.contains("PC=0x00000000, nPC=0x00000004"));
     for args in [
         vec!["run", image.path(), "--steps", "0"],
@@ -94,6 +94,33 @@ fn faults_and_bad_cli_input_are_unsuccessful() {
     ] {
         assert!(!helios(&args).status.success(), "{args:?}");
     }
+}
+
+#[test]
+fn trap_demo_reports_trap_entry_separately_from_executed_instructions() {
+    let output = helios(&["trap-demo", "--trace"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("pc="))
+            .count(),
+        13
+    );
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("trap="))
+            .count(),
+        1
+    );
+    assert!(stdout.contains("trap=87 vector=00001870"));
+    assert!(stdout.contains("Trap demo passed"));
 }
 
 #[test]

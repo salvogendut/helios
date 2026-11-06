@@ -10,6 +10,10 @@ test rather than assuming either emulator defines the hardware.
 - [SPARC International technical documents](https://sparc.org/technical-documents/):
   SPARC Architecture Manual Version 8, especially integer state, instruction
   encodings, windows, traps and the reference MMU.
+- [SPARC V8 manual, compressed PDF](https://sparc.org/wp-content/uploads/2014/01/v8.pdf.gz):
+  chapters 4 and 7, B.26–B.29 and C.8 were checked for state registers, trap
+  entry, RETT priority and error mode. Immediate state writes use the permitted
+  zero-delay implementation choice; guest examples retain portable spacing.
 - Local `../iris`, inspected at `b23f674c235b37c3ac83808085d28ac128bb79c4`:
   `HACKING.md`, `src/traits.rs`, and the machine/frontend boundaries. Architectural
   inspiration includes word-transparent data paths, functional hardware
@@ -27,6 +31,7 @@ Reference revision: `f71afb409a87c4ecd0f9d63a5963eb645dfab780` (inspected 2026-1
 | [target/sparc/cpu.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/cpu.c) | MB86904 identity, window count and reset state |
 | [target/sparc/translate.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/translate.c) | Integer flags, decoding and control transfers |
 | [target/sparc/win_helper.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/win_helper.c) | Window management and privileged state |
+| [target/sparc/int32_helper.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/int32_helper.c) | Synchronous trap entry and saved window state |
 
 For upcoming work, start with `target/sparc/mmu_helper.c`, `hw/sparc/sun4m_iommu.c`,
 `hw/intc/slavio_intctl.c`, `hw/timer/slavio_timer.c`, `hw/char/escc.c`,

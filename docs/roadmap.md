@@ -6,7 +6,7 @@ observable acceptance criteria before its status can advance.
 | Milestone | Deliverable and acceptance | Status |
 | --- | --- | --- |
 | 0 — Foundation | Library/CLI, integer subset, word bus, runnable bare-metal demo and regression tests | Implemented |
-| 1 — CPU baseline | Complete V8 integer/privileged behavior, PSR/WIM/TBR/Y, precise traps/RETT, ASI dispatch, multiply/divide and atomics; independently checked bare-metal tests | Next |
+| 1 — CPU baseline | Complete V8 integer/privileged behavior, PSR/WIM/TBR/Y, precise traps/RETT, ASI dispatch, multiply/divide and atomics; independently checked bare-metal tests | In progress: state registers and synchronous traps/RETT implemented |
 | 2 — Memory system | microSPARC-II reset/boot behavior and SRMMU, permissions, contexts, faults, TLB invalidation and required cache controls; translation/fault tests | Planned |
 | 3 — Serial firmware | PROM loading, NVRAM/IDPROM, Z8530, interrupt controller and timers, plus observed firmware probes; reproducible firmware prompt transcript | Planned |
 | 4 — Storage and kernel | IOMMU, DMA, ESP SCSI, disk/CD-ROM targets and safe image writes; installer/kernel reaches serial userspace | Planned |
@@ -17,9 +17,11 @@ FPU implementation can move earlier when firmware or a selected guest requires
 it. Use instruction and device evidence to adjust ordering; a milestone label
 does not justify faking successful hardware behavior.
 
-The immediate next change should establish architectural trap entry and
-privileged CPU state, keeping host-visible unsupported-instruction stops distinct
-from guest exceptions. Then add SRMMU and reset mapping before attempting a PROM.
+Architectural trap entry and privileged CPU state now have a runnable guest
+demonstration and focused regressions. Missing instructions remain host stops.
+Next add ASI dispatch and the SRMMU/reset mapping, while completing the remaining
+integer operations needed by firmware. External interrupt delivery is a separate
+task; storing PSR.PIL does not yet provide it.
 
 SunOS/Solaris, BSD and Linux versions will be recorded individually once tested.
 No guest release is currently supported. Additional sun4c, sun4m and sun4u

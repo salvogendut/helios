@@ -1,5 +1,6 @@
 use helios::bus::Bus;
-use helios::machine::{demo_image, Machine, DEFAULT_RAM_BYTES, TARGET};
+use helios::cpu::{Step, PSR_ET, PSR_S};
+use helios::machine::{demo_image, trap_demo_image, Machine, DEFAULT_RAM_BYTES, TARGET};
 use std::error::Error;
 use std::process::ExitCode;
 
@@ -8,13 +9,15 @@ const HELP: &str = "Helios — Sun SPARC emulator foundation
 Usage:
   helios info
   helios demo [--trace]
+  helios trap-demo [--trace]
   helios run FILE [--load-address N] [--entry N] [--steps N] [--ram-mib N] [--trace]
 
 FILE is a raw big-endian SPARC instruction/data image, loaded into RAM.
 Addresses accept decimal or 0x-prefixed hexadecimal. Entry defaults to the load
-address (default 0). Defaults: 1000 instructions, 64 MiB RAM. --trace prints each
-completed instruction's PC, nPC and word. Faults exit with status 1.
-Reaching the instruction budget exits successfully; it does not mean guest halt.
+address (default 0). Defaults: 1000 CPU steps, 64 MiB RAM. Each completed
+instruction or trap entry counts as one step. --trace prints instructions and
+traps. Unsupported behavior and CPU error state exit with status 1.
+Reaching the step budget exits successfully; it does not mean guest halt.
 
 Current mode is a bare-metal interpreter subset. Firmware/OS boot is not supported.";
 
@@ -27,17 +30,42 @@ fn number(value: &str) -> Result<u64, Box<dyn Error>> {
 }
 
 fn execute(machine: &mut Machine, steps: u64, trace: bool) -> Result<(), Box<dyn Error>> {
+    let mut instructions = 0u64;
+    let mut traps = 0u64;
     for _ in 0..steps {
-        let step = machine.step()?;
-        if trace {
-            println!(
-                "pc={:08x} npc={:08x} instruction={:08x}",
-                step.pc, step.npc, step.instruction
-            );
+        let step = machine.step().map_err(|fault| {
+            let reason = if machine.cpu.error_state().is_some() {
+                "CPU error state"
+            } else {
+                "emulator stop"
+            };
+            format!("{reason}: {fault}")
+        })?;
+        match step {
+            Step::Executed {
+                pc,
+                npc,
+                instruction,
+            } => {
+                instructions += 1;
+                if trace {
+                    println!("pc={pc:08x} npc={npc:08x} instruction={instruction:08x}");
+                }
+            }
+            Step::TrapTaken {
+                fault,
+                trap_type,
+                vector,
+            } => {
+                traps += 1;
+                if trace {
+                    println!("trap={trap_type:02x} vector={vector:08x} {fault}");
+                }
+            }
         }
     }
     println!(
-        "Instruction budget reached ({steps}); PC={:#010x}, nPC={:#010x}",
+        "Step budget reached ({steps}: {instructions} instructions, {traps} traps); PC={:#010x}, nPC={:#010x}",
         machine.cpu.pc(),
         machine.cpu.npc()
     );
@@ -69,6 +97,26 @@ fn run() -> Result<(), Box<dyn Error>> {
                 return Err(format!("demo failed: expected 55, got {result}").into());
             }
             println!("Demo passed: sum(1..=10) = {result}, stored at RAM[0x100]");
+        }
+        Some("trap-demo") => {
+            let remaining: Vec<_> = args.collect();
+            let trace = match remaining.as_slice() {
+                [] => false,
+                [option] if option == "--trace" => true,
+                _ => return Err("usage: helios trap-demo [--trace]".into()),
+            };
+            let mut machine = Machine::bare_metal(8192, 0)?;
+            machine.load_image(0, &trap_demo_image())?;
+            execute(&mut machine, 14, trace)?;
+            if machine.cpu.read_reg(2) != 1
+                || machine.cpu.read_reg(3) != 1
+                || machine.cpu.pc() != 0x2c
+                || machine.cpu.current_window() != 0
+                || machine.cpu.psr() & (PSR_S | PSR_ET) != PSR_ET
+            {
+                return Err("trap demo failed: incorrect handler or user return state".into());
+            }
+            println!("Trap demo passed: user TA 7 -> supervisor handler -> user RETT return");
         }
         Some("run") => {
             let file = args.next().ok_or("run requires a raw image filename")?;

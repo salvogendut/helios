@@ -28,6 +28,30 @@ fn machine(words: &[u32]) -> Machine {
     machine
 }
 
+fn assert_architecture_unchanged(cpu: &Cpu, before: &Cpu) {
+    assert_eq!(
+        (
+            cpu.pc(),
+            cpu.npc(),
+            cpu.psr(),
+            cpu.tbr(),
+            cpu.y(),
+            cpu.window_invalid_mask()
+        ),
+        (
+            before.pc(),
+            before.npc(),
+            before.psr(),
+            before.tbr(),
+            before.y(),
+            before.window_invalid_mask()
+        )
+    );
+    for register in 0..32 {
+        assert_eq!(cpu.read_reg(register), before.read_reg(register));
+    }
+}
+
 #[test]
 fn complete_loop_uses_flags_negative_displacement_delay_slot_and_store() {
     let mut m = Machine::bare_metal(4096, 0).unwrap();
@@ -326,7 +350,8 @@ fn windows_wrap_and_wim_faults_do_not_change_cpu_state() {
         m.cpu.set_window_invalid_mask(mask);
         let before = m.cpu.clone();
         assert_eq!(m.step().unwrap_err().kind, expected);
-        assert_eq!(m.cpu, before);
+        assert_architecture_unchanged(&m.cpu, &before);
+        assert!(m.cpu.error_state().is_some());
     }
 }
 
@@ -362,12 +387,13 @@ fn data_fault_in_delay_slot_preserves_both_pcs_and_registers() {
     let error = m.step().unwrap_err();
     assert_eq!((error.pc, error.npc), (4, 16));
     assert!(matches!(error.kind, FaultKind::DataAccess(e) if e.kind == BusErrorKind::Unmapped));
-    assert_eq!(m.cpu, before); // even LD to %g0 must perform the access
+    assert_architecture_unchanged(&m.cpu, &before); // even LD to %g0 must perform the access
+    assert_eq!(m.cpu.error_state(), Some(error));
 }
 
 #[test]
 fn unsupported_instruction_bad_fetch_jump_and_store_stop_precisely() {
-    let mut m = machine(&[0]);
+    let mut m = machine(&[0x8070_0000]); // UDIV is not implemented yet
     let before = m.cpu.clone();
     assert_eq!(
         m.step().unwrap_err().kind,
@@ -386,7 +412,8 @@ fn unsupported_instruction_bad_fetch_jump_and_store_stop_precisely() {
         m.cpu.write_reg(1, 0xdead_beef);
         let before = m.cpu.clone();
         assert!(m.step().is_err());
-        assert_eq!(m.cpu, before);
+        assert_architecture_unchanged(&m.cpu, &before);
+        assert!(m.cpu.error_state().is_some());
         assert_eq!(m.bus.read32(0x100).unwrap(), 0);
     }
 }

@@ -16,7 +16,8 @@ changing CPU, bus or device behavior.
 - Preserve PC/nPC, window aliases and fault atomicity. Add meaningful CPU/device
   regression tests with expected state derived independently of implementation.
 - Run cargo fmt --all --check, cargo clippy --locked --offline --all-targets --
-  -D warnings, cargo test --locked --offline, and the built-in demo.
+  -D warnings, cargo test --locked --offline, and both built-in demos (demo and
+  trap-demo). Distinguish executed instructions, trap entry and error-state stops.
 - Human documentation belongs in the root and docs/. Update it with behavior.
   Agent findings and local environment notes belong in clanker/ and its index.
 - Keep guest firmware and disks under ignored local/. Do not overwrite source

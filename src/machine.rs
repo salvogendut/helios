@@ -72,3 +72,30 @@ pub fn demo_image() -> Vec<u8> {
     .flat_map(u32::to_be_bytes)
     .collect()
 }
+
+/// Hand-encoded examples/trap.s. The guest installs TBA=0x1000, enables traps,
+/// enters user mode, invokes TA 7, and returns through JMPL/RETT.
+pub fn trap_demo_image() -> Vec<u8> {
+    let main = [
+        0x0300_0004u32, // sethi %hi(0x1000), %g1
+        0x8198_6000,    // wr %g1, 0, %tbr
+        0x0100_0000,
+        0x0100_0000,
+        0x0100_0000,
+        0x8188_2020, // wr %g0, 0x20, %psr (ET=1, S=0)
+        0x0100_0000,
+        0x0100_0000,
+        0x0100_0000,
+        0x91d0_2007, // ta 7
+        0x8600_e001, // add %g3, 1, %g3
+        0x3080_0000, // ba,a .
+    ];
+    let handler = [0x8400_a001u32, 0x81c4_a000, 0x81cc_a004];
+    let mut image = vec![0; 0x187c];
+    for (address, words) in [(0, main.as_slice()), (0x1870, handler.as_slice())] {
+        for (slot, word) in image[address..].chunks_exact_mut(4).zip(words) {
+            slot.copy_from_slice(&word.to_be_bytes());
+        }
+    }
+    image
+}

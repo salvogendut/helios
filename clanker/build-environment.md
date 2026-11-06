@@ -15,3 +15,14 @@ toolchain unmodified. The compiler reports Rust 1.101.0-nightly, commit
 is temporary, while build output stays in Helios's ignored target/ directory.
 No container is required. Recheck the path if the local Xiri work area changes.
 
+Git's HTTPS credential helper points at a missing /usr/bin/gh. The existing CLI
+is available under ~/.local/share/flatpak/app/org.flatpak.Builder/x86_64/stable/active/files/bin/gh.
+Its OAuth token lacks workflow scope. Existing GitHub SSH authentication can
+push the repository, including CI, with a command-local override that leaves
+global Git configuration unchanged:
+
+```sh
+GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes' \
+  git -c remote.origin.pushurl=git@github.com:salvogendut/helios.git push origin main
+```
+

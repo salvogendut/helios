@@ -21,3 +21,4 @@ jobs:
       - run: cargo clippy --locked --offline --all-targets -- -D warnings
       - run: cargo test --locked --offline
       - run: cargo run --locked --offline -- demo
+      - run: cargo run --locked --offline -- trap-demo
