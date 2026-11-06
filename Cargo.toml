@@ -1,0 +1,15 @@
+[package]
+name = "helios"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "A Sun SPARC workstation emulator, starting with SPARCstation 5"
+publish = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
