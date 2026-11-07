@@ -19,11 +19,20 @@ Observed missing behavior and fixes:
 - `FSQRTd` is used during server startup. Exact integer square-root rounding,
   every rounding direction, negative-input NV, NaN and zero handling are
   implemented with directed tests.
+- Xsun reuses the FBC relative-rectangle width/height while changing only the
+  absolute origin. The first implementation cleared relative mode after each
+  draw, so a later draw saw one queued absolute point and stopped with
+  `CGsix incomplete rectangle`. Relative mode now persists until a line
+  operation, and line draws take precedence over pending rectangle state.
+- Heliacal originally forwarded SDL's down-positive Y delta directly; Sun's
+  mouse convention is up-positive, so the frontend now negates Y.
 - The X server expects a Sun Mouse Systems device on SCC channel B. Helios now
   emits five-byte packets at 1200 baud (`0x80|~buttons`, dx, dy, 0, 0), and
   Heliacal forwards relative mouse motion and left/middle/right buttons while
   captured. Focus loss and capture release send button releases.
 
-The probe did not interact with the desktop login; mouse/login behavior still
-needs an interactive frontend check. Do not claim full X desktop, applications
-or audio support from this startup evidence.
+Mouse motion was confirmed interactively. A headless keyboard/mouse injection
+at the login screen then exercised the previous root-login crash; after the
+relative-rectangle fix it ran without a host stop. Password/login completion
+and applications still need a user-side check. Do not claim full X desktop or
+audio support from this startup evidence.

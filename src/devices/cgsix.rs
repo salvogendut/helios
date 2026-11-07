@@ -485,9 +485,9 @@ impl Cgsix {
             } else {
                 self.line_start = Some(start);
             }
+            return Ok(());
         }
         if self.rect_relative {
-            self.rect_relative = false;
             self.drawing_supported()?;
             let x = self.fbc[0x900 / 4] as i32 as i64;
             let y = self.fbc[0x904 / 4] as i32 as i64;
@@ -500,6 +500,7 @@ impl Cgsix {
             }
             self.generation = self.generation.wrapping_add(1);
             self.vertices.clear();
+            return Ok(());
         }
         if self.vertices.is_empty() {
             return Ok(());
