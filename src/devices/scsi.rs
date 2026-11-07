@@ -30,6 +30,8 @@ pub struct ScsiTarget {
     unit_attention: bool,
     started: bool,
     removal_prevented: bool,
+    reads: u64,
+    writes: u64,
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -102,6 +104,8 @@ impl ScsiBus {
             unit_attention: false,
             started: true,
             removal_prevented: false,
+            reads: 0,
+            writes: 0,
         });
         Ok(())
     }
@@ -153,6 +157,11 @@ impl ScsiTarget {
     }
     pub fn removal_prevented(&self) -> bool {
         self.removal_prevented
+    }
+    /// Monotonic completed read/write transfer counts for frontend activity
+    /// lamps. Counters do not affect guest-visible behavior or reset state.
+    pub fn activity(&self) -> (u64, u64) {
+        (self.reads, self.writes)
     }
 
     fn check(&mut self, key: u8, asc: u8) -> Response {
@@ -286,6 +295,7 @@ impl ScsiTarget {
                 {
                     return self.check(3, 0x11); // Unrecovered read error.
                 }
+                self.reads += 1;
                 data
             }
             0x35 => {
@@ -434,6 +444,7 @@ impl ScsiTarget {
         {
             return self.check(3, 0x0c); // Write error; never report false GOOD.
         }
+        self.writes += 1;
         Response::default()
     }
 
@@ -535,5 +546,32 @@ impl ScsiTarget {
         }
         self.block_size = size;
         Response::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn activity_counts_completed_transfers_without_changing_target_state() {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "helios-scsi-activity-{}-{}.img",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, vec![0; 1024]).unwrap();
+        let mut bus = ScsiBus::default();
+        bus.attach_disk_rw(3, &path).unwrap();
+        assert_eq!(bus.target(3).unwrap().activity(), (0, 0));
+        let read = bus.execute(3, 0, &[0x08, 0, 0, 0, 1, 0]);
+        assert_eq!(read.status, 0);
+        assert_eq!(bus.target(3).unwrap().activity(), (1, 0));
+        let write = bus.complete_data_out(3, &[0x0a, 0, 0, 0, 1, 0], &[0x5a; 512]);
+        assert_eq!(write.status, 0);
+        assert_eq!(bus.target(3).unwrap().activity(), (1, 1));
+        std::fs::remove_file(path).unwrap();
     }
 }
