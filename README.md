@@ -39,10 +39,10 @@ Block reads/writes, capacity reporting and cache flushing are implemented.
 Solaris 2.6 and Solaris 7 CDs now load
 their kernels, mount the CD's UFS root filesystem, and reach the installer's
 **Select a Language** prompt on TTYA. Serial interrupts and the DMA register
-behavior needed during device setup are implemented. Solaris 7 also installs to
-a writable 2 GiB disk, and the installed disk boots through its UFS root filesystem,
-completes first-boot setup and reaches a console login; a `root` shell was
-verified with the root password left empty. Audio I/O remains unimplemented.
+behavior needed during device setup are implemented. Solaris 7 installs to one
+writable 2 GiB disk and Solaris 2.6 to a separate 2 GiB disk; both installed
+disks boot to a console login, and root shells were verified with empty local
+test passwords. Audio I/O remains unimplemented.
 See [SCSI storage](docs/scsi.md).
 
 The implemented foundation includes:

@@ -33,5 +33,5 @@
 - [Solaris CD bootloader](cdrom-bootloader.md): pushed discovery milestone, CD mode/data-out support, and Solaris 2.6/7 first bootloader output; requested stopping point reached.
 - [Solaris CD installer](solaris-installer.md): original-OBP CD boot reaches both Solaris 2.6/7 serial language-selection screens; CD locking, SCC interrupts, Ethernet diagnostic status and DMA2 aliases.
 - [Writable disk installation](solaris-install-rw.md): explicit writable raw disks, durable SCSI writes and the ongoing Solaris 7 installation attempt.
-- [Installed disk boot](installed-disk-boot.md): Solaris 7 installed-disk boot, SELATNS and CS4231 fixes, and the unresolved first ASI 47 report.
+- [Installed disk boot](installed-disk-boot.md): Solaris 7/2.6 installed-disk boots, SELATNS and CS4231 fixes, and the SS10/20 ASI 47 report.
 - [Loopback telnet serial](serial-tcp.md): IRIS-style nonblocking TCP serial consoles, CLI port flags and telnet filtering.

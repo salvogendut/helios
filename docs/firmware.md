@@ -788,10 +788,10 @@ end at `?`; the probe supplied no menu input. Both ISO and firmware hashes
 still match the originals. All 378 core tests, four UI tests, fmt/Clippy checks,
 release builds and four demos pass with this implementation.
 
-## Installed Solaris 7 disk boot
+## Installed Solaris disk boot
 
-The local writable installation image now boots from the original SS-5 OBP with
-the saved NVRAM and no CD attached. The run checks and mounts the UFS root on
+The local Solaris 7 writable installation image boots from the original SS-5 OBP
+with saved NVRAM and no CD attached. The run checks and mounts the UFS root on
 `sd@3,0`, configures `/dev` and `/devices`, attaches `cgsix`, `le`, the SBus
 memory nodes and `audiocs`, completes first-boot identification, and reaches
 `helios console login:`. A `root` login on `/dev/console`, with the root password
@@ -800,13 +800,23 @@ verified. This image's `/etc/vfstab` references `c0t3d0`, so keep the disk at
 SCSI ID 3; moving it changes the guest device names and breaks the installed
 root/usr mounts.
 
-Two missing paths surfaced during this boot. Solaris issues ESP command `0xc3`
-(select with ATN and stop plus DMA) to transfer one IDENTIFY byte before sending
-a tag; the ESP now reports the message-out stop and accepts the following
-TRANSFER INFORMATION command. Solaris's `audiocs` probe also performs byte
-accesses to the CS4231 aperture at `0x6c000000`; the indirect register subset
-now responds there instead of returning an SBus timeout. Raw serial captures
-are `local/probes/solaris-install/sol7-csbyte-serial.log` and
+The separate Solaris 2.6 installation uses a new 2 GiB image at
+`local/disks/solaris26-install.raw`. Its blank disk was labeled with `format`
+before `suninstall`; the installer selected End User System Support, the
+`c0t3d0` disk, automatic layout, and manual reboot. The installed disk also
+boots from the original OBP without the CD, mounts its UFS root on `sd@3,0`,
+completes first-boot setup, reaches a `root` shell under SunOS 5.6, and returns
+to the `ok` prompt after `halt`. Raw captures are
+`local/probes/solaris-install/sol26-install-serial.log` and
+`local/probes/solaris-install/sol26-boot-serial.log`.
+
+Two missing paths surfaced during the Solaris 7 boot. Solaris issues ESP
+command `0xc3` (select with ATN and stop plus DMA) to transfer one IDENTIFY byte
+before sending a tag; the ESP now reports the message-out stop and accepts the
+following TRANSFER INFORMATION command. Solaris's `audiocs` probe also performs
+byte accesses to the CS4231 aperture at `0x6c000000`; the indirect register
+subset now responds there instead of returning an SBus timeout. Raw serial
+captures are `local/probes/solaris-install/sol7-csbyte-serial.log` and
 `local/probes/solaris-install/sol7-login-serial.log`. The earlier ASI 47 stop
 does not occur with the SS-5 PROM; it reproduces exactly at `PC=0x00026328`
 when `local/firmware/ss10-20-v2.25r-rom` is booted in the SS-5 harness. That is

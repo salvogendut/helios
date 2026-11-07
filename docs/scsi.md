@@ -155,9 +155,9 @@ the image; WRITE(6)'s zero count means 256 blocks.
 Writable overlays, media eject/load, other mode pages, CD TOC/audio, synchronous
 negotiation, disconnect/reselection and target-mode ESP commands remain pending.
 Kernel root mounting and the serial language-selection prompt have been observed
-on both Solaris CDs. Solaris 7 has also been installed to a new 2 GiB disk; the
-installed disk boots to a console `root` shell. See
-[firmware.md](firmware.md#installed-solaris-7-disk-boot).
+on both Solaris CDs. Solaris 7 and Solaris 2.6 have been installed to separate
+2 GiB disks; both installed disks boot to a console `root` shell. See
+[firmware.md](firmware.md#installed-solaris-disk-boot).
 
 ## Solaris CD checkpoint
 

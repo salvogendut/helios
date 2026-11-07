@@ -1,4 +1,4 @@
-# Installed Solaris 7 disk boot
+# Installed Solaris disk boot
 
 Date: 2026-11-07. The user reported two local-disk boot stops. The SS-5 path
 now boots the installed Solaris 7 disk to its first-boot root password prompt.
@@ -69,3 +69,35 @@ networking remain unverified. The installed image's `/etc/vfstab` references
 The local installation image was copied before
 each run; source media and the installed image were not overwritten by these
 probes.
+
+## Solaris 2.6 installation
+
+A new sparse 2 GiB disk was created at `local/disks/solaris26-install.raw`
+(`open(..., 'xb')` plus truncate). Ignored probe
+`local/probes/solaris-install/probe26` attached it writable at SCSI ID 3, the
+read-only `solaris_2.6_598_sparc.iso` at ID 6, and the original SS-5 PROM/CGsix.
+Inputs selected English, ASCII locale, DEC VT100, hostname `helios`, no network,
+Middle Europe, current date/time, no client services, End User System Support,
+`c0t3d0`, automatic layout (`/`, `/usr`, swap), and manual reboot.
+
+The first `suninstall` run stopped at the expected blank-disk warning. From the
+recovery shell, `format` auto-configured the disk, labeled it, and `suninstall`
+restarted. Installation completed; `sync` and `halt` returned the live session
+to the `ok` prompt. Logs:
+`sol26-install-serial.log`, `sol26-install.log`, and
+`sol26-install-nvram.bin`.
+
+A separate ignored `disk-probe26` booted the disk with the saved NVRAM and no CD.
+It mounted the UFS root on `sd@3,0`, completed first-boot setup with an empty
+root password, and reached:
+
+```text
+helios console login: root
+Nov  7 20:08:13 helios login: ROOT LOGIN /dev/console
+Sun Microsystems Inc.   SunOS 5.6       Generic August 1997
+#
+```
+
+`sync` and `halt` then returned to `ok`. Raw boot serial:
+`local/probes/solaris-install/sol26-boot-serial.log`. Keep this installed disk at
+SCSI ID 3; its device names are `c0t3d0`.
