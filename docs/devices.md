@@ -139,8 +139,18 @@ and completion marker after 256 steps. It requires no guest toolchain or ROM.
 `boot` and `serial-demo` write TTYA bytes to stdout. Trace and stop reports go to
 stderr, so redirecting stdout captures a clean console transcript. `boot
 --serial-in FILE` feeds bytes once the guest enables its receiver and as space
-becomes available. There is no interactive terminal input yet; channel B is
-available through the library. No serial input file is modified.
+becomes available. No serial input file is modified.
+
+`boot --serial-port-a PORT` and `--serial-port-b PORT` bind loopback telnet
+consoles for TTYA and TTYB. Port zero asks the host for a free port and reports
+the chosen one on stderr. Listeners bind only `127.0.0.1`; there is no remote
+exposure, PTY or Unix-socket transport. Clients negotiate character-at-a-time
+telnet (echo, suppress-go-ahead and binary), inbound IAC commands are consumed,
+outbound `0xff` is escaped, and every connected client sees all output while
+input from any of them enters the channel's receive queue. Guest bytes continue
+to reach stdout. `TcpSerial` in the library exposes the same nonblocking
+listener for other frontends; the emulation core does not depend on host
+networking.
 
 `boot --nvram FILE` imports raw NVRAM; omitting it creates the deterministic
 default. `--nvram-out NEW_FILE` reserves a new file before execution and saves

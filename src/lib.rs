@@ -10,4 +10,5 @@ pub mod dram;
 pub mod fpu;
 pub mod machine;
 pub mod mmu;
+pub mod serial_host;
 pub mod system_bus;

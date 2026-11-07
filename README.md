@@ -70,7 +70,8 @@ The implemented foundation includes:
   translation, access permissions, contexts, fault registers and TLB flush/probe.
 - CPU/MMU reset, boot-mode instruction mapping and a raw PROM runner.
 - Z8530 asynchronous polling and receive/transmit/BREAK interrupts, bounded byte queues,
-  and an M48T08 NVRAM/RTC with SS-5 IDPROM and explicit clock advancement.
+  loopback telnet serial consoles for TTYA/TTYB, and an M48T08 NVRAM/RTC with SS-5
+  IDPROM and explicit clock advancement.
 - CPU interrupt entry with ET/PIL masking, sun4m software interrupts and source
   masks, and system/processor counter timers on a deterministic timebase.
 - The processor's 64-bit user-timer register: a 54-bit count, overflow flag,
@@ -182,12 +183,20 @@ cargo run --release -- boot local/prom.bin --steps 10000 \
   --serial-in local/input.bin --nvram local/nvram.bin --nvram-out local/nvram-next.bin
 ```
 
+Expose TTYA or TTYB as a loopback telnet console while it runs (`0` selects a
+free port; the chosen port is printed to stderr):
+
+```sh
+cargo run --release -- boot local/firmware/sun-ss5.bin --steps 100000000 --serial-port-a 8880
+telnet 127.0.0.1 8880
+```
+
 `boot` installs the SS-5 bank layout and a read-only 1 MiB PROM aperture at `0x70000000`, starts
 PC/nPC at 0/4, and selects PROM for instruction-space accesses through boot
 mode. Ordinary data accesses use the physical map, including console serial at
 `0x71100000` and NVRAM/RTC at `0x71200000`. `boot` and `serial-demo` send TTYA
-bytes to stdout and diagnostics/traces to stderr. Input comes from a file;
-interactive terminal input is pending. NVRAM uses an 8192-byte raw image and is
+bytes to stdout and diagnostics/traces to stderr. Input comes from a file or,
+for `boot`, a loopback telnet console. NVRAM uses an 8192-byte raw image and is
 saved at the step limit or an execution error when `--nvram-out` is supplied.
 The sun4m harness advances device time by a 100 ns base per completed step,
 including trap/interrupt entry, plus physical PROM read wait states. This is a

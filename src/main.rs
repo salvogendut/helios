@@ -5,6 +5,7 @@ use helios::machine::{
     demo_image, serial_demo_image, timer_demo_image, trap_demo_image, Machine, CPU_CLOCK_HZ,
     DEFAULT_RAM_BYTES, TARGET,
 };
+use helios::serial_host::TcpSerial;
 use std::error::Error;
 use std::io::Write;
 use std::process::ExitCode;
@@ -19,7 +20,8 @@ Usage:
   helios timer-demo [--trace]
   helios run FILE [--load-address N] [--entry N] [--steps N] [--ram-mib N] [--trace]
   helios boot PROM [--steps N] [--ram-mib N] [--trace]
-                   [--serial-in FILE] [--nvram FILE] [--nvram-out NEW_FILE]
+                   [--serial-in FILE] [--serial-port-a PORT] [--serial-port-b PORT]
+                   [--nvram FILE] [--nvram-out NEW_FILE]
                    [--disk RAW_IMAGE | --disk-rw RAW_IMAGE] [--cdrom ISO_IMAGE]
 
 FILE is a raw big-endian SPARC instruction/data image, loaded into RAM.
@@ -35,7 +37,10 @@ boot loads a raw PROM (up to 1 MiB) and starts the CPU/MMU at reset.
 Its RAM must fit eight 8 MiB or 32 MiB DSIMMs; low slots receive larger modules first.
 boot and serial-demo send TTYA bytes to stdout and diagnostics to stderr.
 --serial-in supplies bytes as the guest enables and drains its receiver.
-NVRAM images contain 8192 bytes; --nvram-out creates a new file without overwriting.
+--serial-port-a PORT and --serial-port-b PORT expose TTYA/TTYB as telnet
+consoles on 127.0.0.1; PORT 0 asks the host for a free port. Console output
+still goes to stdout. NVRAM images contain 8192 bytes; --nvram-out creates a
+new file without overwriting.
 --disk attaches a read-only 512-byte/block raw disk at SCSI ID 3, LUN 0.
 --disk-rw attaches an existing raw disk at ID 3 and permits guest writes.
 Neither disk option creates or truncates an image; choose only one.
@@ -61,11 +66,18 @@ fn report(console: bool, message: std::fmt::Arguments<'_>) {
     }
 }
 
+#[derive(Default)]
+struct SerialPorts {
+    a: Option<TcpSerial>,
+    b: Option<TcpSerial>,
+}
+
 fn execute(
     machine: &mut Machine,
     steps: u64,
     trace: bool,
     console_input: Option<&[u8]>,
+    ports: &mut SerialPorts,
 ) -> Result<(), Box<dyn Error>> {
     let mut instructions = 0u64;
     let mut traps = 0u64;
@@ -74,22 +86,51 @@ fn execute(
     let mut input_position = 0;
     let console = console_input.is_some();
     for _ in 0..steps {
-        if let (Some(input), Some(devices)) = (console_input, machine.bus.devices_mut()) {
-            while let Some(&byte) = input.get(input_position) {
-                if !devices.serial.receive(Channel::A, byte) {
-                    break;
+        if let Some(devices) = machine.bus.devices_mut() {
+            if let Some(input) = console_input {
+                while let Some(&byte) = input.get(input_position) {
+                    if !devices.serial.receive(Channel::A, byte) {
+                        break;
+                    }
+                    input_position += 1;
                 }
-                input_position += 1;
+            }
+            if let Some(host) = ports.a.as_mut() {
+                while let Some(byte) = host.receive() {
+                    if !devices.serial.receive(Channel::A, byte) {
+                        break;
+                    }
+                }
+            }
+            if let Some(host) = ports.b.as_mut() {
+                while let Some(byte) = host.receive() {
+                    if !devices.serial.receive(Channel::B, byte) {
+                        break;
+                    }
+                }
             }
         }
         let step = machine.step();
-        if console {
+        if console || ports.a.is_some() || ports.b.is_some() {
             if let Some(devices) = machine.bus.devices_mut() {
                 let bytes = devices.serial.take_output(Channel::A);
                 if !bytes.is_empty() {
-                    let mut stdout = std::io::stdout().lock();
-                    stdout.write_all(&bytes)?;
-                    stdout.flush()?;
+                    if let Some(host) = ports.a.as_mut() {
+                        host.send(&bytes);
+                    }
+                    if console {
+                        let mut stdout = std::io::stdout().lock();
+                        stdout.write_all(&bytes)?;
+                        stdout.flush()?;
+                    }
+                }
+                if ports.b.is_some() {
+                    let bytes = devices.serial.take_output(Channel::B);
+                    if !bytes.is_empty() {
+                        if let Some(host) = ports.b.as_mut() {
+                            host.send(&bytes);
+                        }
+                    }
                 }
             }
         }
@@ -194,7 +235,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             };
             let mut machine = Machine::bare_metal(4096, 0)?;
             machine.load_image(0, &demo_image())?;
-            execute(&mut machine, 43, trace, None)?;
+            execute(&mut machine, 43, trace, None, &mut SerialPorts::default())?;
             let result = machine.bus.read32(0x100)?;
             if result != 55 {
                 return Err(format!("demo failed: expected 55, got {result}").into());
@@ -210,7 +251,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             };
             let mut machine = Machine::bare_metal(8192, 0)?;
             machine.load_image(0, &trap_demo_image())?;
-            execute(&mut machine, 14, trace, None)?;
+            execute(&mut machine, 14, trace, None, &mut SerialPorts::default())?;
             if machine.cpu.read_reg(2) != 1
                 || machine.cpu.read_reg(3) != 1
                 || machine.cpu.pc() != 0x2c
@@ -229,7 +270,13 @@ fn run() -> Result<(), Box<dyn Error>> {
                 _ => return Err("usage: helios serial-demo [--trace]".into()),
             };
             let mut machine = Machine::sun4m(8192, &serial_demo_image())?;
-            execute(&mut machine, 256, trace, Some(b"!"))?;
+            execute(
+                &mut machine,
+                256,
+                trace,
+                Some(b"!"),
+                &mut SerialPorts::default(),
+            )?;
             if machine.cpu.read_reg(3) != 0x80
                 || machine.cpu.read_reg(5) != 0
                 || machine.cpu.read_reg(7) != 1
@@ -250,7 +297,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 _ => return Err("usage: helios timer-demo [--trace]".into()),
             };
             let mut machine = Machine::sun4m(8192, &timer_demo_image())?;
-            execute(&mut machine, 256, trace, None)?;
+            execute(&mut machine, 256, trace, None, &mut SerialPorts::default())?;
             if machine.cpu.read_reg(5) != 1
                 || machine.cpu.read_reg(7) != 1
                 || machine.cpu.read_reg(3) < 2
@@ -275,6 +322,8 @@ fn run() -> Result<(), Box<dyn Error>> {
             let mut ram_bytes = DEFAULT_RAM_BYTES;
             let mut trace = false;
             let mut serial_in = None;
+            let mut serial_port_a = None;
+            let mut serial_port_b = None;
             let mut nvram_in = None;
             let mut nvram_out = None;
             let mut disk = None;
@@ -321,7 +370,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                 if (boot && matches!(option.as_str(), "--load-address" | "--entry"))
                     || !matches!(
                         option.as_str(),
-                        "--load-address" | "--entry" | "--steps" | "--ram-mib"
+                        "--load-address"
+                            | "--entry"
+                            | "--steps"
+                            | "--ram-mib"
+                            | "--serial-port-a"
+                            | "--serial-port-b"
                     )
                 {
                     return Err(format!("unknown option: {option}").into());
@@ -340,11 +394,18 @@ fn run() -> Result<(), Box<dyn Error>> {
                             .checked_mul(1024 * 1024)
                             .ok_or("RAM size overflow")?
                     }
+                    "--serial-port-a" => serial_port_a = Some(value.try_into()?),
+                    "--serial-port-b" => serial_port_b = Some(value.try_into()?),
                     _ => unreachable!(),
                 }
             }
             if steps == 0 {
                 return Err("--steps must be greater than zero".into());
+            }
+            if !boot && (serial_port_a.is_some() || serial_port_b.is_some()) {
+                return Err(
+                    "--serial-port-a and --serial-port-b require boot (sun4m devices)".into(),
+                );
             }
             let entry = entry.unwrap_or(load);
             if entry % 4 != 0 {
@@ -377,6 +438,21 @@ fn run() -> Result<(), Box<dyn Error>> {
                     result.map_err(|error| format!("SCSI ID {id}, {path}: {error}"))?;
                 }
             }
+            let mut ports = SerialPorts::default();
+            for (label, channel, port) in [
+                ("TTYA", Channel::A, serial_port_a),
+                ("TTYB", Channel::B, serial_port_b),
+            ] {
+                if let Some(port) = port {
+                    let host = TcpSerial::bind(port)
+                        .map_err(|error| format!("{label} serial port {port}: {error}"))?;
+                    eprintln!("{label} serial console on telnet 127.0.0.1:{}", host.port());
+                    match channel {
+                        Channel::A => ports.a = Some(host),
+                        Channel::B => ports.b = Some(host),
+                    }
+                }
+            }
             let input = serial_in
                 .map(std::fs::read)
                 .transpose()?
@@ -394,6 +470,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 steps,
                 trace,
                 if boot { Some(&input) } else { None },
+                &mut ports,
             );
             if let Some(file) = &mut output {
                 file.write_all(
