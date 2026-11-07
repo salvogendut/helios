@@ -241,7 +241,7 @@ fn raw_block_reads_write_protection_and_request_sense_preserve_image() {
         );
         assert_eq!(complete(&mut m), 0);
     }
-    assert_eq!(std::fs::read(&disk.0).unwrap(), bytes);
+    assert_eq!(std::fs::read(disk.0.as_path()).unwrap(), bytes);
 }
 
 #[test]
@@ -365,5 +365,5 @@ fn cdrom_reads_use_2048_byte_sectors_and_dma_zero_count_means_65536() {
         .collect();
     assert_eq!(received, bytes[2048..4096]);
     assert_eq!(complete(&mut m), 0);
-    assert_eq!(std::fs::read(&cdrom.0).unwrap(), bytes);
+    assert_eq!(std::fs::read(cdrom.0.as_path()).unwrap(), bytes);
 }
