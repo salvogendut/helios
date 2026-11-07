@@ -56,7 +56,8 @@ see [reset.md](docs/reset.md) for retained state, trace outcomes and watchdog li
 The machine also installs the microSPARC-II [I/O control subset](docs/io-control.md).
 Its SBus/IOMMU configuration resets with the rest of I/O. `Machine::dma_read`
 and `dma_write` provide aligned single-transfer access to RAM using the shared
-CPU/I/O TLB, without advancing CPU or device time. The Ethernet engine is connected as master 5; SCSI DMA remains pending. Invalid mappings return an SBus error to the requesting
+CPU/I/O TLB, without advancing CPU or device time. Ethernet and SCSI DMA use
+the onboard NCR89C100's master 5. Invalid mappings return an SBus error to the requesting
 device; they do not populate CPU fault registers or assert a CPU interrupt.
 The bus queues I/O flush commands for the MMU to consume before its next access,
 including diagnostics. This preserves single ownership without a second IOTLB.
@@ -359,6 +360,8 @@ and attached drives remain pending.
 
 MACIO initialization tests cover DMA2 reset/W1C/IRQ gating, address/count chaining,
 ESP FIFO and configuration, count/counter separation, reset retention and chip
-identification. DMA transfers and storage targets are still absent. The firmware
-can enumerate device nodes before those nodes have working I/O; report the
-serial transcript and actual register access, not just the node names.
+identification. SCSI regressions exercise selection timeouts, PIO/DMA inquiry,
+image block reads, sense, DMA residuals/chaining and IOMMU fault recovery.
+Original OBP lists both image-backed targets with `probe-scsi-all`; see
+[SCSI storage](docs/scsi.md). OS boot is unverified. Report actual command
+results, not just firmware device-node creation.

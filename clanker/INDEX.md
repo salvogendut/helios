@@ -29,3 +29,4 @@
 - [ESP initialization and RAM test](esp-initialization.md): completed enumeration, full original-OBP memory diagnostic and next Ethernet DMA access.
 - [Timer and Ethernet](timer-ethernet.md): corrected PROM/counter timing, real Ethernet initialization/loopback/RARP, chosen Sun IDPROM and serial BREAK return to `ok`; next POST gap is parallel DMA.
 - [Graphical console](graphics-console.md): original TurboGX FCode, FHC/THC initialization, drawing endpoints, Type 5 keyboard and native window validation.
+- [SCSI discovery](scsi-discovery.md): ESP/DMA2 transfers, read-only raw disk/CD-ROM images and original OBP `probe-scsi-all` listing both targets before returning to `ok`; requested stopping point reached.

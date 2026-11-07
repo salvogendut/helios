@@ -153,6 +153,12 @@ impl Machine {
             instruction: None,
             kind: FaultKind::DeviceDma(error),
         })?;
+        self.service_scsi().map_err(|error| CpuFault {
+            pc: self.cpu.pc(),
+            npc: self.cpu.npc(),
+            instruction: None,
+            kind: FaultKind::DeviceDma(error),
+        })?;
         let pending = self.bus.interrupt_levels();
         let was_error = self.cpu.error_state().is_some();
         self.bus.begin_cpu_step();

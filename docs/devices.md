@@ -235,12 +235,14 @@ reset values are unspecified by the manual; Helios chooses zero.
 The current/next address and byte-count latches support the documented initial
 chaining sequence. Loading the first next address transfers it and the next
 count into the current latches. Later loads remain pending. Address validity and
-DMA readiness are computed from these latches and the enable bit. Enabling DMA
-does not fabricate requests or move memory. The SCSI controller's IRQ input is
-level-sensitive, gated by D_INT_EN, and wired to NCR source 18 / CPU level 4.
+DMA readiness are computed from these latches and the enable bit. DMA moves
+bytes only in response to an ESP request, through IOMMU master 5. Completion
+advances the address and enabled count; terminal count can reload the next
+buffer. The SCSI controller's IRQ input is level-sensitive and combines with
+terminal-count/error events, gated by D_INT_EN, at NCR source 18 / CPU level 4.
 
-The FIFO is empty until a transfer engine is implemented, so invalidation has
-no drain delay. D_INVALIDATE reads zero and clears both address-valid bits in
+The functional write FIFO drains each byte immediately, so invalidation has
+no drain delay. D_INVALIDATE reads zero, clears D_ERR_PEND/D_TC and clears both address-valid bits in
 chaining mode. It does not acknowledge the controller IRQ. D_SLAVE_ERR latches
 incorrect slave widths and clears on a write of one; it is not a DMA memory
 error and does not assert the DMA IRQ. DMA registers require aligned words;
@@ -249,8 +251,9 @@ operations stop explicitly without changing device state.
 
 Diagnostic FIFO accesses, reserved burst modes and illegal combinations of
 count/chaining or transfer-cycle modes stop before mutation.
-DMA requests, FIFO/data movement, terminal-count/error generation and the
-parallel channel remain pending. The Ethernet channel is described in
+The parallel channel and SCSI diagnostic FIFO/burst timing remain pending.
+[SCSI storage](scsi.md) describes transfers, residuals, errors and target commands.
+The Ethernet channel is described in
 [ethernet.md](ethernet.md). NCR's reset and W1C semantics take
 precedence over QEMU's generic DMA register array.
 
@@ -262,7 +265,8 @@ registers on four-byte boundaries. Implemented behavior includes:
 - Separate transfer-count latches and running counter. DMA NOP loads the counter;
   ordinary NOP does not. Zero encodes the maximum count and does not immediately
   set terminal count. A compatibility-mode DMA NOP clears the disabled upper
-  counter byte in this functional model; no transfer engine decrements it yet.
+  counter byte in this functional model. Completed DMA bytes decrement it;
+  short target replies leave the residual count.
 - A 16-byte FIFO, including empty reads, flush, and gross-error status on a
   full-FIFO overwrite. FIFO overflow alone does not generate an IRQ.
 - Configuration 1/2/3, destination ID, timeout, synchronous parameters and clock
@@ -272,7 +276,9 @@ registers on four-byte boundaries. Implemented behavior includes:
 - Chip reset and the required following NOP; count/counter, destination and
   timeout survive reset. FIFO flags/bottom element and configuration reset.
 - Enable/disable selection commands in the disconnected state, including the
-  disable command's function-complete interrupt. No target is attached.
+  disable command's function-complete interrupt. Targets are optional image attachments.
+- Initiator selection without/with ATN, IDENTIFY and CDB transfer, timed
+  missing-target disconnect, PIO/DMA input and status/message completion.
 - SCSI bus reset detection and its optional interrupt, without clearing chip
   configuration. A functional reset pulse uses 130 CCF clocks at the SS5's
   40 MHz SCSI clock (26 us for CCF=8), following the manual's approximate pulse
@@ -286,10 +292,11 @@ transfer (reads choose zero) until reset is released. The NCR89C100 omits the
 standalone core's RESETO pin, so unacknowledged SCSI reset does not reset the CPU.
 
 The implementation supports byte accesses only. Padding, reserved/test registers,
-wide accesses, commands issued in chip test mode, active selection, data-transfer commands and
-stacked interrupts stop before mutation. SCSI bus arbitration, targets, sector
-I/O and the DMA request/data path remain pending. Creating `sd` and `st` nodes
-in OBP is evidence of firmware enumeration, not working disks or tapes.
+wide accesses, commands issued in chip test mode, unsupported transfer phases,
+target-mode commands and stacked interrupts stop before mutation. The current
+initiator subset and read-only disk/CD-ROM targets complete original OBP's
+`probe-scsi-all`. Bus-level contention, disconnect/reselection, negotiation and
+the full target command sets remain pending; see [SCSI storage](scsi.md).
 
 CFG1 chip-test-enable can be written and read back during register diagnostics.
 Its internal test state persists even if the bit is subsequently written zero;

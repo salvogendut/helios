@@ -639,11 +639,45 @@ and one software reset. Its snapshot shows the arithmetic result and both
 accepted settings followed by `ok`.
 The native window can reload that image with 128 MiB RAM and display `ok`
 directly. The default machine configuration is not changed by these test images.
-Live desktop interaction also confirmed the current storage boundary:
+At that milestone, live desktop interaction confirmed the storage boundary:
 `probe-scsi-all` stops on an unsupported ESP selection/transfer command at
 physical `0x7880000c`, PC `ffd16898`. The window preserves the image and now
 names that stop reason in its title; this is not a completed SCSI probe.
 Ignored `local/probes/graphics-ss5/` contains the local probe sources, logs,
 snapshots and NVRAM exports. See [graphics.md](graphics.md) for invocation,
-register behavior and limitations. SCSI transfers, OS boot, mouse input and
-complete graphics acceleration remain unsupported.
+register behavior and limitations. The following checkpoint supersedes the
+SCSI discovery limitation. OS boot, mouse input and complete graphics
+acceleration remain unverified or unsupported.
+
+## SCSI target discovery
+
+With the same original OBP 2.15 and TurboGX ROMs, 128 MiB RAM and Type 5 keyboard,
+`probe-scsi-all` now completes through ESP selection and DMA2/IOMMU transfers.
+The final run used the graphical milestone's NVRAM export, configured by OBP's
+own `setenv auto-boot? false` and `setenv diag-switch? false` commands. It attached
+a blank 4 MiB raw disk at ID 3 and a blank 256 KiB CD data image at ID 6. These
+are synthetic discovery fixtures, not bootable media.
+
+Keyboard input entered `probe-scsi-all` after step 100000000. The captured
+display at step 182392204 contains:
+
+```text
+ok probe-scsi-all
+/iommu@0,10000000/sbus@0,10001000/espdma@5,8400000/esp@5,8800000
+Target 3
+  Unit 0 Disk     HELIOS  SCSI DISK       0001
+Target 6
+  Unit 0 Removable Read Only device    HELIOS  SCSI CD-ROM     0001
+ok
+```
+
+The firmware ran unmodified; no target list or prompt was injected. Missing IDs
+complete with selection timeout. The source images remain byte-for-byte blank;
+the backend opens them read-only. The probe stopped at the requested target-list
+milestone without attempting an OS boot. Block reads, residual counts and error
+recovery have separate firmware-free regressions; this run proves discovery.
+
+Ignored `local/probes/scsi-ss5/` holds `probe.rs`, `final-run.log`, the two fixture
+images and `probe-scsi-all.png`. Both the CLI and graphical frontend accept
+`--disk PATH` and `--cdrom PATH`; see [SCSI storage](scsi.md) for formats, IDs,
+supported commands and remaining limitations.

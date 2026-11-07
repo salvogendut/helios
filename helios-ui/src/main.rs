@@ -5,6 +5,7 @@ use helios::devices::{
     cgsix::{Cgsix, HEIGHT, WIDTH},
     keyboard::Keyboard,
     nvram::Nvram,
+    scsi::MediaKind,
     serial::Channel,
 };
 use helios::machine::{Machine, DEFAULT_RAM_BYTES};
@@ -164,7 +165,7 @@ fn worker(
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let usage = "Usage: helios-ui SS5_PROM TURBOGX_ROM [--nvram IMAGE] [--nvram-out NEW_IMAGE]";
+    let usage = "Usage: helios-ui SS5_PROM TURBOGX_ROM [--nvram IMAGE] [--nvram-out NEW_IMAGE] [--disk RAW_IMAGE] [--cdrom ISO_IMAGE]\nImages are read-only: disk at SCSI ID 3 (512-byte blocks), CD-ROM at ID 6 (2048-byte sectors).";
     let Some(prom) = args.next() else {
         return Err(usage.into());
     };
@@ -175,6 +176,8 @@ fn run() -> Result<(), String> {
     let rom = args.next().ok_or(usage)?;
     let mut nvram = Nvram::default();
     let mut nvram_out = None;
+    let mut disk = None;
+    let mut cdrom = None;
     while let Some(option) = args.next() {
         match option.to_str() {
             Some("--nvram") => {
@@ -189,6 +192,22 @@ fn run() -> Result<(), String> {
                 }
                 nvram_out = Some(path);
             }
+            Some("--disk") => {
+                if disk
+                    .replace(PathBuf::from(args.next().ok_or("Missing --disk path")?))
+                    .is_some()
+                {
+                    return Err("--disk supplied more than once".into());
+                }
+            }
+            Some("--cdrom") => {
+                if cdrom
+                    .replace(PathBuf::from(args.next().ok_or("Missing --cdrom path")?))
+                    .is_some()
+                {
+                    return Err("--cdrom supplied more than once".into());
+                }
+            }
             _ => return Err(usage.into()),
         }
     }
@@ -198,6 +217,17 @@ fn run() -> Result<(), String> {
         nvram,
     )
     .map_err(|e| e.to_string())?;
+    for (id, kind, path) in [(3, MediaKind::Disk, disk), (6, MediaKind::Cdrom, cdrom)] {
+        if let Some(path) = path {
+            machine
+                .bus
+                .devices_mut()
+                .unwrap()
+                .scsi
+                .attach(id, kind, &path)
+                .map_err(|error| format!("SCSI ID {id}, {}: {error}", path.display()))?;
+        }
+    }
     machine
         .bus
         .install_cgsix(
@@ -300,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_scsi_selection_is_identified_in_the_window_title() {
+    fn unsupported_esp_command_is_identified_in_the_window_title() {
         use helios::{
             bus::{BusError, BusErrorKind},
             cpu::{CpuFault, FaultKind},
@@ -312,12 +342,14 @@ mod tests {
             instruction: None,
             kind: FaultKind::UnsupportedMemory(MemoryError::Bus(BusError {
                 address: 0x7880000c,
-                kind: BusErrorKind::Unsupported("ESP selection or transfer command"),
+                kind: BusErrorKind::Unsupported(
+                    "ESP command outside asynchronous initiator subset",
+                ),
             })),
         };
         assert_eq!(
             stop_title(&error),
-            "HELIOS — Stopped: ESP selection or transfer command"
+            "HELIOS — Stopped: ESP command outside asynchronous initiator subset"
         );
     }
 

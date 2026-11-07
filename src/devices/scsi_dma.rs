@@ -1,5 +1,5 @@
 //! NCR89C100 DMA2 SCSI register interface. See docs/devices.md.
-//! No SCSI DMA request or FIFO transfer engine is implemented yet.
+//! Functional byte service with an immediately drained memory-write FIFO.
 use crate::bus::BusErrorKind;
 
 const ID: u32 = 0xa000_0000;
@@ -20,6 +20,9 @@ pub struct ScsiDma {
     next_loaded: bool,
     slave_error: bool,
     scsi_irq: bool,
+    memory_error: bool,
+    terminal_count: bool,
+    request: bool,
 }
 
 impl ScsiDma {
@@ -37,7 +40,50 @@ impl ScsiDma {
     }
 
     pub fn irq(&self) -> bool {
-        self.scsi_irq && self.control & 0x10 != 0
+        (self.interrupt_pending() || self.memory_error) && self.control & 0x10 != 0
+    }
+
+    fn interrupt_pending(&self) -> bool {
+        self.scsi_irq || (self.terminal_count && self.control & (1 << 23) == 0)
+    }
+
+    pub(crate) fn set_request(&mut self, request: bool) {
+        self.request = request;
+    }
+
+    pub(crate) fn transfer_address(&self, write: bool) -> Result<Option<u32>, BusErrorKind> {
+        if self.reset_asserted() || self.memory_error || !self.loaded || self.control & ENABLE == 0
+        {
+            return Ok(None);
+        }
+        if write != (self.control & 0x100 != 0) {
+            return Err(BusErrorKind::Unsupported(
+                "SCSI DMA direction disagrees with ESP",
+            ));
+        }
+        Ok(Some(self.address))
+    }
+
+    pub(crate) fn memory_error(&mut self) {
+        self.memory_error = true;
+    }
+
+    pub(crate) fn complete(&mut self) {
+        self.address = self.address.wrapping_add(1);
+        if self.control & COUNT != 0 {
+            self.count = self.count.wrapping_sub(1) & 0xffffff;
+            if self.count == 0 {
+                self.terminal_count = true;
+                if self.control & NEXT != 0 {
+                    self.loaded = self.next_loaded;
+                    if self.next_loaded {
+                        self.address = self.next_address;
+                        self.count = self.next_count;
+                        self.next_loaded = false;
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) fn slave_access_error(&mut self) {
@@ -48,9 +94,13 @@ impl ScsiDma {
         match offset {
             0 => Ok(ID
                 | self.control
-                | u32::from(self.scsi_irq)
+                | u32::from(self.interrupt_pending())
+                | (u32::from(self.memory_error) << 1)
                 | (u32::from(self.slave_error) << 6)
-                | (u32::from(self.loaded && self.control & ENABLE != 0) << 25)
+                | (u32::from(self.request) << 10)
+                | (u32::from(self.terminal_count) << 14)
+                | (u32::from(self.loaded && self.control & ENABLE != 0 && !self.memory_error)
+                    << 25)
                 | (u32::from(self.loaded) << 26)
                 | (u32::from(self.next_loaded) << 27)),
             4 => Ok(self.address),
@@ -84,6 +134,12 @@ impl ScsiDma {
                 }
                 if value & NEXT == 0 {
                     self.next_loaded = false;
+                }
+                if value & 0x20 != 0 {
+                    self.memory_error = false;
+                    self.terminal_count = false;
+                } else if value & (NEXT | 0x4000) == NEXT | 0x4000 {
+                    self.terminal_count = false;
                 }
                 // D_INVALIDATE is a pulse, not stored. With an empty FIFO it
                 // completes immediately; in chaining mode it invalidates both

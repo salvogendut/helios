@@ -1,6 +1,26 @@
-//! NCR89C100 NCR53C9X Fast SCSI core: disconnected initialization subset.
+//! NCR89C100 NCR53C9X Fast SCSI core: asynchronous initiator subset.
 //! Register semantics follow the NCR manual, not the QEMU ESP API.
+use super::scsi::{Response, ScsiBus};
 use crate::bus::BusErrorKind;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Work {
+    #[default]
+    Idle,
+    Select,
+    Timeout,
+    Command,
+    Execute,
+    DataIn,
+    Status,
+    Message,
+}
+
+/// One byte at the ESP/DMA2 interface. `None` requests memory -> ESP.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DmaRequest {
+    pub write: Option<u8>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Esp {
@@ -24,6 +44,20 @@ pub struct Esp {
     needs_nop: bool,
     selection_enabled: bool,
     reset_ns: u64,
+    work: Work,
+    connected: bool,
+    sequence: u8,
+    selection_ns: u64,
+    selecting: bool,
+    identify: bool,
+    legacy_lun: bool,
+    lun: u8,
+    cdb: Vec<u8>,
+    response: Response,
+    data_offset: usize,
+    dma: bool,
+    remaining: u32,
+    complete_sequence: bool,
 }
 
 impl Default for Esp {
@@ -49,6 +83,20 @@ impl Default for Esp {
             needs_nop: true,
             selection_enabled: false,
             reset_ns: 0,
+            work: Work::Idle,
+            connected: false,
+            sequence: 0,
+            selection_ns: 0,
+            selecting: false,
+            identify: false,
+            legacy_lun: false,
+            lun: 0,
+            cdb: Vec::new(),
+            response: Response::default(),
+            data_offset: 0,
+            dma: false,
+            remaining: 0,
+            complete_sequence: false,
         }
     }
 }
@@ -73,6 +121,12 @@ impl Esp {
         self.needs_nop = true;
         self.selection_enabled = false;
         self.reset_ns = 0;
+        self.disconnect();
+        self.sequence = 0;
+        self.selection_ns = 0;
+        self.dma = false;
+        self.remaining = 0;
+        self.complete_sequence = false;
     }
 
     pub fn irq(&self) -> bool {
@@ -81,6 +135,14 @@ impl Esp {
 
     pub fn advance_ns(&mut self, ns: u64) {
         self.reset_ns = self.reset_ns.saturating_sub(ns);
+        if self.work == Work::Timeout {
+            self.selection_ns = self.selection_ns.saturating_sub(ns);
+            if self.selection_ns == 0 {
+                self.disconnect();
+                self.phase(0);
+                self.finish(0x20);
+            }
+        }
     }
 
     fn index(offset: u64) -> Result<usize, BusErrorKind> {
@@ -114,7 +176,7 @@ impl Esp {
                 }
                 value
             }
-            6 => 0, // Disconnected sequencer: no selection or transfer yet.
+            6 => self.sequence,
             7 => self.fifo_len as u8,
             8 => self.config[0],
             11 => self.config[1],
@@ -186,9 +248,9 @@ impl Esp {
         if self.test_mode && code != 0 {
             return Err(BusErrorKind::Unsupported("ESP command in chip test mode"));
         }
-        if !matches!(code, 0 | 1 | 3 | 0x44 | 0x45) {
+        if !matches!(code, 0 | 1 | 3 | 0x10..=0x12 | 0x41 | 0x42 | 0x44 | 0x45) {
             return Err(BusErrorKind::Unsupported(
-                "ESP selection or transfer command",
+                "ESP command outside asynchronous initiator subset",
             ));
         }
         if self.needs_nop && code != 0 {
@@ -201,8 +263,31 @@ impl Esp {
                 "ESP command during SCSI reset pulse",
             ));
         }
-        if self.irq && matches!(code, 3 | 0x45) {
+        if self.irq && !matches!(code, 0 | 1 | 0x44) {
             return Err(BusErrorKind::Unsupported("ESP stacked interrupt"));
+        }
+        if self.work != Work::Idle && !matches!(code, 0 | 3) {
+            return Err(BusErrorKind::Unsupported("ESP stacked command"));
+        }
+        // Unsupported connected phases stop before changing counters/FIFO.
+        if self.connected {
+            if matches!(code, 0x41 | 0x42) {
+                return Err(BusErrorKind::Unsupported("ESP selection while connected"));
+            }
+            if code == 0x10 && !matches!(self.status & 7, 1 | 2 | 3 | 7) {
+                return Err(BusErrorKind::Unsupported("ESP transfer phase"));
+            }
+            if (code == 0x11 && self.status & 7 != 3) || (code == 0x12 && self.status & 7 != 7) {
+                return Err(BusErrorKind::Unsupported("ESP initiator completion phase"));
+            }
+        }
+        if matches!(code, 0x10..=0x12) && !self.connected {
+            self.command = 0;
+            self.finish(0x40); // Illegal command, per the disconnected mode table.
+            return Ok(());
+        }
+        if matches!(code, 0x10 | 0x11 | 0x41 | 0x42) {
+            self.dma = value & 0x80 != 0;
         }
         if value & 0x80 != 0 {
             self.counter = self.count
@@ -212,6 +297,13 @@ impl Esp {
                     0xffff
                 };
             self.status &= !0x10;
+            self.remaining = if self.counter != 0 {
+                self.counter
+            } else if self.config[1] & 0x40 != 0 {
+                1 << 24
+            } else {
+                1 << 16
+            };
         }
         self.command = value;
         match code {
@@ -226,6 +318,8 @@ impl Esp {
                 self.fifo[0] = 0;
             }
             3 => {
+                self.disconnect();
+                self.phase(0);
                 // 40 MHz board clock, 130*CCF clocks gives the documented
                 // approximately 25 us pulse (26 us with the normal CCF=8).
                 let factor = if self.clock_factor == 0 {
@@ -239,6 +333,36 @@ impl Esp {
                 self.interrupt = 0x80;
                 self.irq = self.config[0] & 0x40 == 0;
             }
+            0x41 | 0x42 => {
+                self.sequence = 0;
+                self.cdb.clear();
+                self.response = Response::default();
+                self.data_offset = 0;
+                self.lun = 0;
+                self.identify = code == 0x42;
+                self.legacy_lun = code == 0x41;
+                self.selecting = true;
+                self.work = Work::Select;
+            }
+            0x10 => {
+                self.complete_sequence = false;
+                self.work = match self.status & 7 {
+                    1 => Work::DataIn,
+                    2 => Work::Command,
+                    3 => Work::Status,
+                    7 => Work::Message,
+                    _ => unreachable!(),
+                };
+            }
+            0x11 => {
+                self.complete_sequence = true;
+                self.work = Work::Status;
+            }
+            0x12 => {
+                self.disconnect();
+                self.phase(0);
+                self.finish(0x20);
+            }
             0x44 => self.selection_enabled = true,
             0x45 => {
                 self.selection_enabled = false;
@@ -248,5 +372,188 @@ impl Esp {
             _ => unreachable!(),
         }
         Ok(())
+    }
+
+    fn phase(&mut self, phase: u8) {
+        self.status = (self.status & !7) | phase;
+    }
+
+    fn finish(&mut self, interrupt: u8) {
+        self.work = Work::Idle;
+        self.command = 0;
+        self.interrupt = interrupt;
+        self.irq = true;
+    }
+
+    fn disconnect(&mut self) {
+        self.connected = false;
+        self.selecting = false;
+        self.identify = false;
+        self.legacy_lun = false;
+        self.work = Work::Idle;
+        self.cdb.clear();
+        self.response = Response::default();
+        self.data_offset = 0;
+    }
+
+    /// Service local SCSI handshakes, yielding before each host-memory byte.
+    /// No CPU/MMU access occurs here. DMA completion is committed separately.
+    pub(crate) fn poll(&mut self, bus: &mut ScsiBus) -> Result<Option<DmaRequest>, BusErrorKind> {
+        match self.work {
+            Work::Idle | Work::Timeout => return Ok(None),
+            Work::Select => {
+                if self.destination == self.config[0] & 7 || bus.target(self.destination).is_none()
+                {
+                    let factor = if self.clock_factor == 0 {
+                        8
+                    } else {
+                        self.clock_factor
+                    };
+                    self.selection_ns = u64::from(self.timeout) * 8192 * u64::from(factor) * 25;
+                    self.work = Work::Timeout;
+                    return Ok(None);
+                }
+                self.connected = true;
+                self.phase(if self.identify { 6 } else { 2 });
+                self.work = Work::Command;
+            }
+            Work::Execute => {
+                // A CDB supplies the legacy LUN when no IDENTIFY was sent.
+                self.response = bus.execute(self.destination, self.lun, &self.cdb);
+                self.data_offset = 0;
+                self.phase(if self.response.data.is_empty() { 3 } else { 1 });
+                let interrupt = if self.selecting {
+                    self.sequence = 4;
+                    0x18
+                } else {
+                    0x10
+                };
+                self.selecting = false;
+                self.finish(interrupt);
+                return Ok(None);
+            }
+            _ => {}
+        }
+        if self.work == Work::Command {
+            // A preloaded IDENTIFY/CDB prefix precedes bytes fetched by DMA.
+            if self.fifo_len != 0 {
+                let value = self.fifo[0];
+                self.validate_command_byte(value)?;
+                self.read(8)?;
+                self.command_byte(value);
+            } else if self.dma && self.remaining != 0 {
+                return Ok(Some(DmaRequest { write: None }));
+            }
+            return Ok(None);
+        }
+        let byte = match self.work {
+            Work::DataIn => self.response.data[self.data_offset],
+            Work::Status => self.response.status,
+            Work::Message => 0, // COMMAND COMPLETE.
+            _ => unreachable!(),
+        };
+        if self.dma {
+            return Ok(Some(DmaRequest { write: Some(byte) }));
+        }
+        if self.fifo_len < self.fifo.len() {
+            self.write(8, byte)?;
+            self.received_byte();
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn validate_dma(&self, value: u8) -> Result<(), BusErrorKind> {
+        if self.work == Work::Command {
+            self.validate_command_byte(value)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_command_byte(&self, value: u8) -> Result<(), BusErrorKind> {
+        if self.identify && value & 0xb8 != 0x80 {
+            return Err(BusErrorKind::Unsupported(
+                "SCSI selection message other than IDENTIFY",
+            ));
+        }
+        if !self.identify && self.cdb.is_empty() && !matches!(value >> 5, 0 | 1 | 2 | 5) {
+            return Err(BusErrorKind::Unsupported("SCSI CDB group length"));
+        }
+        Ok(())
+    }
+
+    fn command_byte(&mut self, value: u8) {
+        if self.identify {
+            self.lun = value & 7;
+            self.identify = false;
+            self.phase(2);
+            self.sequence = 2;
+        } else {
+            self.cdb.push(value);
+            if self.cdb.len() == 2 && self.legacy_lun {
+                self.lun = value >> 5;
+            }
+            let length = match self.cdb[0] >> 5 {
+                0 => 6,
+                1 | 2 => 10,
+                5 => 12,
+                _ => unreachable!(),
+            };
+            if self.cdb.len() == length {
+                self.work = Work::Execute;
+            }
+        }
+        if self.work == Work::Command
+            && ((self.dma && self.remaining == 0) || (!self.dma && self.fifo_len == 0))
+        {
+            // A short CDB can be continued with TRANSFER INFORMATION.
+            if self.selecting {
+                self.sequence = 3;
+            }
+            self.finish(if self.selecting { 0x18 } else { 0x10 });
+            self.selecting = false;
+        }
+    }
+
+    pub(crate) fn complete_dma(&mut self, value: u8) {
+        self.remaining -= 1;
+        self.counter = self.remaining
+            & if self.config[1] & 0x40 != 0 {
+                0xffffff
+            } else {
+                0xffff
+            };
+        if self.remaining == 0 {
+            self.status |= 0x10;
+        }
+        if self.work == Work::Command {
+            self.command_byte(value);
+        } else {
+            self.received_byte();
+        }
+    }
+
+    fn received_byte(&mut self) {
+        match self.work {
+            Work::DataIn => {
+                self.data_offset += 1;
+                if self.data_offset == self.response.data.len() {
+                    self.phase(3);
+                    self.finish(0x10);
+                } else if !self.dma || self.remaining == 0 {
+                    self.finish(0x10);
+                }
+            }
+            Work::Status => {
+                self.phase(7);
+                if self.complete_sequence && (!self.dma || self.remaining != 0) {
+                    self.work = Work::Message;
+                } else {
+                    self.finish(0x10);
+                }
+            }
+            Work::Message => self.finish(8),
+            _ => unreachable!(),
+        }
     }
 }

@@ -36,8 +36,9 @@ The console ports remain available in the machine. TTYA output goes to the
 launching terminal; the window receives keyboard input independently. When an
 unsupported operation stops the core, the last framebuffer remains visible
 and the window title names the unsupported operation; the terminal reports the
-full CPU fault. In particular, **`probe-scsi-all` currently stops on ESP selection**:
-SCSI targets and transfers are not implemented yet. Close and restart the
+full CPU fault. **`probe-scsi-all` lists attached disk/CD-ROM targets** when
+launched with `--disk PATH` and/or `--cdrom PATH`; see [SCSI storage](scsi.md).
+Close and restart the
 window after a core stop; Stop-A cannot resume a stopped interpreter.
 Window resizing affects presentation
 only. A worker owns the machine; display refresh never advances guest time.

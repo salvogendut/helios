@@ -38,6 +38,54 @@ impl fmt::Display for DmaError {
 impl std::error::Error for DmaError {}
 
 impl Machine {
+    /// Service the ESP and at most one DMA2 byte through the shared IOMMU.
+    /// Arbitration denial retains the byte; a memory fault latches D_ERR_PEND.
+    pub fn service_scsi(&mut self) -> Result<(), DmaError> {
+        let Some(devices) = self.bus.devices_mut() else {
+            return Ok(());
+        };
+        if devices.scsi_dma.reset_asserted() {
+            return Ok(());
+        }
+        let error = |kind| {
+            DmaError::Bus(BusError {
+                address: crate::system_bus::ESP_BASE,
+                kind,
+            })
+        };
+        let request = devices.esp.poll(&mut devices.scsi).map_err(error)?;
+        devices.scsi_dma.set_request(request.is_some());
+        let Some(request) = request else {
+            return Ok(());
+        };
+        let Some(address) = devices
+            .scsi_dma
+            .transfer_address(request.write.is_some())
+            .map_err(error)?
+        else {
+            return Ok(());
+        };
+        let result = match request.write {
+            Some(byte) => self
+                .dma_write(5, address, Width::Byte, u32::from(byte))
+                .map(|()| 0),
+            None => self.dma_read(5, address, Width::Byte),
+        };
+        let devices = self.bus.devices_mut().expect("installed SCSI");
+        match result {
+            Ok(value) => {
+                devices.esp.validate_dma(value as u8).map_err(error)?;
+                devices.esp.complete_dma(value as u8);
+                devices.scsi_dma.complete();
+            }
+            Err(DmaError::NotGranted { .. }) => {}
+            Err(DmaError::Fault { .. }) => devices.scsi_dma.memory_error(),
+            Err(DmaError::Bus(e)) if !e.kind.is_host_stop() => devices.scsi_dma.memory_error(),
+            Err(e) => return Err(e),
+        }
+        Ok(())
+    }
+
     /// Advance at most one MAC DMA transfer per CPU boundary. Device work is
     /// retained across arbiter denial and host stops, without moving CPU state.
     pub fn service_ethernet(&mut self) -> Result<(), DmaError> {

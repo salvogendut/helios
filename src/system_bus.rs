@@ -13,6 +13,7 @@ use crate::devices::{
     keyboard::Keyboard,
     nvram::{Nvram, NVRAM_SIZE},
     reset::ResetControl,
+    scsi::ScsiBus,
     scsi_dma::ScsiDma,
     serial::Serial,
     timer::Timers,
@@ -88,6 +89,7 @@ pub struct Sun4mDevices {
     pub reset: ResetControl,
     pub scsi_dma: ScsiDma,
     pub esp: Esp,
+    pub scsi: ScsiBus,
     pub ethernet_dma: EthernetDma,
     pub ethernet: Ethernet,
     rtc_phase_ns: u32,
@@ -306,6 +308,7 @@ impl SystemBus {
             reset: ResetControl::default(),
             scsi_dma: ScsiDma::default(),
             esp: Esp::default(),
+            scsi: ScsiBus::default(),
             ethernet_dma: EthernetDma::default(),
             ethernet: Ethernet::default(),
             rtc_phase_ns: 0,
@@ -613,7 +616,11 @@ impl Bus for SystemBus {
                 let result = if devices.scsi_dma.reset_asserted() {
                     Ok(())
                 } else {
-                    devices.esp.write(address - ESP_BASE, value)
+                    let result = devices.esp.write(address - ESP_BASE, value);
+                    if result.is_ok() && address == ESP_BASE + 12 && value & 0x7f == 3 {
+                        devices.scsi.reset();
+                    }
+                    result
                 };
                 devices.sync_interrupts();
                 return result.map_err(|kind| BusError { address, kind });

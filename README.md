@@ -31,6 +31,12 @@ Sun Type 5 keyboard protocol. With 128 MiB RAM, OBP displays its banner and
 on screen. See [graphics and keyboard](docs/graphics.md) for the supported
 device subset and [the graphical checkpoint](docs/firmware.md#graphical-obp-console).
 
+**`probe-scsi-all` now lists attached disk and CD-ROM targets and returns to `ok`**
+in original OBP. Both frontends accept `--disk disk.raw` (ID 3) and
+`--cdrom cdrom.iso` (ID 6). Images are currently read-only; block reads and
+capacity reporting are implemented, while OS boot remains unverified.
+See [SCSI storage](docs/scsi.md).
+
 The implemented foundation includes:
 
 - A dependency-free Rust library and headless CLI.
@@ -64,9 +70,9 @@ The implemented foundation includes:
 - NCR89C105 auxiliary LED/link/mux output latches, floppy density input and
   terminal-count pulse events, plus NCR82077 initialization, timed seek/recalibrate
   completion and interrupts. No floppy drive or media engine is attached.
-- NCR89C100 identification and DMA2 SCSI configuration, address/count chaining
-  latches and IRQ gating, plus NCR53C9X SCSI reset/configuration/FIFO handling;
-  DMA data transfers and storage targets remain pending.
+- NCR89C100 DMA2 SCSI transfers through the IOMMU, count/chaining/error handling
+  and IRQ gating; NCR53C9X selection, timed missing-target responses, PIO/DMA
+  command/data/status/message phases, and raw disk/CD-ROM targets.
 - NCR89C100 Ethernet DMA and NCR92C990 initialization, single-buffer packets,
   CRC, filtering and internal loopback through the IOMMU. See [Ethernet](docs/ethernet.md).
 - SS-5 system reset/status, guest software reset and watchdog status latching;
@@ -85,7 +91,7 @@ The implemented foundation includes:
 Unsupported emulator behavior remains a host stop, separate from guest traps.
 Implementation-specific ASRs, broader illegal-opcode classification, remaining TLB
 diagnostic modes, cache hit/fill behavior, remaining FPU arithmetic/conversions, quad-operation traps,
-serial interrupt generation, SCSI transfers, a host network backend
+serial interrupt generation, SCSI writes and broader command support, a host network backend
 and broader graphics acceleration remain to be implemented. There is no general firmware or OS compatibility
 claim.
 
@@ -198,6 +204,7 @@ and the distinction from the contiguous RAM used by synthetic harnesses.
 - [System reset](docs/reset.md): reset-status register, guest reset and watchdog limits.
 - [Devices](docs/devices.md): console serial, IDPROM, NVRAM persistence and RTC.
 - [Graphics and keyboard](docs/graphics.md): TurboGX, Type 5 keyboard and native console window.
+- [SCSI storage](docs/scsi.md): image attachment, controller transfers and target commands.
 - [Interrupts and timers](docs/interrupts-timers.md): register maps, masking and guest time.
 - [I/O controls](docs/io-control.md): IOMMU translation, shared TLB, DMA access and current limits.
 - [Firmware](docs/firmware.md): original Sun OBP development baseline, pinned downloads and probe results.

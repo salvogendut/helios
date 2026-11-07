@@ -90,11 +90,19 @@ test rather than assuming either emulator defines the hardware.
   its shared CSR mask and reset pulse do not override the primary manual.
 - [NCR53C9X integrated Fast SCSI core specification](https://www.ibiblio.org/pub/historic-linux/early-ports/Sparc/NCR/NCR53C9X.txt),
   also chapter 5 of the Sun I/O chipset manual above: register descriptions,
-  miscellaneous/disconnected commands and reset timing define the implemented
-  ESP initialization subset. The NCR89C100 integration chapter excludes the
+  miscellaneous/disconnected commands, initiator selection/transfer/status
+  sequences and reset timing define the ESP subset. The NCR89C100 integration chapter excludes the
   standalone RESETO pin. Pinned QEMU `hw/scsi/esp.c` supplies a comparison;
   Helios follows the primary count/counter separation, ID gating, reset
   retention and FIFO-overwrite status rather than assuming QEMU's shortcuts.
+  Selection timeout follows `timeout * 8192 * CCF / 40 MHz`; absent IDs report
+  disconnect/step 0, successful selection reports function complete plus bus
+  service/step 4. The archived text's select-with-ATN interrupt table has
+  transcribed bit columns inconsistent with the chapter's prose and other
+  selection tables; the prose and independent controllers establish the
+  function-complete/bus-service result used here.
+  DMA2 chapter 3 defines count expiration/chaining, D_TC W1C only in chaining
+  mode, and D_INVALIDATE clearing memory error/TC. See [scsi.md](scsi.md).
   Chapter 5 page 5-20 permits CFG1 chip-test-enable readback but requires chip
   reset before normal operation. Helios retains that state; test-register
   execution remains unsupported. Chapter 3 pages 3-18–3-22 and chapter 4 define
@@ -178,6 +186,15 @@ test rather than assuming either emulator defines the hardware.
   behavior, machine-owned wiring and headless diagnostics. Helios has no build
   dependency on IRIS.
 
+SCSI target command layouts also follow the archived SCSI-2 standard:
+[clause 8, all devices](https://www.staff.uni-mainz.de/tacke/scsi/SCSI2-08.html)
+for INQUIRY, REQUEST SENSE and MODE SENSE;
+[clause 9, direct-access devices](https://www.staff.uni-mainz.de/tacke/scsi/SCSI2-09.html)
+for block addressing, READ(6)/(10) and READ CAPACITY; and
+[clause 14, CD-ROM](https://www.staff.uni-mainz.de/tacke/scsi/SCSI2-14.html)
+for removable type 5 and CD logical blocks. HELIOS inquiry strings describe
+our synthetic targets, not a claim to reproduce a particular OEM drive.
+
 ## QEMU
 
 Additional hardware timing references:
@@ -201,6 +218,7 @@ Reference revision: `f71afb409a87c4ecd0f9d63a5963eb645dfab780` (inspected 2026-1
 
 | Source | Use |
 | --- | --- |
+| [hw/scsi/esp.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/scsi/esp.c) | Independent selection, CDB, data/status/message phase and IRQ comparison; NCR primary timeout/register semantics take precedence |
 | [hw/net/pcnet.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/net/pcnet.c) | LANCE-format DMA and packet/metadata byte-order comparison; PCnet extensions do not define NCR92C990 |
 | [SPARC system overview](https://www.qemu.org/docs/master/system/target-sparc.html) | Machine/peripheral inventory and firmware context |
 | [hw/sparc/sun4m.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/sparc/sun4m.c) | SS-5 profile, physical addresses, wiring and firmware interfaces |
@@ -236,6 +254,10 @@ QEMU's TCX framebuffer is a different device from the selected CGsix card.
 
 The pinned [src/devices/machine/am79c90.cpp](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/machine/am79c90.cpp)
 also supplies an independent LANCE descriptor, loopback and CRC comparison.
+The same revision's [src/devices/machine/ncr53c90.cpp](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/machine/ncr53c90.cpp)
+was checked for selection timeout, FIFO handshakes and transfer-count/IRQ
+sequencing. Helios uses a functional byte interface rather than modeling each
+SCSI signal edge.
 
 CPU reference revision: `cd883a1be2fe0d120bfe594b0efcab5751ae565b`
 (inspected 2026-11-06). A local checkout is also available at `../mame`; its

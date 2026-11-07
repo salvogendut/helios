@@ -10,6 +10,7 @@ pub mod io_control;
 pub mod keyboard;
 pub mod nvram;
 pub mod reset;
+pub mod scsi;
 pub mod scsi_dma;
 pub mod serial;
 pub mod timer;

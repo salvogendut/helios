@@ -1,6 +1,6 @@
 use helios::bus::Bus;
 use helios::cpu::{Step, PSR_ET, PSR_S};
-use helios::devices::{nvram::Nvram, serial::Channel};
+use helios::devices::{nvram::Nvram, scsi::MediaKind, serial::Channel};
 use helios::machine::{
     demo_image, serial_demo_image, timer_demo_image, trap_demo_image, Machine, CPU_CLOCK_HZ,
     DEFAULT_RAM_BYTES, TARGET,
@@ -20,6 +20,7 @@ Usage:
   helios run FILE [--load-address N] [--entry N] [--steps N] [--ram-mib N] [--trace]
   helios boot PROM [--steps N] [--ram-mib N] [--trace]
                    [--serial-in FILE] [--nvram FILE] [--nvram-out NEW_FILE]
+                   [--disk RAW_IMAGE] [--cdrom ISO_IMAGE]
 
 FILE is a raw big-endian SPARC instruction/data image, loaded into RAM.
 Addresses accept decimal or 0x-prefixed hexadecimal. Entry defaults to the load
@@ -35,10 +36,12 @@ Its RAM must fit eight 8 MiB or 32 MiB DSIMMs; low slots receive larger modules 
 boot and serial-demo send TTYA bytes to stdout and diagnostics to stderr.
 --serial-in supplies bytes as the guest enables and drains its receiver.
 NVRAM images contain 8192 bytes; --nvram-out creates a new file without overwriting.
+--disk attaches a read-only 512-byte/block raw disk at SCSI ID 3, LUN 0.
+--cdrom attaches a read-only 2048-byte/sector CD image at SCSI ID 6, LUN 0.
 sun4m clocks advance 100 ns per completed step, a functional scheduling convention.
 The library can also advance device time explicitly. Polled serial, NVRAM/RTC,
 both SCCs, counter timers, interrupt control and reset/status are installed;
-firmware/OS boot is not yet supported.";
+original OBP reaches its monitor; OS boot remains unverified.";
 
 fn number(value: &str) -> Result<u64, Box<dyn Error>> {
     Ok(if let Some(hex) = value.strip_prefix("0x") {
@@ -272,19 +275,37 @@ fn run() -> Result<(), Box<dyn Error>> {
             let mut serial_in = None;
             let mut nvram_in = None;
             let mut nvram_out = None;
+            let mut disk = None;
+            let mut cdrom = None;
             while let Some(option) = args.next() {
                 if option == "--trace" {
                     trace = true;
                     continue;
                 }
-                if boot && matches!(option.as_str(), "--serial-in" | "--nvram" | "--nvram-out") {
+                if boot
+                    && matches!(
+                        option.as_str(),
+                        "--serial-in" | "--nvram" | "--nvram-out" | "--disk" | "--cdrom"
+                    )
+                {
                     let path = args
                         .next()
                         .ok_or_else(|| format!("{option} requires a filename"))?;
                     match option.as_str() {
                         "--serial-in" => serial_in = Some(path),
                         "--nvram" => nvram_in = Some(path),
-                        _ => nvram_out = Some(path),
+                        "--nvram-out" => nvram_out = Some(path),
+                        "--disk" => {
+                            if disk.replace(path).is_some() {
+                                return Err("--disk supplied more than once".into());
+                            }
+                        }
+                        "--cdrom" => {
+                            if cdrom.replace(path).is_some() {
+                                return Err("--cdrom supplied more than once".into());
+                            }
+                        }
+                        _ => unreachable!(),
                     }
                     continue;
                 }
@@ -336,6 +357,17 @@ fn run() -> Result<(), Box<dyn Error>> {
                 machine.load_image(load, &bytes)?;
                 machine
             };
+            for (id, kind, path) in [(3, MediaKind::Disk, disk), (6, MediaKind::Cdrom, cdrom)] {
+                if let Some(path) = path {
+                    machine
+                        .bus
+                        .devices_mut()
+                        .expect("boot devices")
+                        .scsi
+                        .attach(id, kind, &path)
+                        .map_err(|error| format!("SCSI ID {id}, {path}: {error}"))?;
+                }
+            }
             let input = serial_in
                 .map(std::fs::read)
                 .transpose()?
