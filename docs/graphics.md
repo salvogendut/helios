@@ -37,7 +37,8 @@ launching terminal; the window receives keyboard input independently. When an
 unsupported operation stops the core, the last framebuffer remains visible
 and the window title names the unsupported operation; the terminal reports the
 full CPU fault. **`probe-scsi-all` lists attached disk/CD-ROM targets** when
-launched with `--disk PATH` and/or `--cdrom PATH`; see [SCSI storage](scsi.md).
+launched with `--disk PATH` and/or `--cdrom PATH`. Use `--disk-rw PATH` instead
+of `--disk` to allow guest writes to an existing disk; see [SCSI storage](scsi.md).
 Close and restart the
 window after a core stop; Stop-A cannot resume a stopped interpreter.
 Window resizing affects presentation

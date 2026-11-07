@@ -97,6 +97,61 @@ fn faults_and_bad_cli_input_are_unsuccessful() {
 }
 
 #[test]
+fn writable_disk_option_is_explicit_exclusive_and_never_creates_or_truncates() {
+    let prom = Image::new(&[1, 0, 0, 0]);
+    let disk = Image::new(&[0x5a; 512]);
+    for option in ["--disk", "--disk-rw"] {
+        let output = helios(&[
+            "boot",
+            prom.path(),
+            "--steps",
+            "1",
+            "--ram-mib",
+            "8",
+            option,
+            disk.path(),
+        ]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(std::fs::read(&disk.0).unwrap(), [0x5a; 512]);
+    }
+    for options in [
+        ["--disk", "--disk-rw"],
+        ["--disk-rw", "--disk"],
+        ["--disk-rw", "--disk-rw"],
+    ] {
+        let output = helios(&[
+            "boot",
+            prom.path(),
+            options[0],
+            disk.path(),
+            options[1],
+            disk.path(),
+        ]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Choose one --disk or --disk-rw"));
+    }
+    let missing = disk.0.with_extension("absent");
+    assert!(!missing.exists());
+    let output = helios(&[
+        "boot",
+        prom.path(),
+        "--disk-rw",
+        missing.to_str().unwrap(),
+        "--steps",
+        "1",
+        "--ram-mib",
+        "8",
+    ]);
+    assert!(!output.status.success());
+    assert!(!missing.exists());
+    assert_eq!(std::fs::read(disk.0.as_path()).unwrap(), [0x5a; 512]);
+}
+
+#[test]
 fn trap_demo_reports_trap_entry_separately_from_executed_instructions() {
     let output = helios(&["trap-demo", "--trace"]);
     assert!(

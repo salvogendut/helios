@@ -54,6 +54,16 @@ fn attach(m: &mut Machine, kind: MediaKind, bytes: &[u8]) -> Image {
         .unwrap();
     image
 }
+fn attach_rw(m: &mut Machine, bytes: &[u8]) -> Image {
+    let image = Image::new(bytes);
+    m.bus
+        .devices_mut()
+        .unwrap()
+        .scsi
+        .attach_disk_rw(3, &image.0)
+        .unwrap();
+    image
+}
 fn irq(m: &mut Machine) -> (u8, u8, u8) {
     for _ in 0..1000 {
         m.service_scsi().unwrap();
@@ -583,4 +593,288 @@ fn cd_medium_lock_survives_invalid_requests_and_clears_on_allow_or_bus_reset() {
     assert_eq!(complete(&mut m), 0);
     m.bus.write8(ESP + 12, 3).unwrap();
     assert!(!locked(&m));
+}
+
+#[test]
+fn writable_disk_reports_unprotected_modes_and_pio_writes_persist_across_reopen() {
+    let mut m = fixture();
+    let mut expected = vec![0x5a; 2048];
+    let disk = attach_rw(&mut m, &expected);
+    assert!(m.bus.devices().unwrap().scsi.target(3).unwrap().writable());
+    for (cdb, wp) in [
+        (vec![0x1a, 8, 0x3f, 0, 4, 0], 2),
+        (vec![0x5a, 8, 0x3f, 0, 0, 0, 0, 0, 8, 0], 3),
+    ] {
+        select(&mut m, 3, 0, &cdb);
+        assert_eq!(data(&mut m)[wp] & 0x80, 0);
+        assert_eq!(complete(&mut m), 0);
+    }
+    let payload: Vec<_> = (0..512).map(|i| (i * 37) as u8).collect();
+    assert_eq!(select(&mut m, 3, 0, &[0x0a, 0, 0, 1, 1, 0]).0 & 7, 0);
+    parameters(&mut m, &payload);
+    assert_eq!(complete(&mut m), 0);
+    expected[512..1024].copy_from_slice(&payload);
+    assert_eq!(std::fs::read(&disk.0).unwrap(), expected);
+    drop(m);
+    let mut reopened = fixture();
+    reopened
+        .bus
+        .devices_mut()
+        .unwrap()
+        .scsi
+        .attach(3, MediaKind::Disk, &disk.0)
+        .unwrap();
+    select(&mut reopened, 3, 0, &[0x28, 0, 0, 0, 0, 1, 0, 0, 1, 0]);
+    assert_eq!(data(&mut reopened), payload);
+    assert_eq!(complete(&mut reopened), 0);
+    assert!(!reopened
+        .bus
+        .devices()
+        .unwrap()
+        .scsi
+        .target(3)
+        .unwrap()
+        .writable());
+}
+
+fn geometry_fixture() -> (Machine, Image) {
+    let image = Image::new(&[]);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(image.0.as_path())
+        .unwrap()
+        .set_len(2 * 1024 * 1024 * 1024)
+        .unwrap();
+    let mut m = fixture();
+    m.bus
+        .devices_mut()
+        .unwrap()
+        .scsi
+        .attach_disk_rw(3, &image.0)
+        .unwrap();
+    (m, image)
+}
+
+// SCSI-2 tables 163 and 171, with the defined 2 GiB virtual geometry.
+const FORMAT_PAGE: [u8; 24] = [
+    3, 22, 0, 0, 0, 0, 0, 0, 0, 0, 0, 64, 2, 0, 0, 1, 0, 0, 0, 0, 0x40, 0, 0, 0,
+];
+const GEOMETRY_PAGE: [u8; 24] = [
+    4, 22, 0, 0x10, 0, 16, 0, 0x10, 0, 0, 0x10, 0, 0, 0, 0xff, 0xff, 0xff, 0, 0, 0, 0x15, 0x18, 0,
+    0,
+];
+
+#[test]
+fn disk_mode_pages_describe_capacity_and_current_default_and_changeable_geometry() {
+    let (mut m, _image) = geometry_fixture();
+    for control in [0, 1, 2] {
+        for expected in [FORMAT_PAGE, GEOMETRY_PAGE] {
+            // Actual Solaris format auto-configuration command, page 3 then 4.
+            select(
+                &mut m,
+                3,
+                0,
+                &[0x1a, 0, (control << 6) | expected[0], 0, 255, 0],
+            );
+            let bytes = data(&mut m);
+            assert_eq!(&bytes[..12], &[35, 0, 0, 8, 0, 0x40, 0, 0, 0, 0, 2, 0]);
+            assert_eq!(&bytes[12..14], &expected[..2]);
+            assert_eq!(
+                &bytes[14..],
+                if control == 1 {
+                    &[0; 22]
+                } else {
+                    &expected[2..]
+                }
+            );
+            assert_eq!(complete(&mut m), 0);
+        }
+    }
+    select(&mut m, 3, 0, &[0x5a, 8, 0x3f, 0, 0, 0, 0, 0, 255, 0]);
+    let all = data(&mut m);
+    assert_eq!(&all[..8], &[0, 54, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(&all[8..32], &FORMAT_PAGE);
+    assert_eq!(&all[32..56], &GEOMETRY_PAGE);
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 3, 0, &[0x1a, 8, 3, 0, 3, 0]);
+    assert_eq!(data(&mut m), [27, 0, 0]); // Full length survives allocation truncation.
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 3, 0, &[0x1a, 8, 0xc3, 0, 255, 0]);
+    assert_eq!(complete(&mut m), 2);
+    select(&mut m, 3, 0, &[3, 0, 0, 0, 18, 0]);
+    let sense = data(&mut m);
+    assert_eq!((sense[2], sense[12]), (5, 0x39));
+    assert_eq!(complete(&mut m), 0);
+    let _cd = attach(&mut m, MediaKind::Cdrom, &[0; 2048]);
+    select(&mut m, 6, 0, &[0x1a, 0, 3, 0, 255, 0]);
+    assert_eq!(complete(&mut m), 2);
+}
+
+#[test]
+fn fixed_geometry_mode_select_accepts_unchanged_pages_and_rejects_partial_or_changed_parameters() {
+    let (mut m, image) = geometry_fixture();
+    let mut unchanged = vec![0; 4];
+    unchanged.extend_from_slice(&FORMAT_PAGE);
+    unchanged.extend_from_slice(&GEOMETRY_PAGE);
+    select(&mut m, 3, 0, &[0x15, 0x10, 0, 0, unchanged.len() as u8, 0]);
+    parameters(&mut m, &unchanged);
+    assert_eq!(complete(&mut m), 0);
+    let mut defaults = unchanged.clone();
+    defaults[14..18].fill(0); // Page 3 sector count/bytes zero -> target defaults.
+    defaults[18..20].fill(0xff); // Interleave ignored on MODE SELECT.
+    select(&mut m, 3, 0, &[0x15, 0x10, 0, 0, defaults.len() as u8, 0]);
+    parameters(&mut m, &defaults);
+    assert_eq!(complete(&mut m), 0);
+    let mut changed = unchanged.clone();
+    changed[33] = 8; // Geometry page head count, not changeable.
+    let mut saved = unchanged.clone();
+    saved[4] |= 0x80; // PS reserved on MODE SELECT.
+    for (payload, asc) in [
+        (changed, 0x26),
+        (saved, 0x26),
+        (unchanged[..51].to_vec(), 0x1a),
+    ] {
+        select(&mut m, 3, 0, &[0x15, 0x10, 0, 0, payload.len() as u8, 0]);
+        parameters(&mut m, &payload);
+        assert_eq!(complete(&mut m), 2);
+        select(&mut m, 3, 0, &[3, 0, 0, 0, 18, 0]);
+        let sense = data(&mut m);
+        assert_eq!((sense[2], sense[12]), (5, asc));
+        assert_eq!(complete(&mut m), 0);
+    }
+    select(&mut m, 3, 0, &[0x1a, 8, 4, 0, 255, 0]);
+    assert_eq!(&data(&mut m)[4..], &GEOMETRY_PAGE);
+    assert_eq!(complete(&mut m), 0);
+    assert_eq!(
+        std::fs::metadata(image.0.as_path()).unwrap().len(),
+        2 * 1024 * 1024 * 1024
+    );
+}
+
+#[test]
+fn disk_dma_write_commits_only_full_payload_with_exact_residual_and_fua() {
+    let mut m = fixture();
+    let original = vec![0x33; 2048];
+    let disk = attach_rw(&mut m, &original);
+    let payload: Vec<_> = (0..1024).map(|i| (i / 251 + i * 13) as u8).collect();
+    m.load_image(0x8000, &payload).unwrap();
+    select(&mut m, 3, 0, &[0x2a, 0x18, 0, 0, 0, 1, 0, 0, 2, 0]); // DPO/FUA
+    dma(&mut m, 0xff00_0000, 256, false);
+    m.bus.write8(ESP + 12, 0x90).unwrap();
+    assert_eq!(irq(&mut m).0 & 7, 0);
+    assert_eq!(std::fs::read(&disk.0).unwrap(), original);
+    dma(&mut m, 0xff00_0100, 1000, false);
+    m.bus.write8(ESP + 12, 0x90).unwrap();
+    assert_eq!(irq(&mut m).0 & 7, 3);
+    assert_eq!(m.bus.read32(DMA + 4).unwrap(), 0xff00_0400);
+    assert_eq!(m.bus.read32(DMA + 8).unwrap(), 232);
+    assert_eq!(m.bus.read8(ESP).unwrap(), 232);
+    assert_eq!(complete(&mut m), 0);
+    let mut expected = original;
+    expected[512..1536].copy_from_slice(&payload);
+    assert_eq!(std::fs::read(disk.0.as_path()).unwrap(), expected);
+}
+
+#[test]
+fn partial_disk_write_then_dma_fault_and_bus_reset_preserve_image() {
+    let mut m = fixture();
+    let original = vec![0x72; 1024];
+    let disk = attach_rw(&mut m, &original);
+    m.load_image(0x8000, &[0xcc; 128]).unwrap();
+    select(&mut m, 3, 0, &[0x0a, 0, 0, 0, 1, 0]);
+    dma(&mut m, 0xff00_0000, 128, false);
+    m.bus.write8(ESP + 12, 0x90).unwrap();
+    assert_eq!(irq(&mut m).0 & 7, 0);
+    dma(&mut m, 0xff00_2000, 384, false); // unmapped IOPTE
+    m.bus.write8(ESP + 12, 0x90).unwrap();
+    m.service_scsi().unwrap();
+    assert_ne!(m.bus.read32(DMA).unwrap() & 2, 0);
+    assert_eq!(std::fs::read(&disk.0).unwrap(), original);
+    m.bus.write8(ESP + 12, 3).unwrap();
+    assert_eq!(irq(&mut m).2, 0x80);
+    assert_eq!(std::fs::read(disk.0.as_path()).unwrap(), original);
+    assert!(m.bus.devices().unwrap().scsi.target(3).unwrap().writable());
+}
+
+#[test]
+fn disk_write_lengths_bounds_reserved_fields_and_cache_sync_are_checked() {
+    let mut m = fixture();
+    let original = vec![0x42; 257 * 512];
+    let disk = attach_rw(&mut m, &original);
+    for (cdb, asc) in [
+        (vec![0x2a, 0, 0xff, 0xff, 0xff, 0xff, 0, 0, 1, 0], 0x21),
+        (vec![0x0a, 0, 1, 0, 2, 0], 0x21),
+        (vec![0x2a, 1, 0, 0, 0, 0, 0, 0, 1, 0], 0x24),
+        (vec![0x2a, 0, 0, 0, 0, 0, 1, 0, 1, 0], 0x24),
+        (vec![0x0a, 0, 0, 0, 1, 1], 0x24),
+        (vec![0x35, 2, 0, 0, 0, 0, 0, 0, 0, 0], 0x24),
+        (vec![0x35, 0, 0, 0, 1, 0, 0, 0, 2, 0], 0x21),
+    ] {
+        select(&mut m, 3, 0, &cdb);
+        assert_eq!(complete(&mut m), 2);
+        select(&mut m, 3, 0, &[3, 0, 0, 0, 18, 0]);
+        let sense = data(&mut m);
+        assert_eq!((sense[2], sense[12]), (5, asc));
+        assert_eq!(complete(&mut m), 0);
+    }
+    select(&mut m, 3, 0, &[0x2a, 0, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]);
+    assert_eq!(complete(&mut m), 0); // ten-byte zero count is a no-op
+    assert_eq!(std::fs::read(&disk.0).unwrap(), original);
+    select(&mut m, 3, 0, &[0x0a, 0, 0, 1, 0, 0]); // six-byte zero means 256 blocks
+    parameters(&mut m, &vec![0x99; 256 * 512]);
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 3, 0, &[0x35, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(complete(&mut m), 0);
+    let written = std::fs::read(disk.0.as_path()).unwrap();
+    assert_eq!(&written[..512], &original[..512]);
+    assert_eq!(&written[512..], vec![0x99; 256 * 512]);
+}
+
+#[test]
+fn disk_write_host_failure_returns_sense_without_growing_changed_image() {
+    let mut m = fixture();
+    let disk = attach_rw(&mut m, &[0; 512]);
+    select(&mut m, 3, 0, &[0x0a, 0, 0, 0, 1, 0]);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&disk.0)
+        .unwrap()
+        .set_len(0)
+        .unwrap();
+    parameters(&mut m, &[0x55; 512]);
+    assert_eq!(complete(&mut m), 2);
+    select(&mut m, 3, 0, &[3, 0, 0, 0, 18, 0]);
+    let sense = data(&mut m);
+    assert_eq!((sense[2], sense[12]), (3, 0x0c));
+    assert_eq!(complete(&mut m), 0);
+    assert_eq!(std::fs::metadata(disk.0.as_path()).unwrap().len(), 0);
+}
+
+#[test]
+fn cdrom_still_rejects_writes_and_writable_attach_never_creates_missing_files() {
+    let mut m = fixture();
+    let cd = attach(&mut m, MediaKind::Cdrom, &[0x81; 2048]);
+    for cdb in [
+        vec![0x0a, 0, 0, 0, 1, 0],
+        vec![0x2a, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+    ] {
+        select(&mut m, 6, 0, &cdb);
+        assert_eq!(complete(&mut m), 2);
+        select(&mut m, 6, 0, &[3, 0, 0, 0, 18, 0]);
+        let sense = data(&mut m);
+        assert_eq!((sense[2], sense[12]), (7, 0x27));
+        assert_eq!(complete(&mut m), 0);
+    }
+    let missing = cd.0.with_extension("missing");
+    assert!(!missing.exists());
+    assert!(m
+        .bus
+        .devices_mut()
+        .unwrap()
+        .scsi
+        .attach_disk_rw(3, &missing)
+        .is_err());
+    assert!(!missing.exists());
+    assert!(m.bus.devices().unwrap().scsi.target(3).is_none());
+    assert_eq!(std::fs::read(cd.0.as_path()).unwrap(), [0x81; 2048]);
 }

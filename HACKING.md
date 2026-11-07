@@ -174,7 +174,9 @@ with guard/round/sticky bits. Multiplication retains an exact product of up to
 106 bits in u128 before rounding once. These operations support all rounding
 modes and gradual underflow without host floating-point state. Enabled
 exceptions inhibit destinations and AEXC; only the highest enabled cause enters
-CEXC. Other arithmetic, conversions and quad-operation traps remain pending.
+CEXC. Integer/single/double conversions use integer bit arithmetic; integer
+results truncate toward zero independently of RD. Format conversion follows
+Meiko's NaN table. Other arithmetic and quad-operation traps remain pending.
 PIL is used to mask external interrupt levels. With ET=1, an interrupt above PIL is
 eligible; level 15 bypasses PIL. With ET=0, every interrupt is ignored, including
 15, without entering error state. Entry preserves PIL and uses TT=`0x10 | level`.
@@ -362,6 +364,9 @@ MACIO initialization tests cover DMA2 reset/W1C/IRQ gating, address/count chaini
 ESP FIFO and configuration, count/counter separation, reset retention and chip
 identification. SCSI regressions exercise selection timeouts, PIO/DMA inquiry,
 image block reads, sense, DMA residuals/chaining and IOMMU fault recovery.
+Writable-disk regressions cover PIO/DMA persistence, neighboring-block retention,
+partial-command abort/reset, DMA faults, host write errors, FUA/flush, zero-count
+and bounds rules, and explicit CLI access without implicit creation/truncation.
 CD mode regressions cover partial PIO/DMA parameter reception, validation before
 state changes, 512/1024/2048-byte logical blocks, cross-sector reads, reset and
 START STOP UNIT readiness and PREVENT/ALLOW media-lock reset and error sense.

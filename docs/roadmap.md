@@ -10,8 +10,8 @@ observable acceptance criteria before its status can advance.
 | 1 — CPU baseline | Complete V8 integer/privileged behavior, PSR/WIM/TBR/Y, precise traps/RETT, ASI dispatch, multiply/divide and atomics; independently checked bare-metal tests | In progress: core integer instruction groups, privileged state, synchronous traps, ASIs, doublewords and atomics implemented; implementation-specific ASRs and broader illegal-opcode classification pending |
 | 2 — Memory system | microSPARC-II reset/boot behavior and SRMMU, permissions, contexts, faults, TLB invalidation and required cache controls; translation/fault tests | In progress: translation, TLB flush/probe and cache diagnostic storage/invalidation implemented; DRAM banks and live TLB diagnostics implemented; injected PTP walks, M-bit rewalks and cache hits/fills pending |
 | 3 — Serial firmware | Original Sun OBP loading, NVRAM/IDPROM, Z8530, interrupt controller and timers; reproducible OBP prompt transcript | Device enumeration and 128 MiB RAM test complete; timer diagnostic and Ethernet loopback pass; serial BREAK returns from RARP retry to verified prompt/Forth response; parallel-port POST fault remains |
-| 4 — Storage and kernel | IOMMU, DMA, ESP SCSI, disk/CD-ROM targets and safe image writes; installer/kernel reaches serial userspace | In progress: Solaris 2.6 and 7 mount UFS CD root and reach the serial installer language prompt. ESP/DMA2 transfers, read-only images, CD modes/media locking, SCC interrupts and DMA setup registers implemented; writes, broader commands and installation remain pending |
-| 5 — Usable workstation | Required FPU behavior, LANCE networking, CGsix/TurboGX framebuffer, keyboard/mouse and host frontend; documented guest compatibility matrix | FPU state/transfers/comparisons/division/addition/subtraction/multiplication/branches and deferred IEEE exceptions implemented; other arithmetic and remaining devices pending |
+| 4 — Storage and kernel | IOMMU, DMA, ESP SCSI, disk/CD-ROM targets and safe image writes; installer/kernel reaches serial userspace | In progress: Solaris 2.6 and 7 reach the serial installer. ESP/DMA2 transfers, opt-in durable raw disk writes, CD modes/media locking, SCC interrupts and DMA setup registers implemented; broader commands and installation validation remain pending |
+| 5 — Usable workstation | Required FPU behavior, LANCE networking, CGsix/TurboGX framebuffer, keyboard/mouse and host frontend; documented guest compatibility matrix | FPU state/transfers/comparisons/division/addition/subtraction/multiplication/integer-single-double conversions/branches and deferred IEEE exceptions implemented; other arithmetic and remaining devices pending |
 | 6 — Performance and tooling | Profiling-driven optimization, optional JIT checked against interpreter, monitor/GDB, snapshots and automated guest runs | Planned |
 
 FPU implementation can move earlier when firmware or a selected guest requires
@@ -48,8 +48,8 @@ OBP continues through enumeration and the full 128 MiB memory test, transmits
 RARP requests and retries when no server replies. A decoded serial BREAK
 returns to `ok`; a Forth command returns `3` and another prompt. Clean POST,
 The CGsix/keyboard console and SCSI target-discovery milestones are complete.
-OS boot, SCSI writes/broader commands and a host network backend remain unfinished.
-Widening multiplication, square roots, conversions
+Installed-system boot, broader SCSI commands and a host network backend remain unfinished.
+Widening multiplication, square roots, quad conversions
 and quad/unfinished FPU traps also remain pending.
 Ordinary cache hits/fills, injected PTP walks and diagnostic M-bit rewalks
 remain explicit gaps; diagnostic storage alone is not a complete cache model.

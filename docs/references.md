@@ -26,9 +26,10 @@ test rather than assuming either emulator defines the hardware.
   [fpu.md](fpu.md) records the implemented subset and explicit choices.
   B.34 and N.3–N.4 define FCMP versus FCMPE NaN behavior and inhibited
   FCC/AEXC updates for enabled invalid exceptions. B.34 defines FDIVs/d, FADDs/d,
-  FSUBs/d and FMULs/d encodings;
+  FSUBs/d, FMULs/d and integer/single/double conversion encodings and rounding;
   N.4–N.6 define default NaNs, overflow after rounding, tininess before rounding,
-  exact-tiny traps with UFM enabled and the UF/NX priority table. Table 7-1 puts privilege,
+  exact-tiny traps with UFM enabled and the UF/NX priority table. N.7 defines
+  signed integer range limits after truncation. Table 7-1 puts privilege,
   EF and alignment ahead of an FP exception, ahead of data-access faults.
 - [Sun microSPARC-II User's Manual, revision 1.1, July 1994](https://temlib.org/pub/SparcStation/Hardware/Sparc32/microSPARC-II-UsersManual2.pdf):
   primary hardware manual hosted by Temlib. Chapter 5 (tables 9, 18, 19, 23–28
@@ -77,6 +78,9 @@ test rather than assuming either emulator defines the hardware.
   multiplication (always completed in hardware, possibly via Meiko restart)
   from FsMULd's possible unfinished exception. The current emulator implements
   FMULs/d without multiplier pipeline timing; widening multiplication is pending.
+  Figure 4.9 was visually checked for format/integer conversion NaNs, including
+  FDTOS canonicalization and FSTOI/FDTOI positive quiet NaNs. These chip rules
+  override V8 N.4/N.7's generic recommendations; see [fpu.md](fpu.md).
 - [Sun SBus I/O Chipset Data Manual, NCR89C100, revision 1.0](https://bitsavers.trailing-edge.com/pdf/sun/sparc/801-3137-10_SPARCclassic_Engine_OEM_Technical_Manual_Part_Three_IO_Chipset_Apr1993.pdf):
   chip-level address map (table 2-7, footnote 3 explicitly permits narrow ID
   reads; inspected visually) and chapter 3 pages 3-6–3-7 and 3-26–3-33 define MACIO
@@ -209,9 +213,18 @@ and 2048-byte CD blocks and validates the entire MODE SELECT list before a chang
 Clause 9's START STOP UNIT defines the readiness command used by OBP;
 section 9.2.4 defines PREVENT ALLOW MEDIUM REMOVAL, its one-bit lock and
 hard-reset clearing. Solaris locks the CD before mounting its root filesystem.
+Sections 9.1.6, 9.2.18 and 9.2.20–9.2.21 define cache/FUA semantics,
+SYNCHRONIZE CACHE and WRITE(6)/(10). The writable raw disk stages complete
+commands and flushes host data before GOOD; it has no volatile write cache.
 The [OpenBoot 2.x Command Reference](https://docs.oracle.com/cd/E19683-01/806-2906-10/806-2906-10.pdf),
 page 70, documents `ttya output` for routing firmware/bootloader output to serial
 without changing keyboard input.
+
+SCSI-2 section 9.3.3.3/table 163 and 9.3.3.7/table 171 define the disk format
+and rigid geometry pages. Helios advertises fixed virtual geometry, zero
+changeable masks, and no saved pages. The pinned QEMU `scsi-disk.c` geometry
+page was checked for field positions and disabled precompensation/reduced-current
+encoding; its configurable host geometry does not define Helios's raw target.
 
 ## QEMU
 
@@ -321,6 +334,12 @@ to SoftFloat. QEMU's corresponding `do_env_fff`/`do_env_ddd` dispatch reads both
 operands before calling helpers and writing the result. Helios implements the
 integer arithmetic independently and retains its microSPARC-II deferred state
 machine; no pipeline timing or QEMU/MAME differential conformance is claimed.
+FITOS/FITOD follow V8 B.34's signed 32-bit input semantics. MAME's
+[src/devices/cpu/sparc/sparc.cpp at ed59c15](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/cpu/sparc/sparc.cpp)
+`i32_to_f32`/`i32_to_f64` and QEMU's
+[target/sparc/fop_helper.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/fop_helper.c)
+`int32_to_float32`/`int32_to_float64` calls were checked independently; Helios
+constructs the bits directly and uses its existing deferred exception path.
 
 ## Provenance
 

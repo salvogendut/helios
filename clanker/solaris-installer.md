@@ -2,8 +2,13 @@
 
 The user asked to continue booting the CDs after committing/pushing the
 bootloader milestone. Both Solaris 2.6 and 7 now reach `Select a Language`
-on TTYA. Stop before installation choices; no hard disk is attached and media
-are opened read-only. The user subsequently requested commit/push of this work.
+on TTYA. That milestone stopped before installation choices, with no hard disk
+attached and read-only media. It was committed/pushed as
+`c813968f9ceb1f609566800b79e81d8dd61d91a1`; all four CI jobs passed at
+https://github.com/salvogendut/helios/actions/runs/42351036093.
+The user then authorized writable-disk support and an installation attempt,
+choosing Solaris 7 first on a new 2 GiB image. That newer request supersedes
+this checkpoint's stopping restriction.
 
 The previous bootloader milestone is `cf8f991d423b502c6ec93035c970e326d6ccd41b`,
 pushed to main. All four CI jobs passed:

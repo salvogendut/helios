@@ -22,7 +22,7 @@ completing device enumeration and its 128 MiB RAM test. The processor timer
 and Ethernet internal-loopback diagnostics now pass. Network boot transmits
 RARP requests through a headless packet endpoint; serial BREAK returns to the
 monitor, where `1 2 + .` returns `3`. The remaining POST fault is an unimplemented
-parallel-port DMA register. OS boot remains unverified. See the
+parallel-port DMA register. Installed-system boot remains unverified. See the
 [latest firmware checkpoint](docs/firmware.md#timer-and-ethernet-bring-up).
 
 The optional **graphical console** now runs the original TurboGX FCode ROM and
@@ -33,12 +33,15 @@ device subset and [the graphical checkpoint](docs/firmware.md#graphical-obp-cons
 
 **`probe-scsi-all` now lists attached disk and CD-ROM targets and returns to `ok`**
 in original OBP. Both frontends accept `--disk disk.raw` (ID 3) and
-`--cdrom cdrom.iso` (ID 6). Images are currently read-only; block reads and
-capacity reporting are implemented. Solaris 2.6 and Solaris 7 CDs now load
+`--cdrom cdrom.iso` (ID 6). These options keep images read-only;
+`--disk-rw disk.raw` explicitly enables persistent writes to an existing disk.
+Block reads/writes, capacity reporting and cache flushing are implemented.
+Solaris 2.6 and Solaris 7 CDs now load
 their kernels, mount the CD's UFS root filesystem, and reach the installer's
 **Select a Language** prompt on TTYA. Serial interrupts and the DMA register
-behavior needed during device setup are implemented. Tests stop before making
-installation choices; an installed system remains unverified.
+behavior needed during device setup are implemented. Solaris 7 now recognizes a writable 2 GiB disk and has begun installing
+packages after creating its filesystems. Installation completion and
+installed-system boot remain unverified.
 See [SCSI storage](docs/scsi.md).
 
 The implemented foundation includes:
@@ -56,9 +59,10 @@ The implemented foundation includes:
   synchronous STBAR. Precise traps save PC/nPC, rotate windows and enter a guest
   handler; faults with traps disabled latch CPU error state.
 - Initial FPU state, single/double transfers, FSR, moves, comparisons, division,
-  addition/subtraction, multiplication and floating-point branches, plus disabled/deferred traps
+  addition/subtraction, multiplication, integer/single/double conversions and floating-point
+  branches, plus disabled/deferred traps
   and queue draining. Implemented arithmetic supports all rounding modes and IEEE
-  exception flags; widening multiplication, square roots and conversions remain pending.
+  exception flags; widening multiplication, square roots and quad conversions remain pending.
 - Word-backed RAM and ROM, big-endian byte lanes, checked mappings and accesses,
   raw image loading, instruction tracing, and focused CPU/bus tests.
 - Alternate-space byte, halfword, word and doubleword loads/stores and atomic
@@ -95,7 +99,7 @@ The implemented foundation includes:
 Unsupported emulator behavior remains a host stop, separate from guest traps.
 Implementation-specific ASRs, broader illegal-opcode classification, remaining TLB
 diagnostic modes, cache hit/fill behavior, remaining FPU arithmetic/conversions, quad-operation traps,
-serial bit timing, SCSI writes and broader command support, a host network backend
+serial bit timing, broader SCSI command support, a host network backend
 and broader graphics acceleration remain to be implemented. There is no general firmware or OS compatibility
 claim.
 

@@ -6,6 +6,7 @@ const FSR_WRITABLE: u32 = 0xcf80_0fff; // RD, TEM, FCC, AEXC, CEXC; NS is zero
 const FSR_FTT: u32 = 7 << 14;
 const FSR_FCC: u32 = 3 << 10;
 mod addition;
+mod conversion;
 mod division;
 mod ieee;
 mod multiplication;
@@ -136,6 +137,36 @@ impl Fpu {
             self.status = (self.status & !(FSR_FTT | 0x1f)) | flags | (flags << 5);
             true
         }
+    }
+
+    pub(crate) fn convert(&mut self, opf: u32, rd: u8, rs2: u8, pc: u32, instruction: u32) -> bool {
+        let double = matches!(opf, 0xc8 | 0xc9);
+        let rounding = self.status >> 30;
+        let (result, flags) = match opf {
+            0xc4 | 0xc8 => conversion::from_integer(self.read_reg(rs2), double, rounding),
+            0xd1 => conversion::to_integer(u64::from(self.read_reg(rs2)), false),
+            0xd2 => conversion::to_integer(self.pair(rs2), true),
+            0xc6 | 0xc9 => conversion::between_formats(
+                if double {
+                    u64::from(self.read_reg(rs2))
+                } else {
+                    self.pair(rs2)
+                },
+                double,
+                rounding,
+                self.status & (ieee::UF << 23) != 0,
+            ),
+            _ => return false,
+        };
+        if self.complete_exceptions(flags, pc, instruction) {
+            if double {
+                self.write_reg(rd & !1, (result >> 32) as u32);
+                self.write_reg(rd | 1, result as u32);
+            } else {
+                self.write_reg(rd, result as u32);
+            }
+        }
+        true
     }
 
     pub(crate) fn binary(

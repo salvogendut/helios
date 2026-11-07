@@ -165,7 +165,7 @@ fn worker(
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let usage = "Usage: helios-ui SS5_PROM TURBOGX_ROM [--nvram IMAGE] [--nvram-out NEW_IMAGE] [--disk RAW_IMAGE] [--cdrom ISO_IMAGE]\nImages are read-only: disk at SCSI ID 3 (512-byte blocks), CD-ROM at ID 6 (2048-byte sectors).";
+    let usage = "Usage: helios-ui SS5_PROM TURBOGX_ROM [--nvram IMAGE] [--nvram-out NEW_IMAGE] [--disk RAW_IMAGE | --disk-rw RAW_IMAGE] [--cdrom ISO_IMAGE]\nDisk at SCSI ID 3 (512-byte blocks); --disk-rw permits guest writes to an existing image.\n--disk and CD-ROM at ID 6 (2048-byte sectors) remain read-only. Images are never created or truncated.";
     let Some(prom) = args.next() else {
         return Err(usage.into());
     };
@@ -177,6 +177,7 @@ fn run() -> Result<(), String> {
     let mut nvram = Nvram::default();
     let mut nvram_out = None;
     let mut disk = None;
+    let mut disk_writable = false;
     let mut cdrom = None;
     while let Some(option) = args.next() {
         match option.to_str() {
@@ -192,13 +193,14 @@ fn run() -> Result<(), String> {
                 }
                 nvram_out = Some(path);
             }
-            Some("--disk") => {
+            Some("--disk" | "--disk-rw") => {
                 if disk
-                    .replace(PathBuf::from(args.next().ok_or("Missing --disk path")?))
+                    .replace(PathBuf::from(args.next().ok_or("Missing disk path")?))
                     .is_some()
                 {
-                    return Err("--disk supplied more than once".into());
+                    return Err("Choose one --disk or --disk-rw image".into());
                 }
+                disk_writable = option == "--disk-rw";
             }
             Some("--cdrom") => {
                 if cdrom
@@ -219,13 +221,13 @@ fn run() -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     for (id, kind, path) in [(3, MediaKind::Disk, disk), (6, MediaKind::Cdrom, cdrom)] {
         if let Some(path) = path {
-            machine
-                .bus
-                .devices_mut()
-                .unwrap()
-                .scsi
-                .attach(id, kind, &path)
-                .map_err(|error| format!("SCSI ID {id}, {}: {error}", path.display()))?;
+            let scsi = &mut machine.bus.devices_mut().unwrap().scsi;
+            let result = if kind == MediaKind::Disk && disk_writable {
+                scsi.attach_disk_rw(id, &path)
+            } else {
+                scsi.attach(id, kind, &path)
+            };
+            result.map_err(|error| format!("SCSI ID {id}, {}: {error}", path.display()))?;
         }
     }
     machine

@@ -3,14 +3,49 @@
 Helios implements the initial FPU state and transfer subset: 32 word registers,
 LDF/LDDF/LDFSR, STF/STDF/STFSR, FMOVs/FNEGs/FABSs and all FBfcc conditions.
 Single/double comparisons, division, addition/subtraction and multiplication, deferred IEEE
-exceptions, sequence errors and STDFQ queue draining are implemented. Conversions,
-other arithmetic, quad-operation traps and unfinished operations remain explicit
+exceptions, sequence errors and STDFQ queue draining are implemented. Integer, single and
+double precision conversions are implemented. Other arithmetic, quad-operation traps and unfinished operations remain explicit
 emulator stops when the FPU is enabled.
 
 The primary sources are SPARC V8 sections 4.4, 5.1.7 and 7, appendices B.2,
-B.5, B.22, B.34 and N.3–N.6, and the microSPARC-II User's Manual sections
-4.3–4.5, especially figure 4.8 and table 6. [References](references.md) records the manual and pinned
+B.5, B.22, B.34 and N.3–N.7, and the microSPARC-II User's Manual sections
+4.3–4.5, especially figures 4.8–4.9 and table 6. [References](references.md) records the manual and pinned
 QEMU/MAME comparisons.
+
+## Conversions
+
+FITOS (`opf=0xc4`) and FITOD (`opf=0xc8`) interpret the source FP word as a
+signed 32-bit integer. FITOD is always exact; FITOS rounds with FSR.RD and
+raises NX when low integer bits cannot be represented. Both preserve FCC and
+accrued exceptions, clear stale CEXC/FTT on exact completion, and use the same
+deferred exception path as arithmetic. An enabled NX inhibits the destination
+and AEXC update. Integer bit operations produce the result without host floating
+point. The source word is read before either destination word is written;
+double destinations use the established containing-pair convention.
+
+FSTOI (`0xd1`) and FDTOI (`0xd2`) always truncate toward zero, independently
+of RD. Fractional results raise NX; NaN, infinity and results outside signed
+32-bit range raise NV. Range is checked after truncation, so -2147483648.75
+produces -2147483648 with NX. Numeric invalid results saturate by operand sign.
+
+FSTOD (`0xc9`) widens all finite values exactly. FDTOS (`0xc6`) rounds once,
+including gradual underflow, tininess before rounding and overflow after
+rounding. Exact tiny results raise UF only when UFM is enabled. Signed zero
+and infinity retain their sign in both directions.
+
+NaNs follow microSPARC-II figure 4.9 (visually checked), which differs from
+V8's recommended defaults. FSTOD preserves quiet payloads with sign cleared
+and canonicalizes signaling inputs to the double ME_NaN. FDTOS returns the
+single ME_NaN for every NaN. Only signaling NaNs raise NV on format conversion.
+For integer conversion every NaN raises NV; a positive quiet NaN returns the
+32-bit ME_NaN word (`0x7fff0000`), other positive invalid operands return
+`0x7fffffff`, and negative invalid operands return `0x80000000`.
+
+All conversions preserve FCC, read the complete source before writing any
+result, and use the same exception/queue handling as arithmetic. Quad
+conversions remain explicit host stops. QEMU's pinned round-to-zero helpers
+agree with V8 for integer results; MAME passes a general SoftFloat rounding
+mode for FSTOI/FDTOI, so that call is not used as a rounding oracle.
 
 ## Register state and transfers
 
@@ -256,7 +291,7 @@ There is no fabricated pipeline occupancy or host-dependent completion order.
 An unsupported FPop in execution state remains a retryable
 `UnsupportedInstruction` host stop. In pending/exception state the architectural
 state checks take precedence, just as they do for supported FP instructions.
-Widening multiplication, square roots, conversions, quad-operation traps and
+Widening multiplication, square roots, quad conversions/operation traps and
 unfinished operations remain pending; this is not a complete IEEE arithmetic implementation.
 
 ## Validation and firmware
@@ -266,6 +301,15 @@ combinations, signed displacements, wrapped addresses, masks, exception priority
 delay-slot trap state, MMU permissions/NF, failed doublewords, unsupported MMIO,
 SBus asynchronous stores and resets. These are focused regressions, not an FPU
 conformance suite.
+
+Conversion tests cover signed integer bounds, fractional truncation, rounding
+ties, binade carry, signed zero/infinity, exact and inexact tiny results,
+overflow thresholds, Meiko NaNs, register overlap and deferred exceptions.
+An additional local check passes 14400 finite conversion/rounding cases against
+an independent Python Fraction oracle (seed `0x535335`). It finds adjacent
+representable values by binary search over numeric encodings, independently of
+the implementation's shift/round algorithm. This supplements the directed CPU
+state tests; it is not exhaustive or a comparison against physical hardware.
 
 Comparison tests cover ordered/subnormal/infinite values, signed zeros, NaN
 classes and TEM settings, inhibited results, delayed detection, priority,

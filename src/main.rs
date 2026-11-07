@@ -20,7 +20,7 @@ Usage:
   helios run FILE [--load-address N] [--entry N] [--steps N] [--ram-mib N] [--trace]
   helios boot PROM [--steps N] [--ram-mib N] [--trace]
                    [--serial-in FILE] [--nvram FILE] [--nvram-out NEW_FILE]
-                   [--disk RAW_IMAGE] [--cdrom ISO_IMAGE]
+                   [--disk RAW_IMAGE | --disk-rw RAW_IMAGE] [--cdrom ISO_IMAGE]
 
 FILE is a raw big-endian SPARC instruction/data image, loaded into RAM.
 Addresses accept decimal or 0x-prefixed hexadecimal. Entry defaults to the load
@@ -37,11 +37,13 @@ boot and serial-demo send TTYA bytes to stdout and diagnostics to stderr.
 --serial-in supplies bytes as the guest enables and drains its receiver.
 NVRAM images contain 8192 bytes; --nvram-out creates a new file without overwriting.
 --disk attaches a read-only 512-byte/block raw disk at SCSI ID 3, LUN 0.
+--disk-rw attaches an existing raw disk at ID 3 and permits guest writes.
+Neither disk option creates or truncates an image; choose only one.
 --cdrom attaches a read-only 2048-byte/sector CD image at SCSI ID 6, LUN 0.
 sun4m clocks advance 100 ns per completed step, a functional scheduling convention.
 The library can also advance device time explicitly. Polled serial, NVRAM/RTC,
 both SCCs, counter timers, interrupt control and reset/status are installed;
-original OBP reaches its monitor; OS boot remains unverified.";
+original OBP and Solaris 2.6/7 serial installer prompts have been verified.";
 
 fn number(value: &str) -> Result<u64, Box<dyn Error>> {
     Ok(if let Some(hex) = value.strip_prefix("0x") {
@@ -276,6 +278,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             let mut nvram_in = None;
             let mut nvram_out = None;
             let mut disk = None;
+            let mut disk_writable = false;
             let mut cdrom = None;
             while let Some(option) = args.next() {
                 if option == "--trace" {
@@ -285,7 +288,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                 if boot
                     && matches!(
                         option.as_str(),
-                        "--serial-in" | "--nvram" | "--nvram-out" | "--disk" | "--cdrom"
+                        "--serial-in"
+                            | "--nvram"
+                            | "--nvram-out"
+                            | "--disk"
+                            | "--disk-rw"
+                            | "--cdrom"
                     )
                 {
                     let path = args
@@ -295,10 +303,11 @@ fn run() -> Result<(), Box<dyn Error>> {
                         "--serial-in" => serial_in = Some(path),
                         "--nvram" => nvram_in = Some(path),
                         "--nvram-out" => nvram_out = Some(path),
-                        "--disk" => {
+                        "--disk" | "--disk-rw" => {
                             if disk.replace(path).is_some() {
-                                return Err("--disk supplied more than once".into());
+                                return Err("Choose one --disk or --disk-rw image".into());
                             }
+                            disk_writable = option == "--disk-rw";
                         }
                         "--cdrom" => {
                             if cdrom.replace(path).is_some() {
@@ -359,13 +368,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             };
             for (id, kind, path) in [(3, MediaKind::Disk, disk), (6, MediaKind::Cdrom, cdrom)] {
                 if let Some(path) = path {
-                    machine
-                        .bus
-                        .devices_mut()
-                        .expect("boot devices")
-                        .scsi
-                        .attach(id, kind, &path)
-                        .map_err(|error| format!("SCSI ID {id}, {path}: {error}"))?;
+                    let scsi = &mut machine.bus.devices_mut().expect("boot devices").scsi;
+                    let result = if kind == MediaKind::Disk && disk_writable {
+                        scsi.attach_disk_rw(id, &path)
+                    } else {
+                        scsi.attach(id, kind, &path)
+                    };
+                    result.map_err(|error| format!("SCSI ID {id}, {path}: {error}"))?;
                 }
             }
             let input = serial_in

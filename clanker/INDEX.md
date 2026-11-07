@@ -32,3 +32,4 @@
 - [SCSI discovery](scsi-discovery.md): ESP/DMA2 transfers, read-only raw disk/CD-ROM images and original OBP `probe-scsi-all` listing both targets before returning to `ok`; requested stopping point reached.
 - [Solaris CD bootloader](cdrom-bootloader.md): pushed discovery milestone, CD mode/data-out support, and Solaris 2.6/7 first bootloader output; requested stopping point reached.
 - [Solaris CD installer](solaris-installer.md): original-OBP CD boot reaches both Solaris 2.6/7 serial language-selection screens; CD locking, SCC interrupts, Ethernet diagnostic status and DMA2 aliases.
+- [Writable disk installation](solaris-install-rw.md): explicit writable raw disks, durable SCSI writes and the ongoing Solaris 7 installation attempt.
