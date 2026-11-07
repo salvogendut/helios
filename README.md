@@ -34,7 +34,9 @@ device subset and [the graphical checkpoint](docs/firmware.md#graphical-obp-cons
 **`probe-scsi-all` now lists attached disk and CD-ROM targets and returns to `ok`**
 in original OBP. Both frontends accept `--disk disk.raw` (ID 3) and
 `--cdrom cdrom.iso` (ID 6). Images are currently read-only; block reads and
-capacity reporting are implemented, while OS boot remains unverified.
+capacity reporting are implemented. Solaris 2.6 and Solaris 7 CDs now enter
+their boot code and print the first verbose `Size: ... Bytes` line on TTYA.
+Runs stop there; kernel startup and installation remain unverified.
 See [SCSI storage](docs/scsi.md).
 
 The implemented foundation includes:

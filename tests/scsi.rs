@@ -367,3 +367,183 @@ fn cdrom_reads_use_2048_byte_sectors_and_dma_zero_count_means_65536() {
     assert_eq!(complete(&mut m), 0);
     assert_eq!(std::fs::read(cdrom.0.as_path()).unwrap(), bytes);
 }
+
+fn parameters(m: &mut Machine, bytes: &[u8]) {
+    for chunk in bytes.chunks(16) {
+        for &byte in chunk {
+            m.bus.write8(ESP + 8, byte).unwrap();
+        }
+        m.bus.write8(ESP + 12, 0x10).unwrap();
+        assert_eq!(irq(m).2, 0x10);
+    }
+}
+
+#[test]
+fn mode_select_cd_blocks_changes_capacity_and_reads_across_sector_boundaries() {
+    let mut m = fixture();
+    let bytes: Vec<_> = (0..8192).map(|i| (i / 512 * 43 + i % 251) as u8).collect();
+    let cdrom = attach(&mut m, MediaKind::Cdrom, &bytes);
+    select(&mut m, 6, 0, &[0x1a, 0, 0x3f, 0, 12, 0]);
+    assert_eq!(data(&mut m), [11, 0, 0, 8, 0, 0, 0, 4, 0, 0, 8, 0]);
+    assert_eq!(complete(&mut m), 0);
+    assert_eq!(
+        select(&mut m, 6, 0, &[0x15, 0x10, 0, 0, 12, 0]),
+        (0x80, 4, 0x18)
+    );
+    parameters(&mut m, &[0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 2, 0]);
+    assert_eq!(complete(&mut m), 0);
+    assert_eq!(
+        m.bus
+            .devices()
+            .unwrap()
+            .scsi
+            .target(6)
+            .unwrap()
+            .block_size(),
+        512
+    );
+    select(&mut m, 6, 0, &[0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(data(&mut m), [0, 0, 0, 15, 0, 0, 2, 0]);
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 6, 0, &[8, 0, 0, 3, 2, 0]);
+    assert_eq!(data(&mut m), bytes[1536..2560]);
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 6, 0, &[0x1a, 0, 0, 0, 12, 0]);
+    assert_eq!(data(&mut m), [11, 0, 0, 8, 0, 0, 0, 16, 0, 0, 2, 0]);
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 6, 0, &[0x1a, 8, 0x3f, 0, 4, 0]);
+    assert_eq!(data(&mut m), [3, 0, 0, 0]);
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 6, 0, &[0x1a, 0, 0xbf, 0, 12, 0]);
+    assert_eq!(data(&mut m), [11, 0, 0, 8, 0, 0, 0, 4, 0, 0, 8, 0]);
+    assert_eq!(complete(&mut m), 0);
+    m.bus.write8(ESP + 12, 3).unwrap();
+    assert_eq!(irq(&mut m).2, 0x80);
+    assert_eq!(
+        m.bus
+            .devices()
+            .unwrap()
+            .scsi
+            .target(6)
+            .unwrap()
+            .block_size(),
+        2048
+    );
+    assert_eq!(std::fs::read(cdrom.0.as_path()).unwrap(), bytes);
+}
+
+#[test]
+fn mode_select_dma_partial_parameters_commit_only_when_complete_and_valid() {
+    let mut m = fixture();
+    let _cdrom = attach(&mut m, MediaKind::Cdrom, &[0; 8192]);
+    let payload = [0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 2, 0];
+    // PF=0's descriptor form is used by older initiators too.
+    select(&mut m, 6, 0, &[0x15, 0, 0, 0, 12, 0]);
+    m.load_image(0x8000, &payload).unwrap();
+    dma(&mut m, 0xff00_0000, 6, false);
+    m.bus.write8(ESP + 12, 0x90).unwrap();
+    assert_eq!(irq(&mut m), (0x90, 4, 0x10));
+    assert_eq!(
+        m.bus
+            .devices()
+            .unwrap()
+            .scsi
+            .target(6)
+            .unwrap()
+            .block_size(),
+        2048
+    );
+    dma(&mut m, 0xff00_0006, 24, false);
+    m.bus.write8(ESP + 12, 0x90).unwrap();
+    assert_eq!(irq(&mut m), (0x83, 4, 0x10));
+    assert_eq!(m.bus.read8(ESP).unwrap(), 18);
+    assert_eq!(m.bus.read32(DMA + 4).unwrap(), 0xff00_000c);
+    assert_eq!(
+        m.bus
+            .devices()
+            .unwrap()
+            .scsi
+            .target(6)
+            .unwrap()
+            .block_size(),
+        512
+    );
+    assert_eq!(complete(&mut m), 0);
+    for (payload, asc) in [
+        (vec![0, 0, 0], 0x1a),
+        (vec![0, 0, 0, 8], 0x1a),
+        (vec![0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 3, 0], 0x26),
+        (vec![0, 0, 0, 8, 0, 0, 0, 0, 1, 0, 8, 0], 0x26),
+        // A valid descriptor followed by an unsupported page cannot partly commit.
+        (vec![0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 8, 0, 0x0e, 0], 0x26),
+    ] {
+        select(&mut m, 6, 0, &[0x15, 0x10, 0, 0, payload.len() as u8, 0]);
+        parameters(&mut m, &payload);
+        assert_eq!(complete(&mut m), 2);
+        assert_eq!(
+            m.bus
+                .devices()
+                .unwrap()
+                .scsi
+                .target(6)
+                .unwrap()
+                .block_size(),
+            512
+        );
+        select(&mut m, 6, 0, &[3, 0, 0, 0, 18, 0]);
+        let sense = data(&mut m);
+        assert_eq!((sense[2], sense[12]), (5, asc));
+        assert_eq!(complete(&mut m), 0);
+    }
+}
+
+#[test]
+fn ten_byte_mode_commands_use_eight_byte_headers_and_zero_length_is_noop() {
+    let mut m = fixture();
+    let _cdrom = attach(&mut m, MediaKind::Cdrom, &[0; 8192]);
+    select(&mut m, 6, 0, &[0x55, 0x10, 0, 0, 0, 0, 0, 0, 16, 0]);
+    parameters(&mut m, &[0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 4, 0]);
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 6, 0, &[0x5a, 0, 0x3f, 0, 0, 0, 0, 0, 16, 0]);
+    assert_eq!(
+        data(&mut m),
+        [0, 14, 0, 0, 0, 0, 0, 8, 0, 0, 0, 8, 0, 0, 4, 0]
+    );
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 6, 0, &[0x55, 0x10, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(complete(&mut m), 0);
+    assert_eq!(
+        m.bus
+            .devices()
+            .unwrap()
+            .scsi
+            .target(6)
+            .unwrap()
+            .block_size(),
+        1024
+    );
+    select(&mut m, 6, 0, &[0x15, 0x11, 0, 0, 12, 0]);
+    assert_eq!(complete(&mut m), 2); // Saving mode parameters is not supported.
+}
+
+#[test]
+fn start_stop_unit_controls_readiness_and_rejects_unsupported_eject() {
+    let mut m = fixture();
+    let _cdrom = attach(&mut m, MediaKind::Cdrom, &[0; 2048]);
+    select(&mut m, 6, 0, &[0x1b, 1, 0, 0, 0, 0]);
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 6, 0, &[0, 0, 0, 0, 0, 0]);
+    assert_eq!(complete(&mut m), 2);
+    select(&mut m, 6, 0, &[3, 0, 0, 0, 18, 0]);
+    let sense = data(&mut m);
+    assert_eq!((sense[2], sense[12], sense[13]), (2, 4, 2));
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 6, 0, &[0x1b, 1, 0, 0, 1, 0]);
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 6, 0, &[0, 0, 0, 0, 0, 0]);
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 6, 0, &[0x1b, 0, 0, 0, 2, 0]);
+    assert_eq!(complete(&mut m), 2);
+    select(&mut m, 6, 0, &[0, 0, 0, 0, 0, 0]);
+    assert_eq!(complete(&mut m), 0);
+}

@@ -681,3 +681,50 @@ Ignored `local/probes/scsi-ss5/` holds `probe.rs`, `final-run.log`, the two fixt
 images and `probe-scsi-all.png`. Both the CLI and graphical frontend accept
 `--disk PATH` and `--cdrom PATH`; see [SCSI storage](scsi.md) for formats, IDs,
 supported commands and remaining limitations.
+
+## Solaris CD bootloader output
+
+The next milestone tests the user's original Solaris media with the same
+128 MiB SS5/85, original OBP 2.15, TurboGX ROM, Type 5 keyboard and previously
+exported NVRAM (`auto-boot?` and `diag-switch?` false). Only target 6 is mounted,
+read-only. Ignored `local/media/` holds symlinks to the source files in the
+user's `Downloads/Solaris Media` directory; no media are committed.
+
+| Image | Bytes | SHA-256 |
+| --- | --- | --- |
+| `solaris_2.6_598_sparc.iso` | 565862400 | `17351669cb91a89562ed6bb23345879c4d18bd019a85085ad53f777e7b7a6b14` |
+| `SOL_7_1199_SPARC.iso` | 647147520 | `d1709cf47fe560f780af1769732a52eca706c8a1a52367136f8a8a14dd276cbf` |
+
+Both images have Sun disk-label magic `dabe` and ISO volume descriptors.
+Their volume IDs are `SOL_2_6_598_SPARC_SMCC_SVR` and `SOL_7_1199_SPARC`.
+The source hashes match before and after the tests.
+
+At step 60000000 the probe queues real keyboard events for `ttya output`, then
+`boot cdrom -v`. Firmware selects
+`/iommu/sbus/espdma@5,8400000/esp@5,8800000/sd@6,0:d`. Both runs execute their
+first boot-block instruction at PC `00004000`, step 116142551. After spinner
+characters, the first completed bootloader output lines are:
+
+| Image | Serial line | Stop step |
+| --- | --- | --- |
+| Solaris 2.6 5/98 | `Size: 243560+176918+41926 Bytes` | 149954625 |
+| Solaris 7 11/99 | `Size: 255664+158146+39070 Bytes` | 148968160 |
+
+The stop condition is the first newline after non-whitespace serial output
+following boot-block entry. No firmware output or boot data are injected.
+Neither run attempts kernel startup beyond that point. This demonstrates
+loading/executing CD boot code and its first verbose output, not a complete OS
+boot or installation.
+
+The traces include INQUIRY, START STOP UNIT, REQUEST SENSE, MODE SENSE(6) and
+READ(6), with 32 logical blocks transferred as 65536 bytes through the IOMMU.
+These firmware/bootloader paths use native 2048-byte logical blocks and do not
+issue MODE SELECT. Separate regressions verify 512-byte mode selection and its
+capacity/read mapping; it is available when requested by guest software.
+The newly implemented START STOP UNIT eliminates the earlier unsupported-opcode
+response, while reset UNIT ATTENTION remains a real guest-visible condition.
+
+Ignored `local/probes/cdrom-ss5/serial-probe.rs` reproduces the runs. Its
+`sol26-serial.log` / `sol7-serial.log` contain controller and step traces;
+`sol26-serial-serial.log` / `sol7-serial-serial.log` contain raw TTYA bytes,
+including backspace-driven spinners. Both runs stop at the requested milestone.

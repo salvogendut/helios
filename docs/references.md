@@ -194,6 +194,15 @@ for block addressing, READ(6)/(10) and READ CAPACITY; and
 [clause 14, CD-ROM](https://www.staff.uni-mainz.de/tacke/scsi/SCSI2-14.html)
 for removable type 5 and CD logical blocks. HELIOS inquiry strings describe
 our synthetic targets, not a claim to reproduce a particular OEM drive.
+Clause 8 sections 8.2.8–8.2.11 define six-/ten-byte mode commands, parameter-list
+validation and current/default/saved modes. Clause 14.1.2 defines CD logical
+block mapping; 14.3.3 defines the CD-specific mode header and density codes.
+CD headers have no disk-style write-protect bit. The library models 512, 1024
+and 2048-byte CD blocks and validates the entire MODE SELECT list before a change.
+Clause 9's START STOP UNIT defines the readiness command used by OBP.
+The [OpenBoot 2.x Command Reference](https://docs.oracle.com/cd/E19683-01/806-2906-10/806-2906-10.pdf),
+page 70, documents `ttya output` for routing firmware/bootloader output to serial
+without changing keyboard input.
 
 ## QEMU
 
@@ -219,6 +228,7 @@ Reference revision: `f71afb409a87c4ecd0f9d63a5963eb645dfab780` (inspected 2026-1
 | Source | Use |
 | --- | --- |
 | [hw/scsi/esp.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/scsi/esp.c) | Independent selection, CDB, data/status/message phase and IRQ comparison; NCR primary timeout/register semantics take precedence |
+| [hw/scsi/scsi-disk.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/scsi/scsi-disk.c) | MODE SELECT header lengths, descriptor parsing and block-size comparison; its per-device quirks do not define the HELIOS target |
 | [hw/net/pcnet.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/net/pcnet.c) | LANCE-format DMA and packet/metadata byte-order comparison; PCnet extensions do not define NCR92C990 |
 | [SPARC system overview](https://www.qemu.org/docs/master/system/target-sparc.html) | Machine/peripheral inventory and firmware context |
 | [hw/sparc/sun4m.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/sparc/sun4m.c) | SS-5 profile, physical addresses, wiring and firmware interfaces |
@@ -258,6 +268,8 @@ The same revision's [src/devices/machine/ncr53c90.cpp](https://github.com/mamede
 was checked for selection timeout, FIFO handshakes and transfer-count/IRQ
 sequencing. Helios uses a functional byte interface rather than modeling each
 SCSI signal edge.
+The same revision's [src/devices/bus/nscsi/cd.cpp](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/bus/nscsi/cd.cpp)
+provides a separate CD block-size and MODE SELECT descriptor comparison.
 
 CPU reference revision: `cd883a1be2fe0d120bfe594b0efcab5751ae565b`
 (inspected 2026-11-06). A local checkout is also available at `../mame`; its

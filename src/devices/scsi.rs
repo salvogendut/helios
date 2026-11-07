@@ -23,15 +23,29 @@ impl MediaKind {
 pub struct ScsiTarget {
     image: File,
     kind: MediaKind,
-    blocks: u64,
+    image_bytes: u64,
+    block_size: u32,
     sense: [u8; 3],
     unit_attention: bool,
+    started: bool,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub(crate) struct Response {
     pub data: Vec<u8>,
     pub status: u8,
+    /// `data` is a parameter buffer to fill during DATA OUT before completion.
+    pub data_out: bool,
+}
+
+impl std::fmt::Debug for Response {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Response")
+            .field("data_len", &self.data.len())
+            .field("status", &self.status)
+            .field("data_out", &self.data_out)
+            .finish()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -63,9 +77,11 @@ impl ScsiBus {
         self.targets[usize::from(id)] = Some(ScsiTarget {
             image,
             kind,
-            blocks: size / block_size,
+            image_bytes: size,
+            block_size: kind.block_size(),
             sense: [0; 3],
             unit_attention: false,
+            started: true,
         });
         Ok(())
     }
@@ -78,6 +94,7 @@ impl ScsiBus {
         for target in self.targets.iter_mut().flatten() {
             target.unit_attention = true;
             target.sense = [6, 0x29, 0];
+            target.block_size = target.kind.block_size();
         }
     }
 
@@ -87,6 +104,13 @@ impl ScsiBus {
             .expect("selected SCSI target")
             .execute(lun, cdb)
     }
+
+    pub(crate) fn complete_data_out(&mut self, id: u8, cdb: &[u8], data: &[u8]) -> Response {
+        self.targets[usize::from(id)]
+            .as_mut()
+            .expect("selected SCSI target")
+            .mode_select(cdb, data)
+    }
 }
 
 impl ScsiTarget {
@@ -94,14 +118,17 @@ impl ScsiTarget {
         self.kind
     }
     pub fn blocks(&self) -> u64 {
-        self.blocks
+        self.image_bytes / u64::from(self.block_size)
+    }
+    pub fn block_size(&self) -> u32 {
+        self.block_size
     }
 
     fn check(&mut self, key: u8, asc: u8) -> Response {
         self.sense = [key, asc, 0];
         Response {
             status: 2,
-            data: Vec::new(),
+            ..Response::default()
         }
     }
 
@@ -113,8 +140,22 @@ impl ScsiTarget {
             self.unit_attention = false;
             return self.check(6, 0x29);
         }
+        if !self.started && matches!(cdb[0], 0x00 | 0x08 | 0x25 | 0x28) {
+            let response = self.check(2, 4);
+            self.sense[2] = 2; // Logical unit not ready, initializing command required.
+            return response;
+        }
         let data = match cdb[0] {
             0x00 => Vec::new(), // TEST UNIT READY: mounted, present media.
+            0x1b => {
+                // START STOP UNIT, including IMMED. Functional spin-up is
+                // immediate; eject/load is outside the fixed-media backend.
+                if cdb[1] & 0x1e != 0 || cdb[4] & !1 != 0 {
+                    return self.check(5, 0x24);
+                }
+                self.started = cdb[4] & 1 != 0;
+                Vec::new()
+            }
             0x03 => {
                 let sense = if lun == 0 { self.sense } else { [5, 0x25, 0] };
                 let mut data = vec![0; 18];
@@ -164,8 +205,8 @@ impl ScsiTarget {
                     return self.check(5, 0x24);
                 }
                 let mut data = Vec::with_capacity(8);
-                data.extend_from_slice(&((self.blocks - 1) as u32).to_be_bytes());
-                data.extend_from_slice(&self.kind.block_size().to_be_bytes());
+                data.extend_from_slice(&((self.blocks() - 1) as u32).to_be_bytes());
+                data.extend_from_slice(&self.block_size.to_be_bytes());
                 data
             }
             0x08 | 0x28 => {
@@ -181,10 +222,10 @@ impl ScsiTarget {
                         u32::from(u16::from_be_bytes([cdb[7], cdb[8]])),
                     )
                 };
-                if u64::from(lba) + u64::from(count) > self.blocks {
+                if u64::from(lba) + u64::from(count) > self.blocks() {
                     return self.check(5, 0x21);
                 }
-                let block_size = self.kind.block_size();
+                let block_size = self.block_size;
                 // READ(10) bounds this buffer to 65535 * 2048 bytes.
                 let mut data = vec![0; (count * block_size) as usize];
                 if self
@@ -198,24 +239,113 @@ impl ScsiTarget {
                 data
             }
             0x0a | 0x2a => return self.check(7, 0x27), // Write protected.
-            0x1a => {
-                // MODE SENSE(6): header and block descriptor, no pages yet.
-                if cdb[2] & 0x3f != 0 {
+            0x15 | 0x55 => {
+                // MODE SELECT(6)/(10). SP is unsupported; PF=0 permits the
+                // SCSI-1 descriptor form as well as PF=1's SCSI-2 form.
+                if cdb[1] & 0x0f != 0 {
                     return self.check(5, 0x24);
                 }
-                let mut data = vec![0, 0, 0x80, 0];
-                if cdb[1] & 8 == 0 {
-                    data[3] = 8;
-                    let blocks = self.blocks.min(0xffffff) as u32;
-                    data.extend_from_slice(&blocks.to_be_bytes());
-                    data.extend_from_slice(&self.kind.block_size().to_be_bytes());
+                let length = if cdb[0] == 0x15 {
+                    usize::from(cdb[4])
+                } else {
+                    usize::from(u16::from_be_bytes([cdb[7], cdb[8]]))
+                };
+                return Response {
+                    data: vec![0; length],
+                    data_out: length != 0,
+                    status: 0,
+                };
+            }
+            0x1a | 0x5a => {
+                // No mode pages advertised yet; 3f returns all (zero) pages.
+                if !matches!(cdb[2] & 0x3f, 0 | 0x3f) {
+                    return self.check(5, 0x24);
                 }
-                data[0] = (data.len() - 1) as u8;
-                data.truncate(usize::from(cdb[4]));
+                if cdb[2] >> 6 == 3 {
+                    return self.check(5, 0x39);
+                }
+                let ten = cdb[0] == 0x5a;
+                let header = if ten { 8 } else { 4 };
+                let mut data = vec![0; header];
+                // CD-ROM's device-specific byte has no write-protect bit;
+                // its read-only nature is inherent in peripheral type 5.
+                data[if ten { 3 } else { 2 }] = if self.kind == MediaKind::Disk {
+                    0x80
+                } else {
+                    0
+                };
+                if cdb[1] & 8 == 0 {
+                    data[header - 1] = 8;
+                    let size = if cdb[2] >> 6 == 2 {
+                        self.kind.block_size()
+                    } else {
+                        self.block_size
+                    };
+                    let blocks = (self.image_bytes / u64::from(size)).min(0xffffff) as u32;
+                    data.extend_from_slice(&blocks.to_be_bytes());
+                    data.extend_from_slice(&size.to_be_bytes());
+                }
+                if ten {
+                    data[1] = (data.len() - 2) as u8;
+                } else {
+                    data[0] = (data.len() - 1) as u8;
+                }
+                let length = if ten {
+                    usize::from(u16::from_be_bytes([cdb[7], cdb[8]]))
+                } else {
+                    usize::from(cdb[4])
+                };
+                data.truncate(length);
                 data
             }
             _ => return self.check(5, 0x20), // Invalid command operation code.
         };
-        Response { data, status: 0 }
+        Response {
+            data,
+            ..Response::default()
+        }
+    }
+
+    fn mode_select(&mut self, cdb: &[u8], data: &[u8]) -> Response {
+        let header = if cdb[0] == 0x55 { 8 } else { 4 };
+        if data.len() < header {
+            return self.check(5, 0x1a);
+        }
+        let descriptors = if header == 8 {
+            usize::from(u16::from_be_bytes([data[6], data[7]]))
+        } else {
+            usize::from(data[3])
+        };
+        if data.len() < header + descriptors {
+            return self.check(5, 0x1a);
+        }
+        // No pages yet. Validate the complete list before applying any mode.
+        if !matches!(descriptors, 0 | 8)
+            || data.len() != header + descriptors
+            || data[..header - 1].iter().any(|&b| b != 0)
+        {
+            return self.check(5, 0x26);
+        }
+        if descriptors == 0 {
+            return Response::default();
+        }
+        let descriptor = &data[header..];
+        let density_valid =
+            descriptor[0] == 0 || (self.kind == MediaKind::Cdrom && descriptor[0] == 1);
+        let blocks = u32::from_be_bytes([0, descriptor[1], descriptor[2], descriptor[3]]);
+        let size = u32::from_be_bytes([0, descriptor[5], descriptor[6], descriptor[7]]);
+        let size_valid = match self.kind {
+            MediaKind::Disk => size == 512,
+            MediaKind::Cdrom => matches!(size, 512 | 1024 | 2048),
+        };
+        if !density_valid || descriptor[4] != 0 || !size_valid {
+            return self.check(5, 0x26);
+        }
+        let capacity = self.image_bytes / u64::from(size);
+        if capacity > 1_u64 << 32 || (blocks != 0 && u64::from(blocks) != capacity.min(0xffffff)) {
+            return self.check(5, 0x26);
+        }
+        self.block_size = size;
+        Response::default()
     }
 }

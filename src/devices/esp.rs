@@ -12,6 +12,8 @@ enum Work {
     Command,
     Execute,
     DataIn,
+    DataOut,
+    CompleteDataOut,
     Status,
     Message,
 }
@@ -274,7 +276,7 @@ impl Esp {
             if matches!(code, 0x41 | 0x42) {
                 return Err(BusErrorKind::Unsupported("ESP selection while connected"));
             }
-            if code == 0x10 && !matches!(self.status & 7, 1 | 2 | 3 | 7) {
+            if code == 0x10 && !matches!(self.status & 7, 0..=3 | 7) {
                 return Err(BusErrorKind::Unsupported("ESP transfer phase"));
             }
             if (code == 0x11 && self.status & 7 != 3) || (code == 0x12 && self.status & 7 != 7) {
@@ -347,6 +349,7 @@ impl Esp {
             0x10 => {
                 self.complete_sequence = false;
                 self.work = match self.status & 7 {
+                    0 => Work::DataOut,
                     1 => Work::DataIn,
                     2 => Work::Command,
                     3 => Work::Status,
@@ -421,7 +424,13 @@ impl Esp {
                 // A CDB supplies the legacy LUN when no IDENTIFY was sent.
                 self.response = bus.execute(self.destination, self.lun, &self.cdb);
                 self.data_offset = 0;
-                self.phase(if self.response.data.is_empty() { 3 } else { 1 });
+                self.phase(if self.response.data_out {
+                    0
+                } else if self.response.data.is_empty() {
+                    3
+                } else {
+                    1
+                });
                 let interrupt = if self.selecting {
                     self.sequence = 4;
                     0x18
@@ -430,6 +439,13 @@ impl Esp {
                 };
                 self.selecting = false;
                 self.finish(interrupt);
+                return Ok(None);
+            }
+            Work::CompleteDataOut => {
+                self.response =
+                    bus.complete_data_out(self.destination, &self.cdb, &self.response.data);
+                self.phase(3);
+                self.finish(0x10);
                 return Ok(None);
             }
             _ => {}
@@ -441,6 +457,15 @@ impl Esp {
                 self.validate_command_byte(value)?;
                 self.read(8)?;
                 self.command_byte(value);
+            } else if self.dma && self.remaining != 0 {
+                return Ok(Some(DmaRequest { write: None }));
+            }
+            return Ok(None);
+        }
+        if self.work == Work::DataOut {
+            if self.fifo_len != 0 {
+                let value = self.read(8)?;
+                self.sent_data_byte(value);
             } else if self.dma && self.remaining != 0 {
                 return Ok(Some(DmaRequest { write: None }));
             }
@@ -528,8 +553,20 @@ impl Esp {
         }
         if self.work == Work::Command {
             self.command_byte(value);
+        } else if self.work == Work::DataOut {
+            self.sent_data_byte(value);
         } else {
             self.received_byte();
+        }
+    }
+
+    fn sent_data_byte(&mut self, value: u8) {
+        self.response.data[self.data_offset] = value;
+        self.data_offset += 1;
+        if self.data_offset == self.response.data.len() {
+            self.work = Work::CompleteDataOut;
+        } else if (self.dma && self.remaining == 0) || (!self.dma && self.fifo_len == 0) {
+            self.finish(0x10);
         }
     }
 

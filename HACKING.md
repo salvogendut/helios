@@ -362,6 +362,10 @@ MACIO initialization tests cover DMA2 reset/W1C/IRQ gating, address/count chaini
 ESP FIFO and configuration, count/counter separation, reset retention and chip
 identification. SCSI regressions exercise selection timeouts, PIO/DMA inquiry,
 image block reads, sense, DMA residuals/chaining and IOMMU fault recovery.
+CD mode regressions cover partial PIO/DMA parameter reception, validation before
+state changes, 512/1024/2048-byte logical blocks, cross-sector reads, reset and
+START STOP UNIT readiness.
 Original OBP lists both image-backed targets with `probe-scsi-all`; see
-[SCSI storage](docs/scsi.md). OS boot is unverified. Report actual command
+[SCSI storage](docs/scsi.md). Solaris 2.6/7 CDs reach first bootloader output;
+kernel startup is unverified. Report actual command
 results, not just firmware device-node creation.
