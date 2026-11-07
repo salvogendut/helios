@@ -9,6 +9,7 @@ Sources and reference revisions are listed in [references.md](references.md).
 
 | Physical address | Device/register |
 | --- | --- |
+| `0x6c000000`–`0x6c00003f` | CS4231 audio register aperture |
 | `0x71000000`, `0x71000002` | Keyboard/mouse SCC channel B control, data (mouse) |
 | `0x71000004`, `0x71000006` | Keyboard/mouse SCC channel A control, data (keyboard) |
 | `0x71100000`, `0x71100002` | SCC channel B control, data |
@@ -257,6 +258,19 @@ not been established from schematics; only the observed byte read is modeled.
 Writes and wider accesses stop explicitly. No TCX framebuffer or register RAM
 is installed. RAM/ROM mappings cannot overlap this board input.
 
+## Crystal CS4231 audio register aperture
+
+The SS-5 onboard CS4231 occupies `0x6c000000..0x6c00003f`. Helios models the
+indirect register file used by Solaris's `audiocs` device probe: the byte ports
+at `+0`, `+4`, `+8` and `+0xc` select the index, indexed-data, status and PIO
+data registers, and the indexed bank carries codec versions `0x8a`/`0xa0`.
+Byte, halfword and word accesses share the same state; a byte or halfword write
+updates the addressed register as the small CS4231 port layout does. Control
+register 4 resets the bank when bit 0 is written. Audio DMA, sample conversion,
+codec timing and interrupts are not modeled. Software that needs actual audio
+I/O remains unsupported; the register subset exists so device discovery does
+not manufacture an SBus timeout.
+
 ## NCR89C100 SCSI DMA initialization
 
 The onboard MACIO identifies itself with the read-only word `0xfe810103` at
@@ -322,8 +336,9 @@ registers on four-byte boundaries. Implemented behavior includes:
   timeout survive reset. FIFO flags/bottom element and configuration reset.
 - Enable/disable selection commands in the disconnected state, including the
   disable command's function-complete interrupt. Targets are optional image attachments.
-- Initiator selection without/with ATN, IDENTIFY and CDB transfer, timed
-  missing-target disconnect, PIO/DMA input and status/message completion.
+- Initiator selection without/with ATN, select-with-ATN-and-stop with one-byte
+  IDENTIFY and a following message-out transfer, timed missing-target disconnect,
+  PIO/DMA input and status/message completion.
 - SCSI bus reset detection and its optional interrupt, without clearing chip
   configuration. A functional reset pulse uses 130 CCF clocks at the SS5's
   40 MHz SCSI clock (26 us for CCF=8), following the manual's approximate pulse

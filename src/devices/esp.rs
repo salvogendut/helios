@@ -13,6 +13,7 @@ enum Work {
     Execute,
     DataIn,
     DataOut,
+    MessageOut,
     CompleteDataOut,
     Status,
     Message,
@@ -51,6 +52,7 @@ pub struct Esp {
     sequence: u8,
     selection_ns: u64,
     selecting: bool,
+    stop_after_identify: bool,
     identify: bool,
     legacy_lun: bool,
     lun: u8,
@@ -90,6 +92,7 @@ impl Default for Esp {
             sequence: 0,
             selection_ns: 0,
             selecting: false,
+            stop_after_identify: false,
             identify: false,
             legacy_lun: false,
             lun: 0,
@@ -126,6 +129,7 @@ impl Esp {
         self.disconnect();
         self.sequence = 0;
         self.selection_ns = 0;
+        self.stop_after_identify = false;
         self.dma = false;
         self.remaining = 0;
         self.complete_sequence = false;
@@ -250,7 +254,10 @@ impl Esp {
         if self.test_mode && code != 0 {
             return Err(BusErrorKind::Unsupported("ESP command in chip test mode"));
         }
-        if !matches!(code, 0 | 1 | 3 | 0x10..=0x12 | 0x41 | 0x42 | 0x44 | 0x45) {
+        if !matches!(
+            code,
+            0 | 1 | 3 | 0x10..=0x12 | 0x41..=0x43 | 0x44 | 0x45
+        ) {
             return Err(BusErrorKind::Unsupported(
                 "ESP command outside asynchronous initiator subset",
             ));
@@ -273,10 +280,10 @@ impl Esp {
         }
         // Unsupported connected phases stop before changing counters/FIFO.
         if self.connected {
-            if matches!(code, 0x41 | 0x42) {
+            if matches!(code, 0x41..=0x43) {
                 return Err(BusErrorKind::Unsupported("ESP selection while connected"));
             }
-            if code == 0x10 && !matches!(self.status & 7, 0..=3 | 7) {
+            if code == 0x10 && !matches!(self.status & 7, 0..=3 | 6 | 7) {
                 return Err(BusErrorKind::Unsupported("ESP transfer phase"));
             }
             if (code == 0x11 && self.status & 7 != 3) || (code == 0x12 && self.status & 7 != 7) {
@@ -288,7 +295,7 @@ impl Esp {
             self.finish(0x40); // Illegal command, per the disconnected mode table.
             return Ok(());
         }
-        if matches!(code, 0x10 | 0x11 | 0x41 | 0x42) {
+        if matches!(code, 0x10 | 0x11 | 0x41..=0x43) {
             self.dma = value & 0x80 != 0;
         }
         if value & 0x80 != 0 {
@@ -335,13 +342,14 @@ impl Esp {
                 self.interrupt = 0x80;
                 self.irq = self.config[0] & 0x40 == 0;
             }
-            0x41 | 0x42 => {
+            0x41..=0x43 => {
                 self.sequence = 0;
                 self.cdb.clear();
                 self.response = Response::default();
                 self.data_offset = 0;
                 self.lun = 0;
-                self.identify = code == 0x42;
+                self.identify = code != 0x41;
+                self.stop_after_identify = code == 0x43;
                 self.legacy_lun = code == 0x41;
                 self.selecting = true;
                 self.work = Work::Select;
@@ -353,6 +361,7 @@ impl Esp {
                     1 => Work::DataIn,
                     2 => Work::Command,
                     3 => Work::Status,
+                    6 => Work::MessageOut,
                     7 => Work::Message,
                     _ => unreachable!(),
                 };
@@ -391,6 +400,7 @@ impl Esp {
     fn disconnect(&mut self) {
         self.connected = false;
         self.selecting = false;
+        self.stop_after_identify = false;
         self.identify = false;
         self.legacy_lun = false;
         self.work = Work::Idle;
@@ -471,6 +481,19 @@ impl Esp {
             }
             return Ok(None);
         }
+        if self.work == Work::MessageOut {
+            if self.fifo_len != 0 {
+                self.read(8)?;
+                if self.fifo_len == 0 {
+                    self.finish_message_out();
+                }
+            } else if self.dma && self.remaining != 0 {
+                return Ok(Some(DmaRequest { write: None }));
+            } else if !self.dma {
+                self.finish_message_out();
+            }
+            return Ok(None);
+        }
         let byte = match self.work {
             Work::DataIn => self.response.data[self.data_offset],
             Work::Status => self.response.status,
@@ -511,6 +534,14 @@ impl Esp {
         if self.identify {
             self.lun = value & 7;
             self.identify = false;
+            if self.stop_after_identify {
+                self.stop_after_identify = false;
+                self.selecting = false;
+                self.phase(6);
+                self.sequence = 1;
+                self.finish(0x18);
+                return;
+            }
             self.phase(2);
             self.sequence = 2;
         } else {
@@ -555,9 +586,22 @@ impl Esp {
             self.command_byte(value);
         } else if self.work == Work::DataOut {
             self.sent_data_byte(value);
+        } else if self.work == Work::MessageOut {
+            self.sent_message_byte();
         } else {
             self.received_byte();
         }
+    }
+
+    fn sent_message_byte(&mut self) {
+        if self.remaining == 0 {
+            self.finish_message_out();
+        }
+    }
+
+    fn finish_message_out(&mut self) {
+        self.phase(2);
+        self.finish(0x10);
     }
 
     fn sent_data_byte(&mut self, value: u8) {

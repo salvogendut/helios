@@ -39,9 +39,10 @@ Block reads/writes, capacity reporting and cache flushing are implemented.
 Solaris 2.6 and Solaris 7 CDs now load
 their kernels, mount the CD's UFS root filesystem, and reach the installer's
 **Select a Language** prompt on TTYA. Serial interrupts and the DMA register
-behavior needed during device setup are implemented. Solaris 7 now recognizes a writable 2 GiB disk and has begun installing
-packages after creating its filesystems. Installation completion and
-installed-system boot remain unverified.
+behavior needed during device setup are implemented. Solaris 7 also installs to
+a writable 2 GiB disk, and the installed disk boots through its UFS root filesystem,
+completes first-boot setup and reaches a console login; a `root` shell was
+verified with the root password left empty. Audio I/O remains unimplemented.
 See [SCSI storage](docs/scsi.md).
 
 The implemented foundation includes:
@@ -80,8 +81,11 @@ The implemented foundation includes:
   terminal-count pulse events, plus NCR82077 initialization, timed seek/recalibrate
   completion and interrupts. No floppy drive or media engine is attached.
 - NCR89C100 DMA2 SCSI transfers through the IOMMU, count/chaining/error handling
-  and IRQ gating; NCR53C9X selection, timed missing-target responses, PIO/DMA
-  command/data/status/message phases, and raw disk/CD-ROM targets.
+  and IRQ gating; NCR53C9X selection (including select-with-ATN-and-stop), timed
+  missing-target responses, PIO/DMA command/data/status/message phases, and raw
+  disk/CD-ROM targets.
+- The SS-5 Crystal CS4231 register aperture used by Solaris's `audiocs` probe;
+  audio DMA, sample conversion and interrupts remain unmodeled.
 - NCR89C100 Ethernet DMA and NCR92C990 initialization, single-buffer packets,
   CRC, filtering and internal loopback through the IOMMU. See [Ethernet](docs/ethernet.md).
 - SS-5 system reset/status, guest software reset and watchdog status latching;
@@ -100,8 +104,8 @@ The implemented foundation includes:
 Unsupported emulator behavior remains a host stop, separate from guest traps.
 Implementation-specific ASRs, broader illegal-opcode classification, remaining TLB
 diagnostic modes, cache hit/fill behavior, remaining FPU arithmetic/conversions, quad-operation traps,
-serial bit timing, broader SCSI command support, a host network backend
-and broader graphics acceleration remain to be implemented. There is no general firmware or OS compatibility
+serial bit timing, broader SCSI command support, audio streaming, a host network
+backend and broader graphics acceleration remain to be implemented. There is no general firmware or OS compatibility
 claim.
 
 ## Build and run

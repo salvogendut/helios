@@ -250,6 +250,7 @@ Reference revision: `f71afb409a87c4ecd0f9d63a5963eb645dfab780` (inspected 2026-1
 | Source | Use |
 | --- | --- |
 | [hw/scsi/esp.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/scsi/esp.c) | Independent selection, CDB, data/status/message phase and IRQ comparison; NCR primary timeout/register semantics take precedence |
+| [hw/audio/cs4231.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/audio/cs4231.c) | SS-5 CS4231 register array, indirect index/data bank, version bytes and control-reset comparison; audio streaming is not modeled |
 | [hw/scsi/scsi-disk.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/scsi/scsi-disk.c) | MODE SELECT header lengths, descriptor parsing and block-size comparison; its per-device quirks do not define the HELIOS target |
 | [hw/net/pcnet.c](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/net/pcnet.c) | LANCE-format DMA and packet/metadata byte-order comparison; PCnet extensions do not define NCR92C990 |
 | [SPARC system overview](https://www.qemu.org/docs/master/system/target-sparc.html) | Machine/peripheral inventory and firmware context |

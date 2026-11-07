@@ -1,6 +1,7 @@
 //! Functional workstation devices. Host I/O and scheduling belong to the caller.
 pub mod auxiliary;
 pub mod cgsix;
+pub mod cs4231;
 pub mod esp;
 pub mod ethernet;
 pub mod ethernet_dma;

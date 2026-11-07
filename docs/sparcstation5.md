@@ -15,8 +15,9 @@ The native frontend attaches it with a Type 5 US keyboard; see
 [graphics.md](graphics.md). The SS-5 service manual lists the 85 MHz board and 1 MiB TGX option;
 the SPARCengine 5 OEM manual describes this card's BT458 RAMDAC and 8-bit output.
 See [references.md](references.md). Disk capacity and media are configuration
-choices for the storage milestone. SCSI data transfers remain planned. Ethernet has a headless
-packet endpoint; see [ethernet.md](ethernet.md) for its implemented subset.
+choices for the storage milestone. SCSI data transfers and installed-system
+boot are now exercised; Ethernet has a headless packet endpoint. See
+[ethernet.md](ethernet.md) for its implemented subset.
 
 `CPU_CLOCK_HZ` records the nominal 85 MHz clock. The interpreter's 100 ns step
 quantum is a separate functional scheduling convention. Physical PROM reads add
@@ -32,7 +33,8 @@ were compared against QEMU's
 | --- | --- | --- |
 | DRAM | `0x00000000` | Eight 32 MiB apertures; default four 32 MiB DSIMMs, four empty slots |
 | SBus / IOMMU controls | `0x10000000` | Page translation, I/O flushes, slot bypass/arbitration and fault capture; RAM DMA API |
-| CGsix / TurboGX framebuffer | SBus slot aperture, to be selected | Planned; no mapping installed |
+| CGsix / TurboGX framebuffer | `0x30000000` | Console subset with VRAM, palette, cursor and acceleration registers |
+| CS4231 audio | `0x6c000000` | Indirect register/version subset; no audio DMA or interrupts |
 | Boot PROM / SLAVIO area | `0x70000000` | 1 MiB raw PROM aperture; remaining SLAVIO devices pending |
 | Keyboard/mouse serial | `0x71000000` | Second SCC with interrupts and Type 5 keyboard; mouse protocol pending |
 | Console serial | `0x71100000` | Z8530 asynchronous polling/interrupts, A/B byte ports |
@@ -42,8 +44,8 @@ were compared against QEMU's
 | Timer block | `0x71d00000` | CPU counter or 64-bit user timer here; system counter/configuration at `+0x10000` |
 | Interrupt block | `0x71e00000` | CPU pending/soft IRQs here; system pending/masks at `+0x10000` |
 | System reset/status | `0x71f00000` | Software reset, reset-cause flags; automatic CPU watchdog recovery pending |
-| DMA2 SCSI/Ethernet | `0x78400000`, `0x78400010` | SCSI register initialization; Ethernet DMA connected to IOMMU |
-| ESP SCSI | `0x78800000` | NCR53C9X register initialization, FIFO and reset; targets/data engine pending |
+| DMA2 SCSI/Ethernet | `0x78400000`, `0x78400010` | SCSI/Ethernet DMA through IOMMU |
+| ESP SCSI | `0x78800000` | NCR53C9X initiator subset, selection/message/data phases and target images |
 | NCR92C990 Ethernet | `0x78c00000` | Halfword CSR ports, initialization, packets and internal loopback |
 
 QEMU's TCX mapping at `0x50000000` describes a different graphics device and is

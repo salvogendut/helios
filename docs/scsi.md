@@ -68,15 +68,18 @@ by separate device tests. No image conversion is needed to change this mode.
 
 ## Controller and DMA behavior
 
-The ESP supports select without/with ATN (`41`/`42`), IDENTIFY, six-, ten- and
-twelve-byte CDB framing, TRANSFER INFORMATION, INITIATOR COMMAND COMPLETE and
-MESSAGE ACCEPTED. Successful selection reports sequence step 4 and function
-complete/bus service. An absent target reports disconnect at step 0 after
-`timeout * 8192 * CCF / 40 MHz`, with CCF zero encoding eight. PIO input receives
-one byte per transfer-information command; DMA supports partial transfers and
-short target replies with residual counts. Status and COMMAND COMPLETE precede
-the final disconnect. Selection/transfer interrupts require acknowledgement;
-full stacked command and interrupt queues remain unsupported.
+The ESP supports select without ATN (`41`), select with ATN (`42`), select with
+ATN and stop (`43`), IDENTIFY, six-, ten- and twelve-byte CDB framing,
+TRANSFER INFORMATION, INITIATOR COMMAND COMPLETE and MESSAGE ACCEPTED. Commands
+`41`/`42` report sequence step 4; command `43` transfers one IDENTIFY byte,
+reports sequence step 1 in the message-out phase, and accepts a following
+TRANSFER INFORMATION message transfer before command phase. An absent target
+reports disconnect at step 0 after `timeout * 8192 * CCF / 40 MHz`, with CCF zero
+encoding eight. PIO input receives one byte per transfer-information command;
+DMA supports partial transfers and short target replies with residual counts.
+Status and COMMAND COMPLETE precede the final disconnect. Selection/transfer
+interrupts require acknowledgement; full stacked command and interrupt queues
+remain unsupported.
 PIO/DMA DATA OUT now receives MODE SELECT parameter lists. Partial transfers
 retain their position; parameters take effect only after the full list passes
 validation. Invalid lists leave the previous block size intact.
@@ -149,11 +152,12 @@ count covers the remainder of the image. IMMED and relative addressing remain
 unsupported. Neither a zero-count WRITE(10) nor failed CDB validation changes
 the image; WRITE(6)'s zero count means 256 blocks.
 
-Writable overlays, media eject/load, other mode pages, CD TOC/audio, synchronous negotiation, select-with-ATN-stop,
-disconnect/reselection and target-mode ESP commands remain pending. Kernel root
-mounting and the serial language-selection prompt have been observed on both
-Solaris CDs. Solaris 7 has also begun writing an installation to a new 2 GiB
-disk; completion and installed-system boot remain unverified.
+Writable overlays, media eject/load, other mode pages, CD TOC/audio, synchronous
+negotiation, disconnect/reselection and target-mode ESP commands remain pending.
+Kernel root mounting and the serial language-selection prompt have been observed
+on both Solaris CDs. Solaris 7 has also been installed to a new 2 GiB disk; the
+installed disk boots to a console `root` shell. See
+[firmware.md](firmware.md#installed-solaris-7-disk-boot).
 
 ## Solaris CD checkpoint
 

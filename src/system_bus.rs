@@ -4,6 +4,7 @@ use crate::bus::{Bus, BusError, BusErrorKind, IoTlbFlush, MapError, MemoryBus, M
 use crate::devices::{
     auxiliary::Auxiliary,
     cgsix::{Cgsix, VRAM_BYTES, VRAM_OFFSET},
+    cs4231::Cs4231,
     esp::Esp,
     ethernet::Ethernet,
     ethernet_dma::EthernetDma,
@@ -23,6 +24,8 @@ use crate::dram::{Ss5Dram, APERTURE_BYTES};
 pub const IO_CONTROL_BASE: u64 = 0x1000_0000;
 pub const CGSIX_BASE: u64 = 0x3000_0000; // SS5 external SBus slot 1
 const CGSIX_SIZE: u64 = 0x0200_0000;
+/// SS5 onboard Crystal CS4231 audio register aperture.
+pub const CS4231_BASE: u64 = 0x6c00_0000;
 /// SS-5 board-level AFX presence byte. The selected SBus CGsix profile has
 /// no AFX card. Only the firmware-observed byte read is implemented.
 pub const AFX_PRESENCE_BASE: u64 = 0x6e00_0000;
@@ -43,9 +46,10 @@ pub const ETHERNET_DMA_BASE: u64 = 0x7840_0010;
 pub const ESP_BASE: u64 = 0x7880_0000;
 pub const ETHERNET_BASE: u64 = 0x78c0_0000;
 const MACIO_DMA_SIZE: u64 = 0x40;
-const DEVICE_RANGES: [(u64, u64); 17] = [
+const DEVICE_RANGES: [(u64, u64); 18] = [
     (IO_CONTROL_BASE, IO_CONTROL_BASE + IO_CONTROL_SIZE),
     (AFX_PRESENCE_BASE, AFX_PRESENCE_BASE + 1),
+    (CS4231_BASE, CS4231_BASE + 0x40),
     (KEYBOARD_SERIAL_BASE, KEYBOARD_SERIAL_BASE + 8),
     (SERIAL_BASE, SERIAL_BASE + 8),
     (NVRAM_BASE, NVRAM_BASE + NVRAM_SIZE as u64),
@@ -66,6 +70,7 @@ const DEVICE_RANGES: [(u64, u64); 17] = [
 #[derive(Clone, Copy)]
 enum WordDevice {
     IoControl,
+    Cs4231,
     Timer(bool),
     Interrupt(bool),
     Reset,
@@ -77,6 +82,7 @@ enum WordDevice {
 #[derive(Debug)]
 pub struct Sun4mDevices {
     pub auxiliary: Auxiliary,
+    pub cs4231: Cs4231,
     pub floppy: Floppy,
     pub io_control: IoControl,
     pub nvram: Nvram,
@@ -302,6 +308,7 @@ impl SystemBus {
         }
         self.devices = Some(Sun4mDevices {
             auxiliary: Auxiliary::default(),
+            cs4231: Cs4231::default(),
             floppy: Floppy::default(),
             io_control: IoControl::default(),
             nvram,
@@ -348,6 +355,7 @@ impl SystemBus {
         if let Some(devices) = &mut self.devices {
             devices.io_control.reset();
             devices.auxiliary.reset();
+            devices.cs4231.reset();
             devices.floppy.reset();
             devices.scsi_dma.reset();
             devices.esp.reset();
@@ -420,6 +428,7 @@ impl SystemBus {
         }
         for (base, size, device) in [
             (IO_CONTROL_BASE, IO_CONTROL_SIZE, WordDevice::IoControl),
+            (CS4231_BASE, 0x40, WordDevice::Cs4231),
             (CPU_TIMER_BASE, 0x10, WordDevice::Timer(false)),
             (SYSTEM_TIMER_BASE, 0x14, WordDevice::Timer(true)),
             (CPU_INTERRUPT_BASE, 0x10, WordDevice::Interrupt(false)),
@@ -555,6 +564,14 @@ impl Bus for SystemBus {
         if let Some(dram) = self.dram_at(address) {
             return dram.read8(address);
         }
+        if let Some(devices) = self.devices.as_ref() {
+            if (CS4231_BASE..CS4231_BASE + 0x40).contains(&address) {
+                return devices
+                    .cs4231
+                    .read_byte(address - CS4231_BASE)
+                    .map_err(|kind| BusError { address, kind });
+            }
+        }
         self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
             if (ESP_BASE..ESP_BASE + 0x40).contains(&address) {
@@ -620,6 +637,14 @@ impl Bus for SystemBus {
         self.check_floppy_access(address, 1)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.write8(address, value);
+        }
+        if let Some(devices) = self.devices.as_mut() {
+            if (CS4231_BASE..CS4231_BASE + 0x40).contains(&address) {
+                return devices
+                    .cs4231
+                    .write_byte(address - CS4231_BASE, value)
+                    .map_err(|kind| BusError { address, kind });
+            }
         }
         self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
@@ -707,6 +732,14 @@ impl Bus for SystemBus {
         if let Some(dram) = self.dram_at(address) {
             return dram.read16(address);
         }
+        if let Some(devices) = self.devices.as_ref() {
+            if (CS4231_BASE..CS4231_BASE + 0x40).contains(&address) {
+                return devices
+                    .cs4231
+                    .read_half(address - CS4231_BASE)
+                    .map_err(|kind| BusError { address, kind });
+            }
+        }
         self.memory_only(address, 2)?;
         let result = self.memory.read16(address);
         if result.is_ok() {
@@ -747,6 +780,14 @@ impl Bus for SystemBus {
         if let Some(dram) = self.dram_at(address) {
             return dram.write16(address, value);
         }
+        if let Some(devices) = self.devices.as_mut() {
+            if (CS4231_BASE..CS4231_BASE + 0x40).contains(&address) {
+                return devices
+                    .cs4231
+                    .write_half(address - CS4231_BASE, value)
+                    .map_err(|kind| BusError { address, kind });
+            }
+        }
         self.memory_only(address, 2)?;
         self.memory
             .write16(address, value)
@@ -774,6 +815,7 @@ impl Bus for SystemBus {
             devices.sync_interrupts();
             let result = match device {
                 WordDevice::IoControl => devices.io_control.read(offset),
+                WordDevice::Cs4231 => devices.cs4231.read(offset),
                 WordDevice::Timer(system) => devices.timers.read(system, offset),
                 WordDevice::Interrupt(system) => devices.interrupts.read(system, offset),
                 WordDevice::Reset => Ok(devices.reset.read()),
@@ -838,6 +880,7 @@ impl Bus for SystemBus {
             let devices = self.devices.as_mut().expect("decoded installed device");
             let result = match device {
                 WordDevice::IoControl => devices.io_control.write(offset, value),
+                WordDevice::Cs4231 => devices.cs4231.write(offset, value),
                 WordDevice::MacioId => Err(BusErrorKind::Unsupported("write to MACIO ID")),
                 WordDevice::ScsiDma => {
                     let result = devices.scsi_dma.write(offset, value);

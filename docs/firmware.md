@@ -758,7 +758,8 @@ Please wait.`, and reach the installer's `Select a Language` screen on TTYA.
 The first runs stopped as soon as that heading appeared: Solaris 2.6 at step
 1522202105 (`sol26-dma`), Solaris 7 at step 1686400176 (`sol7-alias`). No language
 selection or installation command was sent. This establishes CD boot through
-the first installer screen, not installation or an installed-system boot.
+the first installer screen, not installation or an installed-system boot; the
+later installation and disk-boot result is recorded below.
 
 Final-code repeats continued for 10 million steps after the heading and until
 at least one million steps of serial silence. Both ended with the complete
@@ -784,11 +785,35 @@ Select a Language
 
 Neither run had a host stop or kernel panic. The raw `*-serial.log` captures
 end at `?`; the probe supplied no menu input. Both ISO and firmware hashes
-still match the originals. All 348 core tests, four UI tests, fmt/Clippy checks,
+still match the originals. All 378 core tests, four UI tests, fmt/Clippy checks,
 release builds and four demos pass with this implementation.
+
+## Installed Solaris 7 disk boot
+
+The local writable installation image now boots from the original SS-5 OBP with
+the saved NVRAM and no CD attached. The run checks and mounts the UFS root on
+`sd@3,0`, configures `/dev` and `/devices`, attaches `cgsix`, `le`, the SBus
+memory nodes and `audiocs`, completes first-boot identification, and reaches
+`helios console login:`. A `root` login on `/dev/console`, with the root password
+left empty during local verification, reaches a shell prompt. Audio I/O is not
+verified. This image's `/etc/vfstab` references `c0t3d0`, so keep the disk at
+SCSI ID 3; moving it changes the guest device names and breaks the installed
+root/usr mounts.
+
+Two missing paths surfaced during this boot. Solaris issues ESP command `0xc3`
+(select with ATN and stop plus DMA) to transfer one IDENTIFY byte before sending
+a tag; the ESP now reports the message-out stop and accepts the following
+TRANSFER INFORMATION command. Solaris's `audiocs` probe also performs byte
+accesses to the CS4231 aperture at `0x6c000000`; the indirect register subset
+now responds there instead of returning an SBus timeout. Raw serial captures
+are `local/probes/solaris-install/sol7-csbyte-serial.log` and
+`local/probes/solaris-install/sol7-login-serial.log`. The earlier ASI 47 stop
+does not occur with the SS-5 PROM; it reproduces exactly at `PC=0x00026328`
+when `local/firmware/ss10-20-v2.25r-rom` is booted in the SS-5 harness. That is
+SPARCstation 10/20 firmware targeting a different machine and is not supported
+by the SS-5 profile.
 
 The configured profile remains SS5/85, but the functional 100 ns instruction
 quantum makes these kernels measure the CPU as 10 MHz and report an SBus clock
-warning. Normal CPU/cache timing is not yet an 85 MHz timing model. No installer
-completion, installed system or external networking is established by this
-kernel-startup evidence.
+warning. Normal CPU/cache timing is not yet an 85 MHz timing model. No
+external networking or audio streaming is established by this evidence.

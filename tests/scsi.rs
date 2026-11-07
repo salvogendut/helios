@@ -878,3 +878,44 @@ fn cdrom_still_rejects_writes_and_writable_attach_never_creates_missing_files() 
     assert!(m.bus.devices().unwrap().scsi.target(3).is_none());
     assert_eq!(std::fs::read(cd.0.as_path()).unwrap(), [0x81; 2048]);
 }
+
+#[test]
+fn select_with_atn_stop_sends_one_identify_and_allows_message_out_then_command() {
+    let mut m = fixture();
+    let _disk = attach(&mut m, MediaKind::Disk, &[0; 512]);
+    m.bus.write8(ESP + 16, 3).unwrap();
+    m.bus.write8(ESP + 8, 0x80).unwrap();
+    m.bus.write8(ESP + 12, 0x43).unwrap();
+    assert_eq!(irq(&mut m), (0x86, 1, 0x18));
+    m.bus.write8(ESP + 8, 0x20).unwrap();
+    m.bus.write8(ESP + 8, 0x00).unwrap();
+    m.bus.write8(ESP + 12, 0x10).unwrap();
+    assert_eq!(irq(&mut m), (0x82, 1, 0x10));
+    for &byte in &[0x12, 0, 0, 0, 36, 0] {
+        m.bus.write8(ESP + 8, byte).unwrap();
+    }
+    m.bus.write8(ESP + 12, 0x10).unwrap();
+    assert_eq!(irq(&mut m), (0x81, 1, 0x10));
+    assert_eq!(data(&mut m).len(), 36);
+    assert_eq!(complete(&mut m), 0);
+}
+
+#[test]
+fn select_with_atn_stop_dma_transfers_identify_then_tag_bytes() {
+    let mut m = fixture();
+    let _disk = attach(&mut m, MediaKind::Disk, &[0; 512]);
+    m.load_image(0x8000, &[0x80]).unwrap();
+    dma(&mut m, 0xff00_0000, 1, false);
+    m.bus.write8(ESP + 16, 3).unwrap();
+    m.bus.write8(ESP + 12, 0xc3).unwrap();
+    assert_eq!(irq(&mut m), (0x96, 1, 0x18));
+    assert_eq!(m.bus.read32(DMA + 4).unwrap(), 0xff00_0001);
+    assert_eq!(m.bus.read32(DMA + 8).unwrap(), 0);
+
+    m.load_image(0x8100, &[0x20, 0x01]).unwrap();
+    dma(&mut m, 0xff00_0100, 2, false);
+    m.bus.write8(ESP + 12, 0x90).unwrap();
+    assert_eq!(irq(&mut m), (0x92, 1, 0x10));
+    assert_eq!(m.bus.read32(DMA + 4).unwrap(), 0xff00_0102);
+    assert_eq!(m.bus.read32(DMA + 8).unwrap(), 0);
+}
