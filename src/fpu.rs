@@ -10,6 +10,7 @@ mod conversion;
 mod division;
 mod ieee;
 mod multiplication;
+mod sqrt;
 use ieee::NV;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -195,6 +196,36 @@ impl Fpu {
             0x4d | 0x4e => division::divide(a, b, double, rounding, trap_underflow),
             _ => addition::add(a, b, double, opf & 4 != 0, rounding, trap_underflow),
         };
+        if self.complete_exceptions(flags, pc, instruction) {
+            if double {
+                self.write_reg(rd & !1, (result >> 32) as u32);
+                self.write_reg(rd | 1, result as u32);
+            } else {
+                self.write_reg(rd, result as u32);
+            }
+        }
+        true
+    }
+
+    pub(crate) fn square_root(
+        &mut self,
+        opf: u32,
+        rd: u8,
+        rs2: u8,
+        pc: u32,
+        instruction: u32,
+    ) -> bool {
+        let double = match opf {
+            0x29 => false,
+            0x2a => true,
+            _ => return false,
+        };
+        let source = if double {
+            self.pair(rs2)
+        } else {
+            u64::from(self.read_reg(rs2))
+        };
+        let (result, flags) = sqrt::square_root(source, double, self.status >> 30);
         if self.complete_exceptions(flags, pc, instruction) {
             if double {
                 self.write_reg(rd & !1, (result >> 32) as u32);

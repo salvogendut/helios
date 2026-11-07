@@ -64,8 +64,14 @@ clock can be exported but will be rejected on import until repaired.
 There are two independent SCC instances: console TTYA/TTYB and keyboard/mouse.
 The latter exposes the same register, interrupt and byte-queue behavior. An optional
 Sun Type 5 keyboard implements command replies and key stations on channel A;
-mouse packets remain pending. The headless CLI connects only TTYA. The desktop
+Sun Mouse Systems packets are implemented on channel B. The headless CLI connects only TTYA. The desktop
 frontend attaches the keyboard and CGsix card; see [graphics.md](graphics.md).
+
+The mouse receiver uses channel B and the Sun Mouse Systems five-byte packet:
+`0x80 | (~buttons)` followed by two signed X/Y delta pairs. The frontend
+supplies relative motion and button changes at 1200 baud; the final pair is zero
+for this functional source. Received bytes use the same SCC receive/IRQ path as
+the keyboard. Host overrun and electrical framing are not modeled.
 
 Both channels have separate receive/transmit state and a shared control-register
 pointer. WR2 (interrupt vector) and WR9 (master/reset control) are also shared.

@@ -34,6 +34,7 @@ or assume host scheduling is guest timing.
 | `src/system_bus.rs` | Physical decoding, device widths, clock advancement and IRQ wiring |
 | `src/devices/` | NVRAM/RTC, two asynchronous SCCs, interrupt control, timers, reset/status and I/O configuration |
 | `src/serial_host.rs` | Loopback telnet serial consoles; nonblocking host I/O polled by frontends |
+| `src/net/` | User-mode NAT over the Ethernet frame endpoint: ARP/RARP, DHCP, ICMP, UDP, DNS, TFTP |
 | `src/mmu.rs` | ASI dispatch, CPU/I/O translation, shared TLB, permissions and CPU fault registers |
 | `src/dma.rs` | Machine-owned SBus DMA transfers and device-facing errors |
 | `src/cache.rs` | Cache diagnostic arrays and indexed invalidation; ordinary cache hits/fills pending |

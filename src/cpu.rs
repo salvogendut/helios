@@ -595,6 +595,7 @@ impl Cpu {
                             self.fpu.move_word(opf, rd, rs2)
                                 || self.fpu.binary(opf, rd, rs1, rs2, self.pc, word)
                                 || self.fpu.convert(opf, rd, rs2, self.pc, word)
+                                || self.fpu.square_root(opf, rd, rs2, self.pc, word)
                         } else {
                             self.fpu.compare(opf, rs1, rs2, self.pc, word)
                         };

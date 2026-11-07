@@ -5,9 +5,12 @@ use helios::machine::{
     demo_image, serial_demo_image, timer_demo_image, trap_demo_image, Machine, CPU_CLOCK_HZ,
     DEFAULT_RAM_BYTES, TARGET,
 };
+use helios::net::{NatConfig, NatEngine, DNS_PORT};
 use helios::serial_host::TcpSerial;
 use std::error::Error;
 use std::io::Write;
+use std::net::{Ipv4Addr, SocketAddrV4};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 const HELP: &str = "Helios — Sun SPARC emulator foundation
@@ -23,6 +26,8 @@ Usage:
                    [--serial-in FILE] [--serial-port-a PORT] [--serial-port-b PORT]
                    [--nvram FILE] [--nvram-out NEW_FILE]
                    [--disk RAW_IMAGE | --disk-rw RAW_IMAGE] [--cdrom ISO_IMAGE]
+                   [--net] [--net-gateway IP] [--net-client IP] [--net-mask IP]
+                   [--net-dns IP] [--tftp-dir DIR]
 
 FILE is a raw big-endian SPARC instruction/data image, loaded into RAM.
 Addresses accept decimal or 0x-prefixed hexadecimal. Entry defaults to the load
@@ -45,6 +50,10 @@ new file without overwriting.
 --disk-rw attaches an existing raw disk at ID 3 and permits guest writes.
 Neither disk option creates or truncates an image; choose only one.
 --cdrom attaches a read-only 2048-byte/sector CD image at SCSI ID 6, LUN 0.
+--net enables the user-mode NAT (guest 192.168.0.2, gateway 192.168.0.1,
+mask 255.255.255.0, DHCP/RARP, DNS relay and UDP). --net-gateway, --net-client,
+--net-mask and --net-dns override its addresses. --tftp-dir adds the read-only
+TFTP server for network boot. TCP NAT is not implemented yet.
 sun4m clocks advance 100 ns per completed step, a functional scheduling convention.
 The library can also advance device time explicitly. Polled serial, NVRAM/RTC,
 both SCCs, counter timers, interrupt control and reset/status are installed;
@@ -78,6 +87,7 @@ fn execute(
     trace: bool,
     console_input: Option<&[u8]>,
     ports: &mut SerialPorts,
+    mut network: Option<&mut NatEngine>,
 ) -> Result<(), Box<dyn Error>> {
     let mut instructions = 0u64;
     let mut traps = 0u64;
@@ -129,6 +139,22 @@ fn execute(
                     if !bytes.is_empty() {
                         if let Some(host) = ports.b.as_mut() {
                             host.send(&bytes);
+                        }
+                    }
+                }
+            }
+        }
+        if step.is_ok() {
+            if let Some(net) = network.as_mut() {
+                if let Some(devices) = machine.bus.devices_mut() {
+                    let now = std::time::Instant::now();
+                    while let Some(frame) = devices.ethernet.take_frame() {
+                        net.input(&frame, now);
+                    }
+                    net.poll(now);
+                    while let Some(frame) = net.output() {
+                        if !devices.ethernet.receive_frame(&frame) {
+                            break;
                         }
                     }
                 }
@@ -212,6 +238,23 @@ fn execute(
         machine.cpu.pc(),
         machine.cpu.npc()
     ));
+    if let Some(net) = network {
+        let stats = net.stats();
+        eprintln!(
+            "Host NAT: {} guest frames, {} host frames, {} ARP, {} RARP, {} BOOTP, {} ICMP, {} UDP, {} DNS, {} TFTP, {} dropped, {} unsupported TCP",
+            stats.guest_frames,
+            stats.host_frames,
+            stats.arp_requests,
+            stats.rarp_requests,
+            stats.bootp_requests,
+            stats.icmp_echoes,
+            stats.udp_requests,
+            stats.dns_queries,
+            stats.tftp_datagrams,
+            stats.dropped,
+            stats.unsupported_tcp
+        );
+    }
     Ok(())
 }
 
@@ -235,7 +278,14 @@ fn run() -> Result<(), Box<dyn Error>> {
             };
             let mut machine = Machine::bare_metal(4096, 0)?;
             machine.load_image(0, &demo_image())?;
-            execute(&mut machine, 43, trace, None, &mut SerialPorts::default())?;
+            execute(
+                &mut machine,
+                43,
+                trace,
+                None,
+                &mut SerialPorts::default(),
+                None,
+            )?;
             let result = machine.bus.read32(0x100)?;
             if result != 55 {
                 return Err(format!("demo failed: expected 55, got {result}").into());
@@ -251,7 +301,14 @@ fn run() -> Result<(), Box<dyn Error>> {
             };
             let mut machine = Machine::bare_metal(8192, 0)?;
             machine.load_image(0, &trap_demo_image())?;
-            execute(&mut machine, 14, trace, None, &mut SerialPorts::default())?;
+            execute(
+                &mut machine,
+                14,
+                trace,
+                None,
+                &mut SerialPorts::default(),
+                None,
+            )?;
             if machine.cpu.read_reg(2) != 1
                 || machine.cpu.read_reg(3) != 1
                 || machine.cpu.pc() != 0x2c
@@ -276,6 +333,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 trace,
                 Some(b"!"),
                 &mut SerialPorts::default(),
+                None,
             )?;
             if machine.cpu.read_reg(3) != 0x80
                 || machine.cpu.read_reg(5) != 0
@@ -297,7 +355,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                 _ => return Err("usage: helios timer-demo [--trace]".into()),
             };
             let mut machine = Machine::sun4m(8192, &timer_demo_image())?;
-            execute(&mut machine, 256, trace, None, &mut SerialPorts::default())?;
+            execute(
+                &mut machine,
+                256,
+                trace,
+                None,
+                &mut SerialPorts::default(),
+                None,
+            )?;
             if machine.cpu.read_reg(5) != 1
                 || machine.cpu.read_reg(7) != 1
                 || machine.cpu.read_reg(3) < 2
@@ -324,6 +389,12 @@ fn run() -> Result<(), Box<dyn Error>> {
             let mut serial_in = None;
             let mut serial_port_a = None;
             let mut serial_port_b = None;
+            let mut net = false;
+            let mut net_gateway = None;
+            let mut net_client = None;
+            let mut net_mask = None;
+            let mut net_dns = None;
+            let mut tftp_dir = None;
             let mut nvram_in = None;
             let mut nvram_out = None;
             let mut disk = None;
@@ -363,6 +434,33 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 return Err("--cdrom supplied more than once".into());
                             }
                         }
+                        _ => unreachable!(),
+                    }
+                    continue;
+                }
+                if boot && option == "--net" {
+                    net = true;
+                    continue;
+                }
+                if boot
+                    && matches!(
+                        option.as_str(),
+                        "--net-gateway"
+                            | "--net-client"
+                            | "--net-mask"
+                            | "--net-dns"
+                            | "--tftp-dir"
+                    )
+                {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| format!("{option} requires a value"))?;
+                    match option.as_str() {
+                        "--net-gateway" => net_gateway = Some(value.parse::<Ipv4Addr>()?),
+                        "--net-client" => net_client = Some(value.parse::<Ipv4Addr>()?),
+                        "--net-mask" => net_mask = Some(value.parse::<Ipv4Addr>()?),
+                        "--net-dns" => net_dns = Some(value.parse::<Ipv4Addr>()?),
+                        "--tftp-dir" => tftp_dir = Some(PathBuf::from(value)),
                         _ => unreachable!(),
                     }
                     continue;
@@ -453,6 +551,45 @@ fn run() -> Result<(), Box<dyn Error>> {
                     }
                 }
             }
+            let mut network = if net
+                || net_gateway.is_some()
+                || net_client.is_some()
+                || net_mask.is_some()
+                || net_dns.is_some()
+                || tftp_dir.is_some()
+            {
+                let mut config = NatConfig::default();
+                if let Some(address) = net_gateway {
+                    config.gateway_ip = address;
+                }
+                if let Some(address) = net_client {
+                    config.client_ip = address;
+                }
+                if let Some(address) = net_mask {
+                    config.netmask = address;
+                }
+                if let Some(address) = net_dns {
+                    config.dns = SocketAddrV4::new(address, DNS_PORT);
+                }
+                if let Some(path) = tftp_dir {
+                    if !path.is_dir() {
+                        return Err(
+                            format!("--tftp-dir {} is not a directory", path.display()).into()
+                        );
+                    }
+                    config.tftp_dir = Some(path);
+                }
+                eprintln!(
+                    "Host NAT: guest {} gateway {} mask {} DNS {}",
+                    config.client_ip, config.gateway_ip, config.netmask, config.dns
+                );
+                if let Some(path) = &config.tftp_dir {
+                    eprintln!("TFTP root on {}:69: {}", config.gateway_ip, path.display());
+                }
+                Some(NatEngine::new(config))
+            } else {
+                None
+            };
             let input = serial_in
                 .map(std::fs::read)
                 .transpose()?
@@ -471,6 +608,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 trace,
                 if boot { Some(&input) } else { None },
                 &mut ports,
+                network.as_mut(),
             );
             if let Some(file) = &mut output {
                 file.write_all(

@@ -25,12 +25,16 @@ pub struct Cgsix {
     cursor_xy: u32,
     cursor: [u32; 64],
     fbc: [u32; 1024],
-    tec: [u32; 3],
+    tec: [u32; 1024],
     phase: u64,
     blink_frame: u8,
     vblank_pending: bool,
     generation: u64,
     vertices: Vec<(i32, i32)>,
+    line_start: Option<(i32, i32)>,
+    line_end: Option<(i32, i32)>,
+    line_y: Option<i32>,
+    rect_relative: bool,
 }
 
 impl Cgsix {
@@ -58,12 +62,16 @@ impl Cgsix {
             cursor_xy: 0xffe0ffe0,
             cursor: [0; 64],
             fbc: [0; 1024],
-            tec: [0; 3],
+            tec: [0; 1024],
             phase: 0,
             blink_frame: 0,
             vblank_pending: false,
             generation: 0,
             vertices: Vec::new(),
+            line_start: None,
+            line_end: None,
+            line_y: None,
+            rect_relative: false,
         })
     }
     pub fn reset(&mut self) {
@@ -72,8 +80,12 @@ impl Cgsix {
         self.timing = [0; 64];
         self.oscillator = 0;
         self.vertices.clear();
+        self.line_start = None;
+        self.line_end = None;
+        self.line_y = None;
+        self.rect_relative = false;
         self.fbc = [0; 1024];
-        self.tec = [0; 3];
+        self.tec = [0; 1024];
         self.dac_address = 0;
         self.component = 0;
         self.dac_control = [255, 0, 0x40, 0];
@@ -246,10 +258,8 @@ impl Cgsix {
                 self.blit()?;
                 Ok(0)
             }
-            0x700000..=0x700ffc if Self::fbc_register(offset - 0x700000) => {
-                Ok(self.fbc[(offset - 0x700000) as usize / 4])
-            }
-            0x701000..=0x701008 => Ok(self.tec[(offset - 0x701000) as usize / 4]),
+            0x700000..=0x700ffc => Ok(self.fbc[(offset - 0x700000) as usize / 4]),
+            0x701000..=0x701ffc => Ok(self.tec[(offset - 0x701000) as usize / 4]),
             _ => Err(BusErrorKind::Unsupported("CGsix register")),
         }
     }
@@ -281,7 +291,7 @@ impl Cgsix {
                 }
                 if value & 0x8000 != 0 {
                     self.fbc = [0; 1024];
-                    self.tec = [0; 3];
+                    self.tec = [0; 1024];
                     self.vertices.clear();
                 }
                 self.fhc = (self.fhc & 0xfff00000) | (value & 0x000f3fff);
@@ -333,24 +343,30 @@ impl Cgsix {
                     .push((value as i32, self.fbc[0x904 / 4] as i32));
                 self.fbc[0x900 / 4] = value;
             }
-            0x700000..=0x700ffc if Self::fbc_register(offset - 0x700000) => {
-                self.fbc[(offset - 0x700000) as usize / 4] = value
+            0x700910 | 0x700914 => {
+                self.fbc[(offset - 0x700000) as usize / 4] = value;
+                self.rect_relative = true;
             }
-            0x701000..=0x701008 => {
-                if value != 0 {
-                    return Err(BusErrorKind::Unsupported("CGsix transformation engine"));
+            0x700844 => {
+                self.fbc[(offset - 0x700000) as usize / 4] = value;
+                self.line_y = Some(value as i32);
+            }
+            0x700840 => {
+                self.fbc[(offset - 0x700000) as usize / 4] = value;
+                if let Some(y) = self.line_y.take() {
+                    let point = (value as i32, y);
+                    if self.line_start.is_some() {
+                        self.line_end = Some(point);
+                    } else {
+                        self.line_start = Some(point);
+                    }
                 }
-                self.tec[(offset - 0x701000) as usize / 4] = value;
             }
+            0x700000..=0x700ffc => self.fbc[(offset - 0x700000) as usize / 4] = value,
+            0x701000..=0x701ffc => self.tec[(offset - 0x701000) as usize / 4] = value,
             _ => return Err(BusErrorKind::Unsupported("CGsix register")),
         }
         Ok(())
-    }
-
-    fn fbc_register(offset: u64) -> bool {
-        matches!(offset, 0x004 | 0x008 | 0x01c | 0x080..=0x0bc | 0x0c0 | 0x0c4 |
-            0x0d0 | 0x0d4 | 0x0e0 | 0x0e4 | 0x0f0 | 0x0f4 | 0x100..=0x110 |
-            0x11c..=0x13c | 0x900 | 0x904)
     }
 
     fn drawing_supported(&self) -> Result<(), BusErrorKind> {
@@ -461,6 +477,30 @@ impl Cgsix {
     }
 
     fn draw(&mut self) -> Result<(), BusErrorKind> {
+        if let Some(start) = self.line_start.take() {
+            if let Some(end) = self.line_end.take() {
+                self.drawing_supported()?;
+                self.draw_line(start, end);
+                self.generation = self.generation.wrapping_add(1);
+            } else {
+                self.line_start = Some(start);
+            }
+        }
+        if self.rect_relative {
+            self.rect_relative = false;
+            self.drawing_supported()?;
+            let x = self.fbc[0x900 / 4] as i32 as i64;
+            let y = self.fbc[0x904 / 4] as i32 as i64;
+            let width = self.fbc[0x910 / 4] as i32 as i64;
+            let height = self.fbc[0x914 / 4] as i32 as i64;
+            for py in y..=y + height {
+                for px in x..=x + width {
+                    self.plot(px, py, self.pattern(px, py));
+                }
+            }
+            self.generation = self.generation.wrapping_add(1);
+            self.vertices.clear();
+        }
         if self.vertices.is_empty() {
             return Ok(());
         }
@@ -488,6 +528,32 @@ impl Cgsix {
         self.vertices.clear();
         self.generation = self.generation.wrapping_add(1);
         Ok(())
+    }
+
+    fn draw_line(&mut self, start: (i32, i32), end: (i32, i32)) {
+        let source = self.fbc[0x100 / 4] as u8;
+        let (mut x, mut y) = start;
+        let (x1, y1) = end;
+        let dx = (x1 - x).abs();
+        let sx = if x < x1 { 1 } else { -1 };
+        let dy = -(y1 - y).abs();
+        let sy = if y < y1 { 1 } else { -1 };
+        let mut error = dx + dy;
+        loop {
+            self.plot(i64::from(x), i64::from(y), source);
+            if x == x1 && y == y1 {
+                break;
+            }
+            let doubled = 2 * error;
+            if doubled >= dy {
+                error += dy;
+                x += sx;
+            }
+            if doubled <= dx {
+                error += dx;
+                y += sy;
+            }
+        }
     }
 
     fn blit(&mut self) -> Result<(), BusErrorKind> {

@@ -139,6 +139,18 @@ impl Machine {
         self.bus.advance_seconds(seconds);
     }
 
+    pub fn mouse_motion(&mut self, dx: i32, dy: i32) {
+        if let Some(devices) = self.bus.devices_mut() {
+            devices.mouse.motion(dx, dy);
+        }
+    }
+
+    pub fn mouse_button(&mut self, button: u8, down: bool) {
+        if let Some(devices) = self.bus.devices_mut() {
+            devices.mouse.button(button, down);
+        }
+    }
+
     pub fn load_image(&mut self, address: u32, bytes: &[u8]) -> Result<(), BusError> {
         self.bus.load_image(u64::from(address), bytes)
     }

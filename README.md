@@ -87,9 +87,12 @@ The implemented foundation includes:
 - The SS-5 Crystal CS4231 register aperture used by Solaris's `audiocs` probe;
   audio DMA, sample conversion and interrupts remain unmodeled.
 - NCR89C100 Ethernet DMA and NCR92C990 initialization, single-buffer packets,
-  CRC, filtering and internal loopback through the IOMMU. See [Ethernet](docs/ethernet.md).
+  CRC, filtering and internal loopback through the IOMMU, plus an optional
+  user-mode NAT (ARP/RARP, DHCP/BOOTP, gateway ICMP, UDP, DNS relay and
+  read-only TFTP). See [Ethernet](docs/ethernet.md) and
+  [host networking](docs/networking.md).
 - SS-5 system reset/status, guest software reset and watchdog status latching;
-  a second polled SCC with an optional Type 5 keyboard (mouse protocol pending).
+  a second polled SCC with an optional Type 5 keyboard and Sun mouse protocol.
 - microSPARC-II IOMMU page translation, I/O TLB flushes, SBus arbitration and
   slot bypass, with byte/halfword/word DMA access to RAM through the shared TLB.
   The chip revision and virtual-address compare configuration are readable.
@@ -195,6 +198,17 @@ cargo run --release -- boot local/firmware/sun-ss5.bin --steps 100000000 --seria
 telnet 127.0.0.1 8880
 ```
 
+Attach the optional user-mode NAT with DHCP/RARP, DNS relay, UDP and read-only
+TFTP for network boot (`--tftp-dir` serves the boot file):
+
+```sh
+cargo run --release -- boot local/firmware/sun-ss5.bin --steps 1100000000 \
+  --net --tftp-dir local/tftp
+```
+
+TCP NAT and host port forwards are not implemented yet. See
+[host networking](docs/networking.md).
+
 `boot` installs the SS-5 bank layout and a read-only 1 MiB PROM aperture at `0x70000000`, starts
 PC/nPC at 0/4, and selects PROM for instruction-space accesses through boot
 mode. Ordinary data accesses use the physical map, including console serial at
@@ -226,6 +240,7 @@ and the distinction from the contiguous RAM used by synthetic harnesses.
 - [Devices](docs/devices.md): console serial, IDPROM, NVRAM persistence and RTC.
 - [Graphics and keyboard](docs/graphics.md): TurboGX, Type 5 keyboard and native console window.
 - [SCSI storage](docs/scsi.md): image attachment, controller transfers and target commands.
+- [Host networking](docs/networking.md): user-mode NAT, DHCP/RARP, DNS relay, UDP and TFTP limits.
 - [Interrupts and timers](docs/interrupts-timers.md): register maps, masking and guest time.
 - [I/O controls](docs/io-control.md): IOMMU translation, shared TLB, DMA access and current limits.
 - [Firmware](docs/firmware.md): original Sun OBP development baseline, pinned downloads and probe results.

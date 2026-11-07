@@ -12,6 +12,7 @@ use crate::devices::{
     interrupt::{InterruptController, Source},
     io_control::{IoControl, IO_CONTROL_SIZE},
     keyboard::Keyboard,
+    mouse::Mouse,
     nvram::{Nvram, NVRAM_SIZE},
     reset::ResetControl,
     scsi::ScsiBus,
@@ -87,9 +88,10 @@ pub struct Sun4mDevices {
     pub io_control: IoControl,
     pub nvram: Nvram,
     pub serial: Serial,
-    /// SCC channels A (keyboard) and B (mouse). Mouse protocol is pending.
+    /// SCC channels A (keyboard) and B (Sun Mouse Systems).
     pub keyboard_serial: Serial,
     pub keyboard: Option<Keyboard>,
+    pub mouse: Mouse,
     pub interrupts: InterruptController,
     pub timers: Timers,
     pub reset: ResetControl,
@@ -124,6 +126,7 @@ impl Sun4mDevices {
         if let Some(keyboard) = &mut self.keyboard {
             keyboard.advance_ns(ns, &mut self.keyboard_serial);
         }
+        self.mouse.advance_ns(ns, &mut self.keyboard_serial);
         self.ethernet.advance_ns(ns);
         self.esp.advance_ns(ns);
         self.floppy.advance_ns(ns);
@@ -315,6 +318,7 @@ impl SystemBus {
             serial: Serial::default(),
             keyboard_serial: Serial::default(),
             keyboard: None,
+            mouse: Mouse::default(),
             interrupts: InterruptController::default(),
             timers: Timers::default(),
             reset: ResetControl::default(),
@@ -366,6 +370,7 @@ impl SystemBus {
             if let Some(keyboard) = &mut devices.keyboard {
                 keyboard.reset();
             }
+            devices.mouse.reset();
             devices.interrupts.reset();
             devices.timers.reset();
         }

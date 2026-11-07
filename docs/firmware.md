@@ -785,7 +785,7 @@ Select a Language
 
 Neither run had a host stop or kernel panic. The raw `*-serial.log` captures
 end at `?`; the probe supplied no menu input. Both ISO and firmware hashes
-still match the originals. All 378 core tests, four UI tests, fmt/Clippy checks,
+still match the originals. All 395 core tests, four UI tests, fmt/Clippy checks,
 release builds and four demos pass with this implementation.
 
 ## Installed Solaris disk boot
@@ -822,6 +822,18 @@ does not occur with the SS-5 PROM; it reproduces exactly at `PC=0x00026328`
 when `local/firmware/ss10-20-v2.25r-rom` is booted in the SS-5 harness. That is
 SPARCstation 10/20 firmware targeting a different machine and is not supported
 by the SS-5 profile.
+
+## Solaris X server startup
+
+The installed Solaris 2.6 disk can start the server-side desktop login on
+`display :0`. The X CGsix driver exercises the TEC register page, FBC absolute
+line/relative rectangle registers and `FSQRTd`; Helios retains the TEC page,
+draws the FBC line and rectangle primitives, and implements binary32/64 square
+root. Solaris's mouse device is Sun Mouse Systems on SCC channel B; the core
+emits its five-byte packets at 1200 baud and Heliacal forwards captured relative
+motion and buttons. A headless probe reached `Starting Desktop Login on
+display :0...` and produced a nonblank framebuffer, but did not interact with
+the login screen. See `clanker/x-windows.md` for the local evidence and limits.
 
 The configured profile remains SS5/85, but the functional 100 ns instruction
 quantum makes these kernels measure the CPU as 10 MHz and report an SBus clock

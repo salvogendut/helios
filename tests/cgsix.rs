@@ -261,9 +261,35 @@ fn unsupported_accesses_do_not_draw_or_consume_dac_components() {
     ));
     assert_eq!(b.cgsix().unwrap().generation(), generation);
     assert_eq!(b.read32(VRAM).unwrap(), 0);
-    assert!(b.write32(FBC + 0x800, 1).is_err()); // unimplemented point primitive
+    assert!(b.write32(FBC + 0x2000, 1).is_err()); // unsupported register
     assert!(b.swap32(VRAM, 1).is_err());
     assert_eq!(b.read32(VRAM).unwrap(), 0);
+}
+
+#[test]
+fn line_engine_draws_between_alternating_absolute_endpoints() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xea80ff00);
+    reg(&mut b, 0x100, 0x5a);
+    reg(&mut b, 0x844, 2); // y1
+    reg(&mut b, 0x840, 1); // x1
+    reg(&mut b, 0x844, 4); // y2
+    reg(&mut b, 0x840, 4); // x2
+    assert_eq!(b.read32(FBC + 0x14).unwrap(), 0);
+    for y in 0..6 {
+        for x in 0..6 {
+            let expected = (x == 1 && y == 2)
+                || (x == 2 && y == 3)
+                || (x == 3 && y == 3)
+                || (x == 4 && y == 4);
+            assert_eq!(
+                b.read8(VRAM + (y * WIDTH + x) as u64).unwrap(),
+                if expected { 0x5a } else { 0 },
+                "x={x} y={y}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -304,4 +330,15 @@ fn fcode_can_reset_and_reinitialize_the_engine_while_video_remains_on() {
     reg(&mut b, 0x90, 0);
     reg(&mut b, 0x1c, 0xab000000);
     assert_eq!(b.read32(VRAM).unwrap(), 0xab345678);
+}
+
+#[test]
+fn tec_control_values_are_retained_without_transform_side_effects() {
+    let mut b = bus();
+    let tec = BASE + 0x701000;
+    for (offset, value) in [(0, 0x1234_5678), (4, 0x9abc_def0), (8, 0x0fed_cba9)] {
+        b.write32(tec + offset, value).unwrap();
+        assert_eq!(b.read32(tec + offset).unwrap(), value);
+    }
+    assert_eq!(b.read32(VRAM).unwrap(), 0);
 }

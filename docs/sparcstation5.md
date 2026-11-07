@@ -36,7 +36,7 @@ were compared against QEMU's
 | CGsix / TurboGX framebuffer | `0x30000000` | Console subset with VRAM, palette, cursor and acceleration registers |
 | CS4231 audio | `0x6c000000` | Indirect register/version subset; no audio DMA or interrupts |
 | Boot PROM / SLAVIO area | `0x70000000` | 1 MiB raw PROM aperture; remaining SLAVIO devices pending |
-| Keyboard/mouse serial | `0x71000000` | Second SCC with interrupts and Type 5 keyboard; mouse protocol pending |
+| Keyboard/mouse serial | `0x71000000` | Second SCC with interrupts, Type 5 keyboard and Sun mouse protocol |
 | Console serial | `0x71100000` | Z8530 asynchronous polling/interrupts, A/B byte ports |
 | NVRAM / RTC | `0x71200000` | 8 KiB M48T08, IDPROM and deterministic clock |
 | Floppy controller | `0x71400000` | NCR82077 configuration, reset, positioning/status and IRQ; no drive/media engine |

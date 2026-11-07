@@ -35,3 +35,5 @@
 - [Writable disk installation](solaris-install-rw.md): explicit writable raw disks, durable SCSI writes and the ongoing Solaris 7 installation attempt.
 - [Installed disk boot](installed-disk-boot.md): Solaris 7/2.6 installed-disk boots, SELATNS and CS4231 fixes, and the SS10/20 ASI 47 report.
 - [Loopback telnet serial](serial-tcp.md): IRIS-style nonblocking TCP serial consoles, CLI port flags and telnet filtering.
+- [User-mode NAT stage one](host-networking.md): ARP/RARP, DHCP, ICMP, UDP, DNS relay and TFTP ownership/subset decisions.
+- [x-windows.md](x-windows.md) — Solaris 2.6 X startup: TEC/FBC line/rectangle, FSQRTd and Sun mouse protocol.

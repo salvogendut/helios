@@ -2,10 +2,11 @@
 
 Helios implements the initial FPU state and transfer subset: 32 word registers,
 LDF/LDDF/LDFSR, STF/STDF/STFSR, FMOVs/FNEGs/FABSs and all FBfcc conditions.
-Single/double comparisons, division, addition/subtraction and multiplication, deferred IEEE
-exceptions, sequence errors and STDFQ queue draining are implemented. Integer, single and
-double precision conversions are implemented. Other arithmetic, quad-operation traps and unfinished operations remain explicit
-emulator stops when the FPU is enabled.
+Single/double comparisons, division, addition/subtraction, multiplication and
+square root, deferred IEEE exceptions, sequence errors and STDFQ queue draining
+are implemented. Integer, single and double precision conversions are
+implemented. Other arithmetic, quad-operation traps and unfinished operations
+remain explicit emulator stops when the FPU is enabled.
 
 The primary sources are SPARC V8 sections 4.4, 5.1.7 and 7, appendices B.2,
 B.5, B.22, B.34 and N.3–N.7, and the microSPARC-II User's Manual sections
@@ -252,6 +253,20 @@ exceptions, without pipeline timing. FsMULd (single operands to double result),
 which has chip-specific unfinished cases, and quad multiplication remain explicit
 unsupported host stops; their arithmetic/trap behavior is not implemented yet.
 
+## Square root
+
+FSQRTs (`opf=0x29`) and FSQRTd (`opf=0x2a`) use an exact integer square-root
+search with a single round onto the destination grid. Positive finite inputs,
+including subnormal values, are normalized to an integer significand and a
+power of two; the result is compared against the candidate endpoint by exact
+scaled-integer comparisons, so no host floating-point arithmetic or double
+rounding is used. Round-to-nearest-even, toward zero and directed rounding are
+supported. Exact results clear stale CEXC; inexact results set NX. Negative
+finite inputs, including negative infinity, produce the positive canonical
+all-fraction-ones quiet NaN with NV. `sqrt(-0)` preserves negative zero,
+`sqrt(+0)` is positive zero, and positive infinity is unchanged. Quad square
+root remains an explicit host stop.
+
 ## Deferred exceptions and queue
 
 `Fpu::state()` exposes execution, exception-pending and exception states.
@@ -291,7 +306,7 @@ There is no fabricated pipeline occupancy or host-dependent completion order.
 An unsupported FPop in execution state remains a retryable
 `UnsupportedInstruction` host stop. In pending/exception state the architectural
 state checks take precedence, just as they do for supported FP instructions.
-Widening multiplication, square roots, quad conversions/operation traps and
+Widening multiplication, quad conversions/operation traps and
 unfinished operations remain pending; this is not a complete IEEE arithmetic implementation.
 
 ## Validation and firmware

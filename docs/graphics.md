@@ -30,7 +30,10 @@ network boot and returning to `ok`. Hosts providing F13 can use it as Stop too.
 Type `1 2 + .` and Enter: OBP prints `3`. Escape is a guest key; close the window
 to exit. Input uses a US Sun keyboard layout, including modifier, function,
 cursor, navigation and numeric-keypad stations. Menu maps to Compose.
-Mouse emulation, clipboard paste and audible bell/click output are pending.
+Sun Mouse Systems input is provided by the frontend through SCC channel B at
+1200 baud. It uses the five-byte ``0x80 | (~buttons)``, dx, dy, dx, dy packet;
+left/middle/right map to button bits 4/2/1. Clipboard paste and audible
+bell/click output remain pending.
 
 The console ports remain available in the machine. TTYA output goes to the
 launching terminal; the window receives keyboard input independently. When an
@@ -76,8 +79,8 @@ that base.
 | `0x301090–0x3010cc` | Selected TurboGX strap, delay and extended timing registers used by the ROM |
 | `0x301800–0x301818` | Legacy timing registers and video/vertical-blank control/status |
 | `0x3018fc`, `0x301900–0x3019fc` | Signed cursor position and two 32×32 cursor planes |
-| `0x700000–0x700fff` | Selected FBC registers: coordinates, clipping, offsets/increments, colors, ROP/masks/patterns, font, rectangle and blit operations |
-| `0x701000–0x701008` | TEC control registers; zero initialization only |
+| `0x700000–0x700fff` | FBC registers: coordinates, clipping, offsets/increments, colors, ROP/masks/patterns, font, line, rectangle and blit operations |
+| `0x701000–0x701fff` | TEC register page; values retained, transformation arithmetic is not modeled |
 | `0x800000–0x8fffff` | 1 MiB packed indexed VRAM, big-endian byte lanes |
 
 ROM and VRAM allow byte, halfword, word and aligned doubleword access. Register
@@ -96,13 +99,14 @@ that register, so this write has no effect.
 The drawing engine implements Boolean raster operations, foreground/background
 selection, pixel and plane masks, 16×16 patterns, inclusive destination clipping,
 one-bit and eight-bit font writes with automatic coordinate increments,
-rectangles and overlapping screen copies. Nonoverlap rectangles exclude their
-upper/right edges; blit endpoints include the last row and column, as specified
-by the Linux CG6 driver's calls. Operations complete synchronously; status reads
-therefore report idle after completing the requested operation. Buffer selectors
-use the single physical store in this 1 MiB profile. TurboGX+ double buffering,
-transformation arithmetic, arbitrary polygons, picking, linear interpolation,
-other resolutions and little-endian framebuffer mode are unsupported.
+absolute-endpoint lines, absolute/relative rectangles, and overlapping screen
+copies. Nonoverlap rectangles exclude their upper/right edges; line endpoints
+and blit endpoints include the final pixel. Operations complete synchronously;
+status reads therefore report idle after completing the requested operation.
+Buffer selectors use the single physical store in this 1 MiB profile. TEC
+values are retained for the X server, but transformation arithmetic, arbitrary
+polygons, picking, linear interpolation, TurboGX+ double buffering, other
+resolutions and little-endian framebuffer mode are unsupported.
 
 Timing/oscillator programming is retained, but scanout currently has a fixed
 1152×900 raster using MAME's 105.561 MHz / 1472×943 timing. It does not synthesize
@@ -118,7 +122,7 @@ LED, bell and click commands. Make codes are Sun key stations; releases set bit
 present. A 16-byte FIFO applies backpressure without dropping transitions.
 Decoded 8N1 bytes are delivered at 1200 baud using guest time. This transport
 retains bytes while the SCC FIFO is full/disabled; electrical overrun, serial
-waveforms and keyboard/mouse SCC interrupt generation are not modeled.
+waveforms and keyboard/mouse SCC interrupt generation is shared through the SCC receive path.
 
 ## Evidence and references
 
