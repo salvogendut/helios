@@ -11,19 +11,28 @@ transmits RARP requests. This is not an OS or network-boot compatibility claim.
 | Physical address | Access | Function |
 | --- | --- | --- |
 | `0x78400010` | Word | E_CSR: identity, reset, control and error/IRQ status |
-| `0x78400014` | Word | E_TST_CSR: cache diagnostics, unsupported |
-| `0x78400018` | Word | E_VLD: cache diagnostics, unsupported |
+| `0x78400014` | Word | E_TST_CSR: DMA address and empty-cache diagnostic control/status |
+| `0x78400018` | Word | E_VLD: zero valid/dirty bits; accepts clearing to zero |
 | `0x7840001c` | Word | Upper DVMA address byte, reset `0xff000000` |
 | `0x78c00000` | Halfword | MAC register data port |
 | `0x78c00002` | Halfword | Register address port, low two bits |
 
 Wrong transfer sizes return SBus error acknowledge and set E_SLAVE_ERR, cleared
-by writing one. Unsupported atomics, masked stores and diagnostic registers
+by writing one. Unsupported atomics, masked stores and cache-injection commands
 stop before device mutation. E_RESET is held until cleared and resets the MAC;
 while held, MAC reads return zero and writes transfer no data. E_DEV_ID is `a`.
 The MAC's interrupt and DMA memory error are separately visible in E_CSR and
 gated by E_INT_EN onto NCR89C105 source 16 / CPU level 6. E_INVALIDATE clears
 the memory error, but cannot acknowledge the MAC interrupt.
+
+E_TST_CSR records the last hardware DMA address in bits 23:0, including a
+device-facing memory error; arbitration denial and retryable host memory stops
+leave it unchanged. LRU and DIRTY configuration bits are retained. The coherent,
+unbuffered model has no valid/dirty cache bytes, so HIT, REQ_OUT and DRAIN0/1
+read zero and drain commands complete immediately. Diagnostic tag loading,
+cache-line fills and nonzero E_VLD writes remain unsupported. Reset clears the
+diagnostic state. This subset lets Solaris inspect DMA state without inventing
+a cache fill or hiding unsupported diagnostic operations.
 
 CSR0 implements STOP, INIT, START, demand polling, interrupt enable, read-only
 TX/RX state and write-one-to-clear causes. INIT completes only after all twelve
@@ -74,7 +83,7 @@ traffic is sent to the host's interfaces by the current CLI.
 
 Descriptor chaining, external loopback, forced collisions, CRC-disable/test
 modes, wire errors, runt/oversized normal transmission, retransmission timing
-and the DMA2 cache diagnostics remain explicit unsupported operations. There
+and DMA2 cache tag/data injection remain explicit unsupported operations. There
 is no dirty writeback cache: functional DMA transfers are coherent and complete
 one at a time, so drain/invalidate pulses complete immediately. Burst modes
 are configuration only; reserved encodings stop. Transfer deadlines and MAC

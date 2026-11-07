@@ -28,6 +28,7 @@ pub struct ScsiTarget {
     sense: [u8; 3],
     unit_attention: bool,
     started: bool,
+    removal_prevented: bool,
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -82,6 +83,7 @@ impl ScsiBus {
             sense: [0; 3],
             unit_attention: false,
             started: true,
+            removal_prevented: false,
         });
         Ok(())
     }
@@ -95,6 +97,7 @@ impl ScsiBus {
             target.unit_attention = true;
             target.sense = [6, 0x29, 0];
             target.block_size = target.kind.block_size();
+            target.removal_prevented = false;
         }
     }
 
@@ -123,6 +126,9 @@ impl ScsiTarget {
     pub fn block_size(&self) -> u32 {
         self.block_size
     }
+    pub fn removal_prevented(&self) -> bool {
+        self.removal_prevented
+    }
 
     fn check(&mut self, key: u8, asc: u8) -> Response {
         self.sense = [key, asc, 0];
@@ -150,10 +156,28 @@ impl ScsiTarget {
             0x1b => {
                 // START STOP UNIT, including IMMED. Functional spin-up is
                 // immediate; eject/load is outside the fixed-media backend.
-                if cdb[1] & 0x1e != 0 || cdb[4] & !1 != 0 {
+                if cdb[1] & 0x1e != 0 || cdb[4] & !3 != 0 {
                     return self.check(5, 0x24);
                 }
+                if cdb[4] & 2 != 0 {
+                    if self.removal_prevented && cdb[4] & 1 == 0 {
+                        let response = self.check(5, 0x53);
+                        self.sense[2] = 2; // Medium removal prevented.
+                        return response;
+                    }
+                    return self.check(5, 0x24); // Eject/load backend pending.
+                }
                 self.started = cdb[4] & 1 != 0;
+                Vec::new()
+            }
+            0x1e => {
+                if self.kind != MediaKind::Cdrom {
+                    return self.check(5, 0x20);
+                }
+                if cdb[1] & 0x1f != 0 || cdb[2] != 0 || cdb[3] != 0 || cdb[4] & !1 != 0 {
+                    return self.check(5, 0x24);
+                }
+                self.removal_prevented = cdb[4] & 1 != 0;
                 Vec::new()
             }
             0x03 => {

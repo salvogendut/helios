@@ -78,13 +78,16 @@ report peripheral qualifier/type `7f`, rather than additional drives.
 
 Implemented commands are TEST UNIT READY, START STOP UNIT without eject/load,
 INQUIRY, REQUEST SENSE, READ CAPACITY(10), READ(6), READ(10), MODE SENSE(6)/(10)
-and MODE SELECT(6)/(10) headers/block descriptors without mode pages.
+and MODE SELECT(6)/(10) headers/block descriptors without mode pages. CD-ROM
+targets also implement PREVENT ALLOW MEDIUM REMOVAL.
 MODE SENSE supports descriptor suppression and all-pages requests (no pages
 advertised), plus current/default values. Saved modes are not supported.
 MODE SELECT accepts the descriptor form with either PF setting and rejects SP.
 START STOP UNIT models readiness with immediate spin-up; stopped targets report
 NOT READY until started. CD mode headers do not set the disk-only write-protect
-bit; the device is inherently read-only.
+bit; the device is inherently read-only. PREVENT retains a media-removal lock
+until ALLOW or SCSI bus reset; attempting eject while locked returns MEDIUM
+REMOVAL PREVENTED (`05/53/02`). Loading/ejecting media remains unsupported.
 READ(6)'s zero transfer length means 256 blocks; READ(10)'s means zero blocks.
 Reads use the image's block size and validate the requested range. A command
 buffers at most 65535 CD sectors (about 128 MiB). Failed host reads return an
@@ -93,8 +96,9 @@ out-of-range reads return ILLEGAL REQUEST sense; writes return DATA PROTECT.
 SCSI bus reset establishes UNIT ATTENTION, which INQUIRY does not consume.
 
 Writable overlays, media eject/load, mode pages, CD TOC/audio, synchronous negotiation, select-with-ATN-stop,
-disconnect/reselection and target-mode ESP commands remain pending. Discovery
-and initial bootloader output do not establish kernel startup or installation.
+disconnect/reselection and target-mode ESP commands remain pending. Kernel root
+mounting and the serial language-selection prompt have been observed on both
+Solaris CDs; installation remains unverified.
 
 ## Solaris CD checkpoint
 
@@ -119,6 +123,14 @@ characters, are:
 The probe stops immediately after the newline, before further boot progress.
 See [firmware.md](firmware.md#solaris-cd-bootloader-output) for hashes,
 configuration, exact steps and evidence limitations.
+
+Subsequent runs use `ttya io` to switch both console directions to serial,
+then send `boot cdrom -v` through TTYA. Both load the Solaris kernel and mount
+`sd@6,0:b` as UFS root. PREVENT ALLOW MEDIUM REMOVAL is required by the kernel's
+CD driver; without it, root mounting fails after repeated CHECK CONDITION
+responses. Both continue to the installer's `Select a Language` prompt on TTYA;
+no installation choices are submitted. See the
+[kernel checkpoint](firmware.md#solaris-kernel-startup).
 
 ## Evidence
 

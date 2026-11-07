@@ -34,8 +34,8 @@ were compared against QEMU's
 | SBus / IOMMU controls | `0x10000000` | Page translation, I/O flushes, slot bypass/arbitration and fault capture; RAM DMA API |
 | CGsix / TurboGX framebuffer | SBus slot aperture, to be selected | Planned; no mapping installed |
 | Boot PROM / SLAVIO area | `0x70000000` | 1 MiB raw PROM aperture; remaining SLAVIO devices pending |
-| Keyboard/mouse serial | `0x71000000` | Second polled SCC; keyboard/mouse protocols pending |
-| Console serial | `0x71100000` | Z8530 asynchronous polling, A/B byte ports |
+| Keyboard/mouse serial | `0x71000000` | Second SCC with interrupts and Type 5 keyboard; mouse protocol pending |
+| Console serial | `0x71100000` | Z8530 asynchronous polling/interrupts, A/B byte ports |
 | NVRAM / RTC | `0x71200000` | 8 KiB M48T08, IDPROM and deterministic clock |
 | Floppy controller | `0x71400000` | NCR82077 configuration, reset, positioning/status and IRQ; no drive/media engine |
 | Auxiliary registers | `0x71900000`, `0x71910000` | LED/link/mux/density/TC and power scratch/clear subset |

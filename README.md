@@ -34,9 +34,11 @@ device subset and [the graphical checkpoint](docs/firmware.md#graphical-obp-cons
 **`probe-scsi-all` now lists attached disk and CD-ROM targets and returns to `ok`**
 in original OBP. Both frontends accept `--disk disk.raw` (ID 3) and
 `--cdrom cdrom.iso` (ID 6). Images are currently read-only; block reads and
-capacity reporting are implemented. Solaris 2.6 and Solaris 7 CDs now enter
-their boot code and print the first verbose `Size: ... Bytes` line on TTYA.
-Runs stop there; kernel startup and installation remain unverified.
+capacity reporting are implemented. Solaris 2.6 and Solaris 7 CDs now load
+their kernels, mount the CD's UFS root filesystem, and reach the installer's
+**Select a Language** prompt on TTYA. Serial interrupts and the DMA register
+behavior needed during device setup are implemented. Tests stop before making
+installation choices; an installed system remains unverified.
 See [SCSI storage](docs/scsi.md).
 
 The implemented foundation includes:
@@ -63,7 +65,7 @@ The implemented foundation includes:
   exchanges; microSPARC-II SRMMU
   translation, access permissions, contexts, fault registers and TLB flush/probe.
 - CPU/MMU reset, boot-mode instruction mapping and a raw PROM runner.
-- Z8530 asynchronous polling on both console channels, bounded byte queues,
+- Z8530 asynchronous polling and receive/transmit/BREAK interrupts, bounded byte queues,
   and an M48T08 NVRAM/RTC with SS-5 IDPROM and explicit clock advancement.
 - CPU interrupt entry with ET/PIL masking, sun4m software interrupts and source
   masks, and system/processor counter timers on a deterministic timebase.
@@ -93,7 +95,7 @@ The implemented foundation includes:
 Unsupported emulator behavior remains a host stop, separate from guest traps.
 Implementation-specific ASRs, broader illegal-opcode classification, remaining TLB
 diagnostic modes, cache hit/fill behavior, remaining FPU arithmetic/conversions, quad-operation traps,
-serial interrupt generation, SCSI writes and broader command support, a host network backend
+serial bit timing, SCSI writes and broader command support, a host network backend
 and broader graphics acceleration remain to be implemented. There is no general firmware or OS compatibility
 claim.
 

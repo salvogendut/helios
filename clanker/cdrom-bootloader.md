@@ -2,8 +2,9 @@
 
 User authorized, in order: commit/push SCSI discovery, add CD commands, test
 real Solaris media to first bootloader output. They added Solaris 7 alongside
-2.6 and asked about 512-byte blocks. Both now reach the stopping point. No OS
-kernel/installer work is authorized beyond this milestone.
+2.6 and asked about 512-byte blocks. Both reached that stopping point. The later
+request to try booting the CDs authorizes continuing toward the kernel and
+installer prompt, stopping before installation and keeping source media read-only.
 
 ## Git and CI
 

@@ -25,6 +25,33 @@ fn csr_identity_masks_and_empty_fifo_invalidate() {
 }
 
 #[test]
+fn macio_dma_bit_five_aliases_registers_and_preserves_width_and_mapping_rules() {
+    let mut b = SystemBus::default();
+    b.install_sun4m(Nvram::default()).unwrap();
+    let base = SCSI_DMA_BASE;
+    b.write32(base + 0x24, 0x1234_5678).unwrap();
+    assert_eq!(b.read32(base + 4).unwrap(), 0x1234_5678);
+    assert_eq!(b.read32(base + 0x20).unwrap(), b.read32(base).unwrap());
+    b.write32(base + 0x3c, 0xf012_3456).unwrap();
+    assert_eq!(b.read32(base + 0x1c).unwrap(), 0xf000_0000);
+    assert_eq!(
+        b.read16(base + 0x20).unwrap_err().kind,
+        BusErrorKind::SBusError
+    );
+    assert_ne!(b.read32(base).unwrap() & 0x40, 0);
+    b.write32(base + 0x20, 0x40).unwrap();
+    assert_eq!(b.read32(base).unwrap() & 0x40, 0);
+    assert_eq!(
+        b.read8(base + 0x30).unwrap_err().kind,
+        BusErrorKind::SBusError
+    );
+    assert_ne!(b.read32(base + 0x10).unwrap() & 0x40, 0);
+    assert_eq!(b.map_ram(base + 0x20, 0x20), Err(MapError::Overlap));
+    assert!(b.load_image(base + 0x20, &[0; 4]).is_err());
+    assert!(b.swap32(base + 0x20, 0).unwrap_err().kind.is_host_stop());
+}
+
+#[test]
 fn reset_is_held_and_clears_control_status_and_loaded_flags() {
     let mut d = ScsiDma::default();
     d.write(0, 0x0000_2310).unwrap();

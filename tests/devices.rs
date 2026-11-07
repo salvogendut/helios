@@ -285,7 +285,7 @@ fn serial_loopback_masks_character_width_and_channel_reset_is_selective() {
 #[test]
 fn unsupported_serial_modes_stop_before_register_or_pointer_changes() {
     for (reg, value) in [
-        (1, 0x10),
+        (1, 0x80),
         (4, 0),
         (5, 0x10),
         (10, 0x20),
@@ -325,6 +325,172 @@ fn serial_disabled_dpll_configuration_keeps_async_io_working() {
         s.write(control, 0x83).unwrap(); // retry still addresses WR14
         assert_eq!(s.read(control).unwrap() & 4, 4); // then RR0
     }
+}
+
+#[test]
+fn serial_async_crc_resets_preserve_data_and_can_select_a_register() {
+    let mut s = Serial::default();
+    configure(&mut s, Channel::A);
+    assert!(s.receive(Channel::A, b'R'));
+    s.write(6, b'T').unwrap();
+    for command in [0x40, 0x80] {
+        let before = s.clone();
+        s.write(4, command).unwrap();
+        assert_eq!(s, before);
+    }
+    s.write(4, 0x82).unwrap(); // reset Tx CRC and select WR2
+    s.write(4, 0xa0).unwrap();
+    assert_eq!(rr(&mut s, Channel::A, 2), 0xa0);
+    assert_eq!(s.read(6).unwrap(), b'R');
+    assert_eq!(s.take_output(Channel::A), b"T");
+}
+
+#[test]
+fn serial_receive_pending_vector_priority_and_master_enable_are_independent() {
+    let mut s = Serial::default();
+    for channel in [Channel::A, Channel::B] {
+        configure(&mut s, channel);
+        assert!(s.receive(channel, b'1'));
+        wr(&mut s, channel, 1, 0x10); // all characters, including existing FIFO
+        assert!(s.receive(channel, b'2'));
+    }
+    wr(&mut s, Channel::A, 2, 0xa1);
+    assert_eq!(rr(&mut s, Channel::A, 3), 0x24);
+    assert_eq!(rr(&mut s, Channel::B, 3), 0);
+    assert!(!s.irq());
+    wr(&mut s, Channel::A, 9, 8);
+    assert!(s.irq());
+    assert_eq!(rr(&mut s, Channel::B, 2), 0xad); // A receive: code 110
+    assert_eq!(rr(&mut s, Channel::A, 2), 0xa1); // raw vector
+    s.write(4, 0x38).unwrap(); // no acknowledge cycle, hence no IUS to reset
+    assert!(s.irq());
+    assert_eq!(s.read(6).unwrap(), b'1');
+    assert_eq!(rr(&mut s, Channel::A, 3), 0x24);
+    assert_eq!(s.read(6).unwrap(), b'2');
+    assert_eq!(rr(&mut s, Channel::A, 3), 4);
+    assert_eq!(rr(&mut s, Channel::B, 2), 0xa5); // B receive: code 010
+    wr(&mut s, Channel::A, 9, 0x18);
+    assert_eq!(rr(&mut s, Channel::B, 2), 0xa1); // 010 in status-high order
+    assert_eq!(s.read(2).unwrap(), b'1');
+    assert_eq!(s.read(2).unwrap(), b'2');
+    assert!(!s.irq());
+    assert_eq!(rr(&mut s, Channel::B, 2), 0xe1); // no interrupt: 011 reversed
+}
+
+#[test]
+fn serial_first_character_interrupt_requires_rearming_and_mode_changes_work() {
+    let mut s = Serial::default();
+    configure(&mut s, Channel::A);
+    wr(&mut s, Channel::A, 9, 8);
+    wr(&mut s, Channel::A, 1, 8);
+    assert!(s.receive(Channel::A, b'a'));
+    assert!(s.receive(Channel::A, b'b'));
+    assert!(s.irq());
+    assert_eq!(s.read(6).unwrap(), b'a');
+    assert!(!s.irq());
+    s.write(4, 0x20).unwrap(); // next character includes one already buffered
+    assert!(s.irq());
+    assert_eq!(s.read(6).unwrap(), b'b');
+    assert!(!s.irq());
+    s.write(4, 0x20).unwrap();
+    assert!(!s.irq());
+    assert!(s.receive(Channel::A, b'c'));
+    assert!(s.irq());
+    wr(&mut s, Channel::A, 1, 0x18); // special conditions only
+    assert!(!s.irq());
+    assert_eq!(s.read(4).unwrap() & 1, 1);
+    wr(&mut s, Channel::A, 1, 0x10);
+    assert!(s.irq());
+    wr(&mut s, Channel::A, 9, 0x88); // channel reset clears pending and enables
+    assert!(!s.irq());
+    assert_eq!(rr(&mut s, Channel::A, 3), 0);
+}
+
+#[test]
+fn serial_transmit_interrupt_needs_a_buffer_empty_transition_and_survives_backpressure() {
+    let mut s = Serial::default();
+    configure(&mut s, Channel::A);
+    wr(&mut s, Channel::A, 1, 2);
+    wr(&mut s, Channel::A, 9, 8);
+    assert!(!s.irq()); // enabling on an empty buffer does not generate TxIP
+    s.write(6, b'a').unwrap();
+    assert!(s.irq());
+    assert_eq!(rr(&mut s, Channel::A, 3), 0x10);
+    assert_eq!(rr(&mut s, Channel::B, 2), 8); // A transmit: code 100
+    s.write(4, 0x28).unwrap();
+    assert!(!s.irq());
+    for _ in 1..OUTPUT_CAPACITY {
+        s.write(6, b'b').unwrap();
+    }
+    s.write(4, 0x28).unwrap();
+    let before = s.clone();
+    assert_eq!(s.write(6, b'c'), Err(BusErrorKind::WouldBlock));
+    assert_eq!(s, before);
+    s.take_output(Channel::A);
+    wr(&mut s, Channel::A, 5, 0xe2); // disabled transmitter retains one byte
+    s.write(6, b'd').unwrap();
+    assert!(!s.irq());
+    wr(&mut s, Channel::A, 5, 0xea);
+    assert!(s.irq());
+    assert_eq!(s.take_output(Channel::A), b"d");
+    wr(&mut s, Channel::A, 1, 0);
+    assert!(!s.irq());
+}
+
+#[test]
+fn serial_break_latches_until_reset_and_reports_a_persistent_second_transition() {
+    let mut s = Serial::default();
+    configure(&mut s, Channel::A);
+    wr(&mut s, Channel::A, 1, 1);
+    wr(&mut s, Channel::A, 9, 8);
+    wr(&mut s, Channel::A, 15, 0x80);
+    s.set_break(Channel::A, true).unwrap();
+    assert!(s.irq());
+    assert_eq!(rr(&mut s, Channel::A, 3), 8);
+    assert_eq!(rr(&mut s, Channel::B, 2), 10); // A external: code 101
+    s.set_break(Channel::A, false).unwrap();
+    assert_eq!(s.read(4).unwrap() & 0x81, 0x81); // first status held
+    s.write(4, 0x10).unwrap();
+    assert!(s.irq()); // second transition persists
+    assert_eq!(s.read(4).unwrap() & 0x81, 1);
+    s.write(4, 0x10).unwrap();
+    assert!(!s.irq());
+    assert_eq!(s.read(6).unwrap(), 0);
+    wr(&mut s, Channel::A, 15, 0);
+    s.set_break(Channel::A, true).unwrap();
+    assert!(!s.irq());
+    assert_eq!(s.read(4).unwrap() & 0x80, 0x80); // unlatched status still live
+}
+
+#[test]
+fn both_sccs_share_cpu_level_twelve_with_independent_controller_masks() {
+    use helios::system_bus::{KEYBOARD_SERIAL_BASE, SYSTEM_INTERRUPT_BASE};
+    let mut m = Machine::sun4m(8192, &0x0100_0000u32.to_be_bytes()).unwrap();
+    for base in [SERIAL_BASE, KEYBOARD_SERIAL_BASE] {
+        for (reg, value) in [(3, 0xc1), (1, 0x10), (9, 8)] {
+            m.bus.write8(base + 4, reg).unwrap();
+            m.bus.write8(base + 4, value).unwrap();
+        }
+    }
+    let devices = m.bus.devices_mut().unwrap();
+    assert!(devices.serial.receive(Channel::A, b'S'));
+    assert!(devices.keyboard_serial.receive(Channel::A, b'K'));
+    assert_eq!(m.bus.interrupt_levels(), 0);
+    assert_eq!(
+        m.bus.read32(SYSTEM_INTERRUPT_BASE).unwrap() & 0xc000,
+        0xc000
+    );
+    m.bus
+        .write32(SYSTEM_INTERRUPT_BASE + 8, 0x8000_8000)
+        .unwrap();
+    assert_eq!(m.bus.interrupt_levels(), 1 << 12);
+    assert_eq!(m.bus.read8(SERIAL_BASE + 6).unwrap(), b'S');
+    assert_eq!(m.bus.interrupt_levels(), 0); // keyboard source still masked
+    m.bus.write32(SYSTEM_INTERRUPT_BASE + 8, 0x4000).unwrap();
+    assert_eq!(m.bus.interrupt_levels(), 1 << 12);
+    assert_eq!(m.bus.read8(KEYBOARD_SERIAL_BASE + 6).unwrap(), b'K');
+    assert_eq!(m.bus.interrupt_levels(), 0);
+    assert_eq!(m.bus.read32(SYSTEM_INTERRUPT_BASE).unwrap() & 0xc000, 0);
 }
 
 #[test]

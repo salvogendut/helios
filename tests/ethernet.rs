@@ -69,7 +69,7 @@ fn dma_identity_reset_base_lanes_and_control_masks() {
     d.write(0, 0x0077_9810).unwrap();
     assert_eq!(d.read(0).unwrap(), 0xa077_9810);
     let before = d.clone();
-    for (offset, value) in [(0, 0x80000), (0, 0xc0000), (4, 0), (8, 0)] {
+    for (offset, value) in [(0, 0x80000), (0, 0xc0000), (4, 0x8000_0000), (8, 1)] {
         assert!(d.write(offset, value).unwrap_err().is_host_stop());
         assert_eq!(d, before);
     }
@@ -80,6 +80,37 @@ fn dma_identity_reset_base_lanes_and_control_masks() {
     d.write(0, 0).unwrap();
     d.write(0, 0xff80_676f).unwrap(); // read-only/reserved bits plus empty-cache pulses
     assert_eq!(d.read(0).unwrap(), 0xa000_0000);
+}
+
+#[test]
+fn dma_diagnostic_address_tracks_transfers_without_claiming_a_buffered_cache() {
+    let mut m = fixture(true);
+    assert_eq!(m.bus.read32(DMA + 4).unwrap(), 0);
+    assert_eq!(m.bus.read32(DMA + 8).unwrap(), 0);
+    m.bus.write32(DMA + 4, 0x3f12_3456).unwrap(); // LRU, DIRTY, DRAIN, RO HIT
+    assert_eq!(m.bus.read32(DMA + 4).unwrap(), 0x1312_3456);
+    m.bus.write32(DMA + 8, 0).unwrap();
+    m.bus.write32(IO + 0x2000, 0).unwrap();
+    pump(&mut m, 1); // arbiter denial leaves the address unchanged
+    assert_eq!(m.bus.read32(DMA + 4).unwrap(), 0x1312_3456);
+    m.bus.write32(IO + 0x2000, 1 << 21).unwrap();
+    pump(&mut m, 12);
+    assert_eq!(m.bus.read32(DMA + 4).unwrap(), 0x1300_0016); // final init halfword
+    assert_eq!(m.bus.read32(DMA + 8).unwrap(), 0);
+    assert_eq!(status(&mut m), 0x1c1);
+    for (offset, value) in [(4, 0x8011_2233), (4, 0x4000_0000), (8, 0xffff_ffff)] {
+        let before = m.bus.devices().unwrap().ethernet_dma.clone();
+        assert!(m
+            .bus
+            .write32(DMA + offset, value)
+            .unwrap_err()
+            .kind
+            .is_host_stop());
+        assert_eq!(m.bus.devices().unwrap().ethernet_dma, before);
+    }
+    m.bus.write32(DMA, 0x80).unwrap();
+    assert_eq!(m.bus.read32(DMA + 4).unwrap(), 0);
+    assert_eq!(m.bus.read32(DMA + 8).unwrap(), 0);
 }
 
 #[test]

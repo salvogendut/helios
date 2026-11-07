@@ -105,6 +105,13 @@ impl Machine {
             None => self.dma_read(5, address, request.width),
         };
         let devices = self.bus.devices_mut().expect("installed Ethernet");
+        // Hardware-visible requests capture E_ADDR, including memory errors.
+        // Host stops and denied arbitration remain retryable without changing it.
+        if matches!(result, Ok(_) | Err(DmaError::Fault { .. }))
+            || matches!(result, Err(DmaError::Bus(error)) if !error.kind.is_host_stop())
+        {
+            devices.ethernet_dma.record_address(request.address);
+        }
         match result {
             Ok(value) => devices.ethernet.complete(value).map_err(|kind| {
                 DmaError::Bus(BusError {

@@ -547,3 +547,40 @@ fn start_stop_unit_controls_readiness_and_rejects_unsupported_eject() {
     select(&mut m, 6, 0, &[0, 0, 0, 0, 0, 0]);
     assert_eq!(complete(&mut m), 0);
 }
+
+#[test]
+fn cd_medium_lock_survives_invalid_requests_and_clears_on_allow_or_bus_reset() {
+    let mut m = fixture();
+    let _cdrom = attach(&mut m, MediaKind::Cdrom, &[0; 2048]);
+    let locked = |m: &Machine| {
+        m.bus
+            .devices()
+            .unwrap()
+            .scsi
+            .target(6)
+            .unwrap()
+            .removal_prevented()
+    };
+    assert!(!locked(&m));
+    select(&mut m, 6, 0, &[0x1e, 0, 0, 0, 1, 0]);
+    assert_eq!(complete(&mut m), 0);
+    assert!(locked(&m));
+    select(&mut m, 6, 0, &[0x1e, 0, 0, 0, 2, 0]);
+    assert_eq!(complete(&mut m), 2);
+    assert!(locked(&m));
+    select(&mut m, 6, 0, &[0x1b, 0, 0, 0, 2, 0]);
+    assert_eq!(complete(&mut m), 2);
+    select(&mut m, 6, 0, &[3, 0, 0, 0, 18, 0]);
+    let sense = data(&mut m);
+    assert_eq!((sense[2], sense[12], sense[13]), (5, 0x53, 2));
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 6, 0, &[0, 0, 0, 0, 0, 0]);
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 6, 0, &[0x1e, 0, 0, 0, 0, 0]);
+    assert_eq!(complete(&mut m), 0);
+    assert!(!locked(&m));
+    select(&mut m, 6, 0, &[0x1e, 0, 0, 0, 1, 0]);
+    assert_eq!(complete(&mut m), 0);
+    m.bus.write8(ESP + 12, 3).unwrap();
+    assert!(!locked(&m));
+}

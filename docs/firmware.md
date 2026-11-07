@@ -728,3 +728,67 @@ Ignored `local/probes/cdrom-ss5/serial-probe.rs` reproduces the runs. Its
 `sol26-serial.log` / `sol7-serial.log` contain controller and step traces;
 `sol26-serial-serial.log` / `sol7-serial-serial.log` contain raw TTYA bytes,
 including backspace-driven spinners. Both runs stop at the requested milestone.
+
+## Solaris kernel startup
+
+Continued tests use the same original ROMs, NVRAM, 128 MiB machine and read-only
+target-6 images above, with no hard disk attached. The probe sends `ttya io`
+through keyboard events at step 60000000 and `boot cdrom -v` through TTYA at
+step 70000000. Both console directions then use serial. Ignored
+`local/probes/solaris-boot/probe.rs` records raw serial and ESP/DMA traces.
+
+Both kernels print their release banners, enumerate the IOMMU/SBus/ESP and
+report the CD's `sd@6,0:b` partition mounted as UFS root. The versions are
+SunOS 5.6 `Generic_105181-05` and SunOS 5.7 `Generic_106541-08`. Startup then
+initializes both SCCs, CGsix and Ethernet. The CD driver requires PREVENT ALLOW
+MEDIUM REMOVAL; returning ILLEGAL REQUEST previously caused `vfs_mountroot`
+to panic. Solaris 7's optional PERSISTENT RESERVE IN remains unsupported with
+normal SCSI ILLEGAL REQUEST sense, which this kernel tolerates.
+
+The SCC drivers issue CRC reset and enable receive/transmit/external interrupts.
+Those asynchronous paths now work through the real level-12 controller sources.
+Solaris 2.6 reads E_TST_CSR while initializing Ethernet; the DMA model now
+exposes its address and empty-cache status. Solaris 7 also reads `0x78400020`;
+honoring the DMA2 bit-5 alias removes the previous unmapped-access kernel panic.
+These changes follow the hardware interfaces; neither ROMs nor guest code are
+patched. See [devices.md](devices.md) and [ethernet.md](ethernet.md).
+
+Both kernels continue into startup programs, print `The system is coming up.
+Please wait.`, and reach the installer's `Select a Language` screen on TTYA.
+The first runs stopped as soon as that heading appeared: Solaris 2.6 at step
+1522202105 (`sol26-dma`), Solaris 7 at step 1686400176 (`sol7-alias`). No language
+selection or installation command was sent. This establishes CD boot through
+the first installer screen, not installation or an installed-system boot.
+
+Final-code repeats continued for 10 million steps after the heading and until
+at least one million steps of serial silence. Both ended with the complete
+menu and its input prompt:
+
+```text
+Select a Language
+
+ 0) English
+ 1) German
+ 2) Spanish
+ 3) French
+ 4) Italian
+ 5) Swedish
+
+?
+```
+
+| Image | Final run | Stop step |
+| --- | --- | --- |
+| Solaris 2.6 | `sol26-final` | 1532202106 |
+| Solaris 7 | `sol7-final` | 1696400177 |
+
+Neither run had a host stop or kernel panic. The raw `*-serial.log` captures
+end at `?`; the probe supplied no menu input. Both ISO and firmware hashes
+still match the originals. All 348 core tests, four UI tests, fmt/Clippy checks,
+release builds and four demos pass with this implementation.
+
+The configured profile remains SS5/85, but the functional 100 ns instruction
+quantum makes these kernels measure the CPU as 10 MHz and report an SBus clock
+warning. Normal CPU/cache timing is not yet an 85 MHz timing model. No installer
+completion, installed system or external networking is established by this
+kernel-startup evidence.

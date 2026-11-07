@@ -86,7 +86,10 @@ test rather than assuming either emulator defines the hardware.
   The [NCR89C100 text](https://www.ibiblio.org/pub/historic-linux/early-ports/Sparc/NCR/NCR89C100.txt)
   also records the integrated SCSI/Ethernet cores and board-relative decoding.
   See [devices.md](devices.md#ncr89c100-scsi-dma-initialization) for implemented
-  behavior and limitations. Pinned QEMU `hw/dma/sparc32_dma.c` is a comparison;
+  behavior and limitations. Table 2-7 footnote 2 and DMA2 table 3-1 define the
+  bit-5 register aliases; pages 3-21–3-22 define E_TST_CSR and E_VLD. Helios
+  exposes address/control state and an empty coherent cache, while diagnostic
+  fills/tag loading remain unsupported. Pinned QEMU `hw/dma/sparc32_dma.c` is a comparison;
   its shared CSR mask and reset pulse do not override the primary manual.
 - [NCR53C9X integrated Fast SCSI core specification](https://www.ibiblio.org/pub/historic-linux/early-ports/Sparc/NCR/NCR53C9X.txt),
   also chapter 5 of the Sun I/O chipset manual above: register descriptions,
@@ -133,8 +136,12 @@ test rather than assuming either emulator defines the hardware.
   Section 5.2.16 distinguishes WR14's disabled-DPLL configuration commands from
   Enter Search Mode, which enables the DPLL. OBP uses the former during setup.
   Sections 2.4.9, 4.2.2 and 5.3.1 define decoded receive BREAK, both status
-  transitions and the single terminating null byte. The polling endpoint
-  models these without enabling serial interrupt generation or bit timing.
+  transitions and the single terminating null byte. Sections 2.4.4–2.4.9,
+  5.2.1–5.2.3 and 5.2.11 define pending bits, interrupt-without-acknowledge,
+  first/all-character receive, transmit-empty transitions, BREAK status latches,
+  CRC reset commands and the vector encoding. Helios uses these asynchronous
+  interrupts without SCC IUS state; bit timing and software acknowledge remain
+  pending. Unlike QEMU's receive helper, reception alone does not set IUS.
 - [Sun NVRAM/hostid FAQ, revision 1.39, 1996-11-26](https://lib.ru/TXT/faqsunnvram.txt):
   Mark Henderson's IDPROM programming reference, supplied by the user. It
   identifies SS5 machine type `80`, MAC bytes 2–7, serial bytes c–e and the
@@ -199,7 +206,9 @@ validation and current/default/saved modes. Clause 14.1.2 defines CD logical
 block mapping; 14.3.3 defines the CD-specific mode header and density codes.
 CD headers have no disk-style write-protect bit. The library models 512, 1024
 and 2048-byte CD blocks and validates the entire MODE SELECT list before a change.
-Clause 9's START STOP UNIT defines the readiness command used by OBP.
+Clause 9's START STOP UNIT defines the readiness command used by OBP;
+section 9.2.4 defines PREVENT ALLOW MEDIUM REMOVAL, its one-bit lock and
+hard-reset clearing. Solaris locks the CD before mounting its root filesystem.
 The [OpenBoot 2.x Command Reference](https://docs.oracle.com/cd/E19683-01/806-2906-10/806-2906-10.pdf),
 page 70, documents `ttya output` for routing firmware/bootloader output to serial
 without changing keyboard input.

@@ -1,8 +1,8 @@
 # Console and NVRAM devices
 
 `Machine::sun4m` installs the following physical byte apertures. These are a
-functional polling subset, tested with a synthetic PROM, not a firmware-boot
-compatibility claim. The machine also installs word-accessed
+functional asynchronous subset. Original-firmware results and their limits are
+recorded in [firmware.md](firmware.md). The machine also installs word-accessed
 [interrupt control and timers](interrupts-timers.md), and [reset/status](reset.md).
 `Machine::bare_metal` continues to install RAM only.
 Sources and reference revisions are listed in [references.md](references.md).
@@ -58,10 +58,10 @@ This file is not a machine snapshot: it cannot preserve both a latched register
 value and a separately advancing hidden counter. A partially edited invalid
 clock can be exported but will be rejected on import until repaired.
 
-## Z8530 polling subset
+## Z8530 asynchronous subset
 
 There are two independent SCC instances: console TTYA/TTYB and keyboard/mouse.
-The latter exposes the same polled register and byte-queue behavior. An optional
+The latter exposes the same register, interrupt and byte-queue behavior. An optional
 Sun Type 5 keyboard implements command replies and key stations on channel A;
 mouse packets remain pending. The headless CLI connects only TTYA. The desktop
 frontend attaches the keyboard and CGsix card; see [graphics.md](graphics.md).
@@ -76,11 +76,37 @@ The model accepts asynchronous initialization, character lengths of 5–8 bits,
 receiver/transmitter enable, baud-generator register latches, local loopback and
 channel/hardware resets. RR0 reports receive availability and transmit-buffer
 empty; RR1 reports all-sent. DCD and CTS stay asserted for the connected virtual
-endpoint. RR3 reports no pending interrupts; RR2B supplies the no-interrupt code.
+endpoint. RR3A reports pending receive, transmit and external/status interrupts
+for both channels; RR3B reads zero. RR2B modifies the shared vector with the
+highest pending source, including status-high bit reversal; RR2A is unmodified.
 An empty receive-data read returns zero as a deterministic emulator choice.
 WR14 accepts DPLL clock-source and encoding configuration while the DPLL is
 disabled, including OBP's `0x82` write. Only Enter Search Mode enables the DPLL;
 that command remains unsupported. This follows Zilog section 5.2.16.
+WR0's receive/transmit CRC reset commands are accepted during asynchronous
+initialization; CRC engines are unused in this mode.
+
+WR1 enables receive interrupts on every byte or on the first byte, with WR0's
+Enable Interrupt on Next Receive Character rearming first-byte mode. Already
+buffered data participates. Reading a byte clears its receive request; the next
+byte immediately requests another interrupt in all-character mode. Special-only
+mode produces no request for error-free host bytes. Transmit interrupts occur
+when a written buffer becomes empty, not merely when interrupts are enabled.
+Reset Tx Interrupt Pending clears that request until another byte is sent.
+WR9's master enable gates the chip's IRQ without hiding pending bits. The console
+and keyboard SCCs drive sun4m sources 15 and 14 respectively, both at CPU level
+12, with independent controller masks.
+
+Sun4m uses interrupts without an SCC acknowledge cycle (Zilog section 2.4.6.1).
+RR2 reads do not set interrupt-under-service state, and Reset Highest IUS has
+nothing to clear. Software acknowledge remains unsupported. Source priority is
+A receive, A transmit, A external/status, B receive, B transmit, B external/status.
+
+Decoded receive BREAK transitions latch RR0 status when enabled by WR15 and
+request external/status interrupts when WR1 enables them. Reset External/Status
+opens the latch; a second transition that persists while latched requests another
+interrupt. BREAK termination queues one null byte. Parity/framing error injection
+and other external/status transitions are not implemented.
 
 `Serial::receive(channel, byte)` accepts a byte only when reception is enabled
 and its three-byte FIFO has room. A false result means the caller retains the
@@ -97,13 +123,12 @@ faulting instruction. After draining the endpoint, callers can retry. The host
 queue is not an emulated UART FIFO and does not affect RR0's TX-empty status.
 Reset clears receive and pending transmit state but preserves completed output.
 
-Interrupt sources, DMA, synchronous/SDLC operation, transmit break, DPLL
+DMA/WAIT, synchronous/SDLC operation, transmit break, DPLL
 operation, auto echo and enhanced FIFO modes are unsupported and stop on their
 enabling commands. Framing/parity errors, line bit timing, modem transitions and
 receive overrun from an uncontrolled external source are not modeled. Byte
 delivery uses backpressure, not host scheduling. Accepted baud/parity/stop-bit
-settings do not introduce delays or generate line-level errors. Keyboard/mouse
-serial at `0x71000000` is not installed.
+settings do not introduce delays or generate line-level errors.
 
 ## CLI and validation
 
@@ -231,6 +256,16 @@ map table 2-7, footnote 3), with normal big-endian lanes. Its DMA2 SCSI register
 `0xa`; reserved and read-only fields cannot be changed by stores. Reset remains
 asserted until software clears it and holds the interface idle. Address/count
 reset values are unspecified by the manual; Helios chooses zero.
+
+Address bit 5 is ignored in the modeled 64-byte DMA2 aperture: `0x78400020`
+aliases D_CSR, `0x78400024` aliases D_ADDR, and `0x78400030` aliases E_CSR.
+These accesses use the same state, widths, errors and reset behavior as the
+primary addresses. NCR table 2-7 footnote 2 recommends leaving bit 5 clear for
+future expansion; table 3-1 decodes register selection with bits 4:0. Solaris 7
+reads the alias while setting up devices. QEMU also accommodates that access,
+but its special mapping at `+0x20` targets its Ethernet register 1 instead;
+Helios follows the documented shared register decode. Wider aperture mirroring
+beyond this 64-byte window remains unmodeled.
 
 The current/next address and byte-count latches support the documented initial
 chaining sequence. Loading the first next address transfers it and the next

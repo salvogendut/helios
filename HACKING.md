@@ -32,7 +32,7 @@ or assume host scheduling is guest timing.
 | `src/fpu/ieee.rs` | Shared Meiko NaN propagation, IEEE flags and overflow results |
 | `src/bus.rs` | Physical bus contract, RAM/ROM mappings and external byte import |
 | `src/system_bus.rs` | Physical decoding, device widths, clock advancement and IRQ wiring |
-| `src/devices/` | NVRAM/RTC, two polled SCCs, interrupt control, timers, reset/status and I/O configuration |
+| `src/devices/` | NVRAM/RTC, two asynchronous SCCs, interrupt control, timers, reset/status and I/O configuration |
 | `src/mmu.rs` | ASI dispatch, CPU/I/O translation, shared TLB, permissions and CPU fault registers |
 | `src/dma.rs` | Machine-owned SBus DMA transfers and device-facing errors |
 | `src/cache.rs` | Cache diagnostic arrays and indexed invalidation; ordinary cache hits/fills pending |
@@ -364,8 +364,12 @@ identification. SCSI regressions exercise selection timeouts, PIO/DMA inquiry,
 image block reads, sense, DMA residuals/chaining and IOMMU fault recovery.
 CD mode regressions cover partial PIO/DMA parameter reception, validation before
 state changes, 512/1024/2048-byte logical blocks, cross-sector reads, reset and
-START STOP UNIT readiness.
+START STOP UNIT readiness and PREVENT/ALLOW media-lock reset and error sense.
+SCC regressions cover CRC initialization, first/all-character receive interrupts,
+transmit-empty transitions, priority/vector encoding, BREAK latches, backpressure
+atomicity and both chips' level-12 interrupt-controller wiring.
 Original OBP lists both image-backed targets with `probe-scsi-all`; see
-[SCSI storage](docs/scsi.md). Solaris 2.6/7 CDs reach first bootloader output;
-kernel startup is unverified. Report actual command
+[SCSI storage](docs/scsi.md). Solaris 2.6/7 CDs load their kernels and mount the
+CD's UFS root, then reach the serial language-selection prompt; installation
+remains unverified. Report actual command
 results, not just firmware device-node creation.

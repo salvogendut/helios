@@ -42,7 +42,8 @@ pub const SCSI_DMA_BASE: u64 = 0x7840_0000;
 pub const ETHERNET_DMA_BASE: u64 = 0x7840_0010;
 pub const ESP_BASE: u64 = 0x7880_0000;
 pub const ETHERNET_BASE: u64 = 0x78c0_0000;
-const DEVICE_RANGES: [(u64, u64); 18] = [
+const MACIO_DMA_SIZE: u64 = 0x40;
+const DEVICE_RANGES: [(u64, u64); 17] = [
     (IO_CONTROL_BASE, IO_CONTROL_BASE + IO_CONTROL_SIZE),
     (AFX_PRESENCE_BASE, AFX_PRESENCE_BASE + 1),
     (KEYBOARD_SERIAL_BASE, KEYBOARD_SERIAL_BASE + 8),
@@ -57,8 +58,7 @@ const DEVICE_RANGES: [(u64, u64); 18] = [
     (SYSTEM_INTERRUPT_BASE, SYSTEM_INTERRUPT_BASE + 0x14),
     (RESET_BASE, RESET_BASE + 4),
     (MACIO_ID_BASE, MACIO_ID_BASE + 4),
-    (SCSI_DMA_BASE, SCSI_DMA_BASE + 0x10),
-    (ETHERNET_DMA_BASE, ETHERNET_DMA_BASE + 0x10),
+    (SCSI_DMA_BASE, SCSI_DMA_BASE + MACIO_DMA_SIZE),
     (ESP_BASE, ESP_BASE + 0x40),
     (ETHERNET_BASE, ETHERNET_BASE + 4),
 ];
@@ -105,6 +105,10 @@ impl Sun4mDevices {
             .set_source(Source::Ethernet, self.ethernet_dma.irq());
         self.interrupts
             .set_source(Source::Floppy, self.floppy.irq());
+        self.interrupts
+            .set_source(Source::Serial, self.serial.irq());
+        self.interrupts
+            .set_source(Source::Keyboard, self.keyboard_serial.irq());
         self.interrupts
             .set_source(Source::SystemTimer, self.timers.system_irq());
         self.interrupts.set_cpu_timer(self.timers.processor_irq());
@@ -188,8 +192,9 @@ impl SystemBus {
     }
 
     fn check_macio_access(&mut self, address: u64, bytes: u64) -> Result<(), BusError> {
-        let scsi = (SCSI_DMA_BASE..SCSI_DMA_BASE + 0x10).contains(&address);
-        let ethernet = (ETHERNET_DMA_BASE..ETHERNET_DMA_BASE + 0x10).contains(&address);
+        let dma = (SCSI_DMA_BASE..SCSI_DMA_BASE + MACIO_DMA_SIZE).contains(&address);
+        let scsi = dma && address & 0x10 == 0;
+        let ethernet = dma && address & 0x10 != 0;
         let mac = (ETHERNET_BASE..ETHERNET_BASE + 4).contains(&address);
         let id = (MACIO_ID_BASE..MACIO_ID_BASE + 4).contains(&address);
         let esp = (ESP_BASE..ESP_BASE + 0x40).contains(&address);
@@ -403,6 +408,16 @@ impl SystemBus {
     }
     fn word_device(&self, address: u64) -> Option<(WordDevice, u64)> {
         self.devices.as_ref()?;
+        // NCR89C100 table 2-7 footnote 2 and DMA2 table 3-1: bit 5 is
+        // not decoded. The second 32 bytes alias the same register bank.
+        if (SCSI_DMA_BASE..SCSI_DMA_BASE + MACIO_DMA_SIZE).contains(&address) {
+            let device = if address & 0x10 == 0 {
+                WordDevice::ScsiDma
+            } else {
+                WordDevice::EthernetDma
+            };
+            return Some((device, address & 0xf));
+        }
         for (base, size, device) in [
             (IO_CONTROL_BASE, IO_CONTROL_SIZE, WordDevice::IoControl),
             (CPU_TIMER_BASE, 0x10, WordDevice::Timer(false)),
@@ -411,8 +426,6 @@ impl SystemBus {
             (SYSTEM_INTERRUPT_BASE, 0x14, WordDevice::Interrupt(true)),
             (RESET_BASE, 4, WordDevice::Reset),
             (MACIO_ID_BASE, 4, WordDevice::MacioId),
-            (SCSI_DMA_BASE, 0x10, WordDevice::ScsiDma),
-            (ETHERNET_DMA_BASE, 0x10, WordDevice::EthernetDma),
         ] {
             if (base..base + size).contains(&address) {
                 return Some((device, address - base));
@@ -570,16 +583,14 @@ impl Bus for SystemBus {
                 return Ok(devices.auxiliary.read_power());
             }
             if (KEYBOARD_SERIAL_BASE..KEYBOARD_SERIAL_BASE + 8).contains(&address) {
-                return devices
-                    .keyboard_serial
-                    .read(address - KEYBOARD_SERIAL_BASE)
-                    .map_err(|kind| BusError { address, kind });
+                let result = devices.keyboard_serial.read(address - KEYBOARD_SERIAL_BASE);
+                devices.sync_interrupts();
+                return result.map_err(|kind| BusError { address, kind });
             }
             if (SERIAL_BASE..SERIAL_BASE + 8).contains(&address) {
-                return devices
-                    .serial
-                    .read(address - SERIAL_BASE)
-                    .map_err(|kind| BusError { address, kind });
+                let result = devices.serial.read(address - SERIAL_BASE);
+                devices.sync_interrupts();
+                return result.map_err(|kind| BusError { address, kind });
             }
             if (NVRAM_BASE..NVRAM_BASE + NVRAM_SIZE as u64).contains(&address) {
                 return devices
@@ -647,16 +658,16 @@ impl Bus for SystemBus {
                     .map_err(|kind| BusError { address, kind });
             }
             if (KEYBOARD_SERIAL_BASE..KEYBOARD_SERIAL_BASE + 8).contains(&address) {
-                return devices
+                let result = devices
                     .keyboard_serial
-                    .write(address - KEYBOARD_SERIAL_BASE, value)
-                    .map_err(|kind| BusError { address, kind });
+                    .write(address - KEYBOARD_SERIAL_BASE, value);
+                devices.sync_interrupts();
+                return result.map_err(|kind| BusError { address, kind });
             }
             if (SERIAL_BASE..SERIAL_BASE + 8).contains(&address) {
-                return devices
-                    .serial
-                    .write(address - SERIAL_BASE, value)
-                    .map_err(|kind| BusError { address, kind });
+                let result = devices.serial.write(address - SERIAL_BASE, value);
+                devices.sync_interrupts();
+                return result.map_err(|kind| BusError { address, kind });
             }
             if (NVRAM_BASE..NVRAM_BASE + NVRAM_SIZE as u64).contains(&address) {
                 return devices
