@@ -197,9 +197,10 @@ AuxIO2 at `0x71910000` also requires byte accesses. Its otherwise unused bits
 3:2 retain writes. The power-failure input is not asserted in this model; bit 5
 therefore reads zero, and writing the clear bit (1) has no pending failure to
 acknowledge. Reserved bits 7:6 and 4 read zero. A write requesting power-off
-(bit 0) stops explicitly before changing device state: powered-down machine
-execution is not implemented. External power-failure detection and its
-configuration/interrupt wiring remain pending. Reset clears the scratch bits.
+(bit 0) reports an orderly power-off to the host before changing device state;
+the frontend stops the machine without treating it as a core fault. External
+power-failure detection and its configuration/interrupt wiring remain pending.
+Reset clears the scratch bits.
 
 ## NCR82077 floppy initialization and positioning
 

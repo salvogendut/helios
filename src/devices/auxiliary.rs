@@ -47,7 +47,7 @@ impl Auxiliary {
 
     pub fn write_power(&mut self, value: u8) -> Result<(), BusErrorKind> {
         if value & 1 != 0 {
-            return Err(BusErrorKind::Unsupported("system power-off request"));
+            return Err(BusErrorKind::PowerOff);
         }
         // Bits 3:2 are writable but have no effect. Bit 1 acknowledges power
         // failure; with no asserted input it has nothing to clear. Other
