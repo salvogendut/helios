@@ -371,3 +371,15 @@ fn relative_rectangle_mode_persists_and_does_not_leak_into_lines() {
     assert_eq!(b.read8(VRAM + (7 * WIDTH + 7) as u64).unwrap(), 0x5a);
     assert_eq!(b.read8(VRAM + (9 * WIDTH + 9) as u64).unwrap(), 0x5a);
 }
+
+#[test]
+fn queued_absolute_rectangles_take_precedence_over_relative_dimensions() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xea80ff00);
+    reg(&mut b, 0x100, 0x5a);
+    reg(&mut b, 0x914, 1);
+    reg(&mut b, 0x910, 1);
+    rectangle(&mut b, 2, 2, 5, 5);
+    assert_eq!(b.read8(VRAM + (4 * WIDTH + 4) as u64).unwrap(), 0x5a);
+}

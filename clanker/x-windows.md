@@ -24,6 +24,10 @@ Observed missing behavior and fixes:
   draw, so a later draw saw one queued absolute point and stopped with
   `CGsix incomplete rectangle`. Relative mode now persists until a line
   operation, and line draws take precedence over pending rectangle state.
+  Later desktop redraws queue multiple absolute rectangle pairs while the
+  relative state is still set; an even nonempty vertex queue now takes
+  precedence over relative mode. Without that precedence, window backgrounds
+  were skipped and desktop elements overwrote each other.
 - Heliacal originally forwarded SDL's down-positive Y delta directly; Sun's
   mouse convention is up-positive, so the frontend now negates Y.
 - The X server expects a Sun Mouse Systems device on SCC channel B. Helios now

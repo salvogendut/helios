@@ -343,6 +343,9 @@ impl Cgsix {
                     .push((value as i32, self.fbc[0x904 / 4] as i32));
                 self.fbc[0x900 / 4] = value;
             }
+            0x700904 => {
+                self.fbc[(offset - 0x700000) as usize / 4] = value;
+            }
             0x700910 | 0x700914 => {
                 self.fbc[(offset - 0x700000) as usize / 4] = value;
                 self.rect_relative = true;
@@ -487,7 +490,7 @@ impl Cgsix {
             }
             return Ok(());
         }
-        if self.rect_relative {
+        if self.rect_relative && (self.vertices.is_empty() || self.vertices.len() % 2 != 0) {
             self.drawing_supported()?;
             let x = self.fbc[0x900 / 4] as i32 as i64;
             let y = self.fbc[0x904 / 4] as i32 as i64;
