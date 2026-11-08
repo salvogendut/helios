@@ -383,3 +383,279 @@ fn queued_absolute_rectangles_take_precedence_over_relative_dimensions() {
     rectangle(&mut b, 2, 2, 5, 5);
     assert_eq!(b.read8(VRAM + (4 * WIDTH + 4) as u64).unwrap(), 0x5a);
 }
+
+#[test]
+fn rectangle_fifo_accepts_more_than_sixteen_vertices_before_drawing() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xea80ff00);
+    reg(&mut b, 0x100, 0x31);
+    for n in 0..10u32 {
+        let x = n * 3;
+        reg(&mut b, 0x904, 1);
+        assert_eq!(b.write32(FBC + 0x900, x).unwrap(), ());
+        reg(&mut b, 0x904, 3);
+        assert_eq!(b.write32(FBC + 0x900, x + 2).unwrap(), ());
+    }
+    b.read32(FBC + 0x14).unwrap();
+    for n in 0..10u32 {
+        let x = n * 3;
+        for y in [1, 2] {
+            for dx in [0, 1] {
+                assert_eq!(
+                    b.read8(VRAM + u64::from(y * WIDTH as u32 + x + dx))
+                        .unwrap(),
+                    0x31
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn stipple_mode_uses_pattern_bits_and_ones_mode_ignores_them() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x100, 0x96);
+    reg(&mut b, 0x104, 0x39);
+    reg(&mut b, 0x108, 0xec80fc30); // opaque stipple with pattern register
+    reg(&mut b, 0x11c, 0);
+    reg(&mut b, 0x120, 0x80008000); // (0,0) and (0,1) set
+    rectangle(&mut b, 0, 0, 2, 2);
+    assert_eq!(b.read8(VRAM).unwrap(), 0x96);
+    assert_eq!(b.read8(VRAM + 1).unwrap(), 0x39);
+    assert_eq!(b.read8(VRAM + WIDTH as u64).unwrap(), 0x96);
+    assert_eq!(b.read8(VRAM + WIDTH as u64 + 1).unwrap(), 0x39);
+    reg(&mut b, 0x108, 0xea80ff00); // forced ones
+    rectangle(&mut b, 0, 0, 2, 2);
+    assert_eq!(b.read8(VRAM + 1).unwrap(), 0x96);
+}
+
+#[test]
+fn fill_spans_use_apoint_and_arectx_with_drawable_offset() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xea80ff00);
+    reg(&mut b, 0x100, 0x42);
+    reg(&mut b, 0xc0, 10);
+    reg(&mut b, 0xc4, 20);
+    reg(&mut b, 0x804, 3);
+    reg(&mut b, 0x800, 2);
+    reg(&mut b, 0x900, 5);
+    let row = VRAM + (23 * WIDTH) as u64;
+    assert_eq!(
+        (12..16)
+            .map(|x| b.read8(row + x).unwrap())
+            .collect::<Vec<_>>(),
+        [0x42; 4]
+    );
+    assert_eq!(b.read8(row + 11).unwrap(), 0);
+    assert_eq!(b.read8(row + 16).unwrap(), 0);
+}
+
+#[test]
+fn connected_absolute_lines_start_at_apoint() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xea80ff00);
+    reg(&mut b, 0x100, 0x5a);
+    reg(&mut b, 0x804, 2);
+    reg(&mut b, 0x800, 1);
+    reg(&mut b, 0x844, 4);
+    reg(&mut b, 0x840, 3);
+    b.read32(FBC + 0x14).unwrap();
+    reg(&mut b, 0x844, 6);
+    reg(&mut b, 0x840, 5);
+    b.read32(FBC + 0x14).unwrap();
+    for (x, y) in [(1, 2), (2, 3), (3, 4), (4, 5), (5, 6)] {
+        assert_eq!(b.read8(VRAM + (y * WIDTH + x) as u64).unwrap(), 0x5a);
+    }
+}
+
+#[test]
+fn relative_lines_advance_from_current_point() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xea80ff00);
+    reg(&mut b, 0x100, 0x33);
+    reg(&mut b, 0x804, 1);
+    reg(&mut b, 0x800, 1);
+    reg(&mut b, 0x854, 2);
+    reg(&mut b, 0x850, 2);
+    b.read32(FBC + 0x14).unwrap();
+    reg(&mut b, 0x854, (-2i32) as u32);
+    reg(&mut b, 0x850, 2);
+    b.read32(FBC + 0x14).unwrap();
+    for (x, y) in [(1, 1), (2, 2), (3, 3), (4, 2), (5, 1)] {
+        assert_eq!(b.read8(VRAM + (y * WIDTH + x) as u64).unwrap(), 0x33);
+    }
+}
+
+#[test]
+fn stippled_lines_use_pattern_bits() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x100, 0x96);
+    reg(&mut b, 0x104, 0x39);
+    reg(&mut b, 0x108, 0xec80fc30);
+    reg(&mut b, 0x11c, 0);
+    reg(&mut b, 0x120, 0x80008000);
+    reg(&mut b, 0x844, 0);
+    reg(&mut b, 0x840, 0);
+    reg(&mut b, 0x844, 0);
+    reg(&mut b, 0x840, 1);
+    b.read32(FBC + 0x14).unwrap();
+    assert_eq!(b.read8(VRAM).unwrap(), 0x96);
+    assert_eq!(b.read8(VRAM + 1).unwrap(), 0x39);
+}
+
+#[test]
+fn color_expansion_font_words_advance_horizontally() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 4, 0x140000); // GX_BLIT_NOSRC | GX_MODE_COLOR1
+    reg(&mut b, 0x100, 0x96);
+    reg(&mut b, 0x104, 0x39);
+    reg(&mut b, 0x108, 0xea80fc30);
+    reg(&mut b, 0xd0, 32);
+    reg(&mut b, 0xd4, 0);
+    reg(&mut b, 0x80, 0);
+    reg(&mut b, 0x90, 31);
+    reg(&mut b, 0x84, 0);
+    reg(&mut b, 0x1c, 0xffffffff);
+    reg(&mut b, 0x1c, 0);
+    let row = VRAM;
+    for x in 0..64 {
+        let expected = if x < 32 { 0x96 } else { 0x39 };
+        assert_eq!(b.read8(row + x as u64).unwrap(), expected, "x={x}");
+    }
+    assert_eq!(b.read32(FBC + 0x80).unwrap(), 64);
+}
+
+#[test]
+fn unpaired_absolute_line_points_do_not_join_later_lines() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xea80ff00);
+    reg(&mut b, 0x100, 0x5a);
+    reg(&mut b, 0x844, 2);
+    reg(&mut b, 0x840, 1);
+    b.read32(FBC + 0x14).unwrap();
+    reg(&mut b, 0x844, 4);
+    reg(&mut b, 0x840, 3);
+    b.read32(FBC + 0x14).unwrap();
+    for x in 0..5 {
+        for y in 0..6 {
+            assert_eq!(b.read8(VRAM + (y * WIDTH + x) as u64).unwrap(), 0);
+        }
+    }
+}
+
+#[test]
+fn apoint_replaces_pending_absolute_line_state() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xea80ff00);
+    reg(&mut b, 0x100, 0x5a);
+    reg(&mut b, 0x844, 0);
+    reg(&mut b, 0x840, 0);
+    reg(&mut b, 0x804, 4);
+    reg(&mut b, 0x800, 4);
+    reg(&mut b, 0x844, 4);
+    reg(&mut b, 0x840, 5);
+    b.read32(FBC + 0x14).unwrap();
+    assert_eq!(b.read8(VRAM + (4 * WIDTH + 4) as u64).unwrap(), 0x5a);
+    assert_eq!(b.read8(VRAM + (4 * WIDTH + 5) as u64).unwrap(), 0x5a);
+    assert_eq!(b.read8(VRAM).unwrap(), 0);
+}
+
+#[test]
+fn unpaired_absolute_rectangle_point_does_not_join_the_next_rectangle() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xea80ff00);
+    reg(&mut b, 0x100, 0x5a);
+    reg(&mut b, 0x904, 0);
+    reg(&mut b, 0x900, 0);
+    b.read32(FBC + 0x14).unwrap();
+    reg(&mut b, 0x904, 4);
+    reg(&mut b, 0x900, 4);
+    reg(&mut b, 0x904, 6);
+    reg(&mut b, 0x900, 6);
+    b.read32(FBC + 0x14).unwrap();
+    assert_eq!(b.read8(VRAM).unwrap(), 0);
+    assert_eq!(b.read8(VRAM + (4 * WIDTH + 4) as u64).unwrap(), 0x5a);
+}
+
+#[test]
+fn rectangle_and_line_pairs_follow_write_order() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xea80ff00);
+
+    reg(&mut b, 0x100, 0x5a);
+    reg(&mut b, 0x844, 0);
+    reg(&mut b, 0x840, 0);
+    reg(&mut b, 0x844, 0);
+    reg(&mut b, 0x840, 5);
+    reg(&mut b, 0x100, 0x11);
+    rectangle(&mut b, 0, 0, 4, 4);
+    assert_eq!(b.read8(VRAM + 2 * WIDTH as u64 + 2).unwrap(), 0x11);
+
+    reg(&mut b, 0x100, 0x22);
+    rectangle(&mut b, 10, 10, 15, 15);
+    reg(&mut b, 0x100, 0x33);
+    reg(&mut b, 0x844, 12);
+    reg(&mut b, 0x840, 10);
+    reg(&mut b, 0x844, 12);
+    reg(&mut b, 0x840, 14);
+    assert_eq!(b.read8(VRAM + 12 * WIDTH as u64 + 12).unwrap(), 0x33);
+}
+
+#[test]
+fn vertical_and_horizontal_lines_render_their_interior_pixels() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xea80ff00);
+    reg(&mut b, 0x100, 0x5a);
+    reg(&mut b, 0x844, 2);
+    reg(&mut b, 0x840, 1);
+    reg(&mut b, 0x844, 5);
+    reg(&mut b, 0x840, 1);
+    reg(&mut b, 0x844, 7);
+    reg(&mut b, 0x840, 3);
+    reg(&mut b, 0x844, 7);
+    reg(&mut b, 0x840, 6);
+    b.read32(FBC + 0x14).unwrap();
+    for y in 2..=5 {
+        assert_eq!(
+            b.read8(VRAM + (y * WIDTH + 1) as u64).unwrap(),
+            0x5a,
+            "v y={y}"
+        );
+    }
+    for x in 3..=6 {
+        assert_eq!(
+            b.read8(VRAM + (7 * WIDTH + x) as u64).unwrap(),
+            0x5a,
+            "h x={x}"
+        );
+    }
+}
+
+#[test]
+fn line_engine_ignores_fill_clip_rectangle() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xea80ff00);
+    reg(&mut b, 0x100, 0x5a);
+    reg(&mut b, 0xe4, 10);
+    reg(&mut b, 0xf4, 20);
+    reg(&mut b, 0x844, 0);
+    reg(&mut b, 0x840, 0);
+    reg(&mut b, 0x844, 0);
+    reg(&mut b, 0x840, 5);
+    b.read32(FBC + 0x14).unwrap();
+    assert_eq!(b.read8(VRAM).unwrap(), 0x5a);
+    assert_eq!(b.read8(VRAM + 5).unwrap(), 0x5a);
+}

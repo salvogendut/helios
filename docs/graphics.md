@@ -97,12 +97,24 @@ writes the BT467 command at DAC address 9; the selected BT458 does not decode
 that register, so this write has no effect.
 
 The drawing engine implements Boolean raster operations, foreground/background
-selection, pixel and plane masks, 16×16 patterns, inclusive destination clipping,
-one-bit and eight-bit font writes with automatic coordinate increments,
-absolute-endpoint lines, absolute/relative rectangles, and overlapping screen
-copies. Nonoverlap rectangles exclude their upper/right edges; line endpoints
-and blit endpoints include the final pixel. Operations complete synchronously;
-status reads therefore report idle after completing the requested operation.
+group selection, whole-word ALU updates, pixel and plane masks, zero/one/register
+pattern modes, inclusive destination clipping, one-bit and eight-bit font writes
+with automatic coordinate increments, Xsun horizontal spans (`apoint` plus
+`arectx`), connected absolute and relative polylines from `apoint`, stippled
+lines, drawable
+offsets, absolute/relative rectangles (including Xsun's reuse of relative
+dimensions and queued absolute pairs), and overlapping screen copies. Nonoverlap
+rectangles exclude their upper/right edges; line, span and blit endpoints include
+the final pixel. The rectangle vertex queue drains on `draw`; Xsun can queue more
+than sixteen vertices while repainting a window, so the engine does not fail the
+operation at that depth. Complete absolute rectangle pairs and non-anchored line
+pairs execute as soon as their second point is written, preserving the order of
+adjacent frame fills and bevel lines. A lone unpaired vertex or line point is
+discarded on `draw` and when a new point sequence starts, so stale state cannot
+join a later repaint. The line engine does not apply the fill clip rectangle:
+Xsun leaves text-strip clip bounds active while drawing the vertical sides of
+Motif button bevels, and those sides must remain visible. Operations complete synchronously; status reads
+therefore report idle after completing the requested operation.
 Buffer selectors use the single physical store in this 1 MiB profile. TEC
 values are retained for the X server, but transformation arithmetic, arbitrary
 polygons, picking, linear interpolation, TurboGX+ double buffering, other

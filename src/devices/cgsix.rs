@@ -31,9 +31,12 @@ pub struct Cgsix {
     vblank_pending: bool,
     generation: u64,
     vertices: Vec<(i32, i32)>,
-    line_start: Option<(i32, i32)>,
-    line_end: Option<(i32, i32)>,
+    line_current: Option<(i32, i32)>,
+    line_points: Vec<(i32, i32)>,
     line_y: Option<i32>,
+    relative_line_y: Option<i32>,
+    line_anchor: bool,
+    span_pending: bool,
     rect_relative: bool,
 }
 
@@ -68,9 +71,12 @@ impl Cgsix {
             vblank_pending: false,
             generation: 0,
             vertices: Vec::new(),
-            line_start: None,
-            line_end: None,
+            line_current: None,
+            line_points: Vec::new(),
             line_y: None,
+            relative_line_y: None,
+            line_anchor: false,
+            span_pending: false,
             rect_relative: false,
         })
     }
@@ -80,9 +86,12 @@ impl Cgsix {
         self.timing = [0; 64];
         self.oscillator = 0;
         self.vertices.clear();
-        self.line_start = None;
-        self.line_end = None;
+        self.line_current = None;
+        self.line_points.clear();
         self.line_y = None;
+        self.relative_line_y = None;
+        self.line_anchor = false;
+        self.span_pending = false;
         self.rect_relative = false;
         self.fbc = [0; 1024];
         self.tec = [0; 1024];
@@ -293,6 +302,12 @@ impl Cgsix {
                     self.fbc = [0; 1024];
                     self.tec = [0; 1024];
                     self.vertices.clear();
+                    self.line_points.clear();
+                    self.line_current = None;
+                    self.line_y = None;
+                    self.relative_line_y = None;
+                    self.line_anchor = false;
+                    self.span_pending = false;
                 }
                 self.fhc = (self.fhc & 0xfff00000) | (value & 0x000f3fff);
             }
@@ -326,25 +341,54 @@ impl Cgsix {
             }
             0x700010 | 0x700014 | 0x700018 => {}
             0x70001c => self.font(value)?,
-            0x700108 => {
-                self.fbc[0x108 / 4] = (self.fbc[0x108 / 4] & 0xffc00000) | (value & 0x003fffff);
-                for shift in [22, 24, 26, 28, 30] {
-                    let mask = 3 << shift;
-                    if value & mask != 0 {
-                        self.fbc[0x108 / 4] = (self.fbc[0x108 / 4] & !mask) | (value & mask);
-                    }
+            0x700108 => self.fbc[0x108 / 4] = value,
+            0x700800 | 0x700804 => {
+                self.fbc[(offset - 0x700000) as usize / 4] = value;
+                self.span_pending = true;
+                self.vertices.clear();
+                self.line_points.clear();
+                self.line_y = None;
+                self.relative_line_y = None;
+                self.line_anchor = true;
+                self.line_current = Some((self.fbc[0x800 / 4] as i32, self.fbc[0x804 / 4] as i32));
+            }
+            0x700850 => {
+                self.fbc[(offset - 0x700000) as usize / 4] = value;
+                if let Some(dy) = self.relative_line_y.take() {
+                    let (x, y) = self
+                        .line_current
+                        .unwrap_or((self.fbc[0x800 / 4] as i32, self.fbc[0x804 / 4] as i32));
+                    self.line_points.push((x + value as i32, y + dy));
                 }
             }
+            0x700854 => {
+                self.fbc[(offset - 0x700000) as usize / 4] = value;
+                self.relative_line_y = Some(value as i32);
+            }
             0x700900 => {
-                if self.vertices.len() == 16 {
-                    return Err(BusErrorKind::Unsupported("CGsix rectangle FIFO full"));
+                if !self.line_points.is_empty() {
+                    self.draw()?;
                 }
-                self.vertices
-                    .push((value as i32, self.fbc[0x904 / 4] as i32));
+                if self.span_pending {
+                    let x0 = self.fbc[0x800 / 4] as i32;
+                    let y = self.fbc[0x804 / 4] as i32;
+                    self.draw_span(x0, value as i32, y)?;
+                    self.span_pending = false;
+                } else {
+                    self.vertices
+                        .push((value as i32, self.fbc[0x904 / 4] as i32));
+                    if self.vertices.len() == 2 {
+                        self.draw_rectangle_pairs()?;
+                    }
+                }
                 self.fbc[0x900 / 4] = value;
             }
             0x700904 => {
                 self.fbc[(offset - 0x700000) as usize / 4] = value;
+                self.span_pending = false;
+                self.line_points.clear();
+                self.line_y = None;
+                self.relative_line_y = None;
             }
             0x700910 | 0x700914 => {
                 self.fbc[(offset - 0x700000) as usize / 4] = value;
@@ -357,11 +401,9 @@ impl Cgsix {
             0x700840 => {
                 self.fbc[(offset - 0x700000) as usize / 4] = value;
                 if let Some(y) = self.line_y.take() {
-                    let point = (value as i32, y);
-                    if self.line_start.is_some() {
-                        self.line_end = Some(point);
-                    } else {
-                        self.line_start = Some(point);
+                    self.line_points.push((value as i32, y));
+                    if self.line_points.len() == 2 && !self.line_anchor {
+                        self.draw_line_pairs()?;
                     }
                 }
             }
@@ -403,6 +445,17 @@ impl Cgsix {
         {
             return;
         }
+        self.plot_pixel(x, y, source);
+    }
+
+    fn plot_line(&mut self, x: i64, y: i64, source: u8) {
+        if !(0..WIDTH as i64).contains(&x) || !(0..HEIGHT as i64).contains(&y) {
+            return;
+        }
+        self.plot_pixel(x, y, source);
+    }
+
+    fn plot_pixel(&mut self, x: i64, y: i64, source: u8) {
         let rop = self.fbc[0x108 / 4];
         let pixel_mask = match (rop >> 28) & 3 {
             1 => 0,
@@ -480,13 +533,32 @@ impl Cgsix {
     }
 
     fn draw(&mut self) -> Result<(), BusErrorKind> {
-        if let Some(start) = self.line_start.take() {
-            if let Some(end) = self.line_end.take() {
-                self.drawing_supported()?;
-                self.draw_line(start, end);
+        if !self.line_points.is_empty() {
+            self.drawing_supported()?;
+            if self.line_points.len() >= 2 {
+                let points = std::mem::take(&mut self.line_points);
+                let mut iter = points.into_iter();
+                while let Some(start) = iter.next() {
+                    let Some(end) = iter.next() else {
+                        self.line_points.push(start);
+                        break;
+                    };
+                    self.draw_line(start, end);
+                    self.line_current = Some(end);
+                }
+                self.line_anchor = false;
                 self.generation = self.generation.wrapping_add(1);
+            } else if self.line_anchor {
+                let end = self.line_points.pop().unwrap();
+                let start = self
+                    .line_current
+                    .unwrap_or((self.fbc[0x800 / 4] as i32, self.fbc[0x804 / 4] as i32));
+                self.draw_line(start, end);
+                self.line_current = Some(end);
+                self.generation = self.generation.wrapping_add(1);
+                return Ok(());
             } else {
-                self.line_start = Some(start);
+                self.line_points.clear();
             }
             return Ok(());
         }
@@ -510,13 +582,27 @@ impl Cgsix {
         }
         self.drawing_supported()?;
         if self.vertices.len() % 2 != 0 {
-            return Err(BusErrorKind::Unsupported("CGsix incomplete rectangle"));
+            self.vertices.clear();
+            return Ok(());
+        }
+        self.draw_rectangle_pairs()
+    }
+
+    fn draw_rectangle_pairs(&mut self) -> Result<(), BusErrorKind> {
+        if self.vertices.is_empty() {
+            return Ok(());
+        }
+        self.drawing_supported()?;
+        if self.vertices.len() % 2 != 0 {
+            self.vertices.clear();
+            return Ok(());
         }
         // NONOVERLAP rectangles exclude their upper/right edges (Linux cg6_fillrect).
         let inclusive = i64::from((self.fbc[0x108 / 4] >> 24) & 3 == 1);
-        for n in (0..self.vertices.len()).step_by(2) {
-            let (x0, y0) = self.vertices[n];
-            let (x1, y1) = self.vertices[n + 1];
+        let vertices = std::mem::take(&mut self.vertices);
+        for pair in vertices.chunks_exact(2) {
+            let (x0, y0) = pair[0];
+            let (x1, y1) = pair[1];
             let ox = self.fbc[0xc0 / 4] as i32 as i64;
             let oy = self.fbc[0xc4 / 4] as i32 as i64;
             for y in (i64::from(y0.min(y1)) + oy).max(0)
@@ -529,22 +615,40 @@ impl Cgsix {
                 }
             }
         }
-        self.vertices.clear();
+        self.generation = self.generation.wrapping_add(1);
+        Ok(())
+    }
+
+    fn draw_line_pairs(&mut self) -> Result<(), BusErrorKind> {
+        self.drawing_supported()?;
+        let points = std::mem::take(&mut self.line_points);
+        let mut iter = points.into_iter();
+        while let Some(start) = iter.next() {
+            let Some(end) = iter.next() else {
+                self.line_points.push(start);
+                break;
+            };
+            self.draw_line(start, end);
+            self.line_current = Some(end);
+        }
+        self.line_anchor = false;
         self.generation = self.generation.wrapping_add(1);
         Ok(())
     }
 
     fn draw_line(&mut self, start: (i32, i32), end: (i32, i32)) {
-        let source = self.fbc[0x100 / 4] as u8;
-        let (mut x, mut y) = start;
-        let (x1, y1) = end;
+        let ox = i64::from(self.fbc[0xc0 / 4] as i32);
+        let oy = i64::from(self.fbc[0xc4 / 4] as i32);
+        let (mut x, mut y) = (start.0 + ox as i32, start.1 + oy as i32);
+        let (x1, y1) = (end.0 + ox as i32, end.1 + oy as i32);
         let dx = (x1 - x).abs();
         let sx = if x < x1 { 1 } else { -1 };
         let dy = -(y1 - y).abs();
         let sy = if y < y1 { 1 } else { -1 };
         let mut error = dx + dy;
         loop {
-            self.plot(i64::from(x), i64::from(y), source);
+            let source = self.pattern(i64::from(x), i64::from(y));
+            self.plot_line(i64::from(x), i64::from(y), source);
             if x == x1 && y == y1 {
                 break;
             }
@@ -558,6 +662,19 @@ impl Cgsix {
                 y += sy;
             }
         }
+    }
+
+    fn draw_span(&mut self, x0: i32, x1: i32, y: i32) -> Result<(), BusErrorKind> {
+        self.drawing_supported()?;
+        let ox = self.fbc[0xc0 / 4] as i32 as i64;
+        let oy = self.fbc[0xc4 / 4] as i32 as i64;
+        for x in i64::from(x0.min(x1))..=i64::from(x0.max(x1)) {
+            let px = x + ox;
+            let py = i64::from(y) + oy;
+            self.plot(px, py, self.pattern(px, py));
+        }
+        self.generation = self.generation.wrapping_add(1);
+        Ok(())
     }
 
     fn blit(&mut self) -> Result<(), BusErrorKind> {

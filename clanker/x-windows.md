@@ -27,7 +27,19 @@ Observed missing behavior and fixes:
   Later desktop redraws queue multiple absolute rectangle pairs while the
   relative state is still set; an even nonempty vertex queue now takes
   precedence over relative mode. Without that precedence, window backgrounds
-  were skipped and desktop elements overwrote each other.
+  were skipped and desktop elements overwrote each other. Dragging a window
+  queues more than sixteen vertices, so the rectangle queue drains on `draw`
+  rather than reporting FIFO full. Xsun also uses `apoint` plus `arectx` for
+  horizontal spans and connected/relative lines; without those paths, 3-D
+  borders, arcs and many window details were missing. Unpaired line points and
+  rectangle vertices are now discarded when a new sequence starts; otherwise a
+  stale frame endpoint could join the next repaint and leave magenta lines
+  across window contents. Complete absolute rectangle and non-anchored line
+  pairs now execute on their second point write, so title-bar fills cannot be
+  deferred past the bevel lines that frame them. Line drawing ignores the fill
+  clip rectangle: Xsun left a text-row clip in place while drawing the vertical
+  sides of the dtlogin OK/Start Over/Options/Help buttons, so the buttons were
+  missing their sides.
 - Heliacal originally forwarded SDL's down-positive Y delta directly; Sun's
   mouse convention is up-positive, so the frontend now negates Y.
 - The X server expects a Sun Mouse Systems device on SCC channel B. Helios now
