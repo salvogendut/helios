@@ -1,54 +1,86 @@
-# Solaris X server startup
+# Solaris X rendering
 
-Date: 2026-11-07. The local Solaris 2.6 installed disk boots with Helios and
-starts `dtlogin` on the TurboGX console. A headless `disk-probe` run reached
-`Starting Desktop Login on display :0...` and produced a nonblank 1152x900
-framebuffer; raw serial is `local/probes/solaris-install/sol26-x5-serial.log`.
+Updated 2026-11-08 on `x-windows`, based on 92a05d3. Worktree:
+`/tmp/helios-x-windows`; the shared checkout is on `ss20-axil320` with unrelated
+uncommitted work and must not be switched or overwritten.
 
-Observed missing behavior and fixes:
+## Root cause and primary evidence
 
-- The X server writes the TEC page at `0x701000`, including offsets beyond the
-  three documented `cg6_tec` words (`0x701100` was the next stop). The whole
-  4 KiB page is now retained and read back. TEC transformation arithmetic is
-  still not modeled; only register storage is needed for the server's setup.
-- The X server programs absolute line endpoints through FBC `0x840/0x844`, and
-  fills rectangles through absolute `0x900/0x904` plus relative `0x910/0x914`.
-  Both paths are implemented; line drawing uses a Bresenham walk through the
-  existing ROP/pattern/clipping logic. Relative rectangles use inclusive
-  `x + width`, `y + height` extents.
-- `FSQRTd` is used during server startup. Exact integer square-root rounding,
-  every rounding direction, negative-input NV, NaN and zero handling are
-  implemented with directed tests.
-- Xsun reuses the FBC relative-rectangle width/height while changing only the
-  absolute origin. The first implementation cleared relative mode after each
-  draw, so a later draw saw one queued absolute point and stopped with
-  `CGsix incomplete rectangle`. Relative mode now persists until a line
-  operation, and line draws take precedence over pending rectangle state.
-  Later desktop redraws queue multiple absolute rectangle pairs while the
-  relative state is still set; an even nonempty vertex queue now takes
-  precedence over relative mode. Without that precedence, window backgrounds
-  were skipped and desktop elements overwrote each other. Dragging a window
-  queues more than sixteen vertices, so the rectangle queue drains on `draw`
-  rather than reporting FIFO full. Xsun also uses `apoint` plus `arectx` for
-  horizontal spans and connected/relative lines; without those paths, 3-D
-  borders, arcs and many window details were missing. Unpaired line points and
-  rectangle vertices are now discarded when a new sequence starts; otherwise a
-  stale frame endpoint could join the next repaint and leave magenta lines
-  across window contents. Complete absolute rectangle and non-anchored line
-  pairs now execute on their second point write, so title-bar fills cannot be
-  deferred past the bevel lines that frame them. Line drawing ignores the fill
-  clip rectangle: Xsun left a text-row clip in place while drawing the vertical
-  sides of the dtlogin OK/Start Over/Options/Help buttons, so the buttons were
-  missing their sides.
-- Heliacal originally forwarded SDL's down-positive Y delta directly; Sun's
-  mouse convention is up-positive, so the frontend now negates Y.
-- The X server expects a Sun Mouse Systems device on SCC channel B. Helios now
-  emits five-byte packets at 1200 baud (`0x80|~buttons`, dx, dy, 0, 0), and
-  Heliacal forwards relative mouse motion and left/middle/right buttons while
-  captured. Focus loss and capture release send button releases.
+The earlier line/rectangle queues, sticky relative dimensions, eager rendering
+on coordinate writes and unconditional line clipping bypass were incorrect.
+They mixed distinct primitives, applied drawing attributes at the wrong time,
+and left extra fills or missing decorations. Tests asserting those behaviors
+were replaced with hardware-derived expectations.
 
-Mouse motion was confirmed interactively. A headless keyboard/mouse injection
-at the login screen then exercised the previous root-login crash; after the
-relative-rectangle fix it ran without a host stop. Password/login completion
-and applications still need a user-side check. Do not claim full X desktop or
-audio support from this startup evidence.
+The primary source is **Sun GX FBC Reference Manual 3.0, Curtis Priem, January
+1988**, downloaded from the Bitsavers mirror linked in docs/graphics.md.
+Local PDF/text: `/tmp/helios-fbc.pdf`, `/tmp/helios-fbc.txt`. Page 8/table 3-1
+was inspected visually (`/tmp/helios-fbc-index.png`). Relevant sections:
+
+- 3.2: indexed aliases update the common X0/Y0 through X3/Y3 bank. Point writes
+  replicate to four vertices, lines to three, triangles/rectangles to two,
+  quadrilaterals to one. X advances the MISC index; rectangle Y advances too.
+  Absolute coordinates add RASTEROFF at write time; relative coordinates add
+  the previous indexed coordinate. Direct coordinates restore context.
+- 5.1–5.2: DRAW reads submit the current bank. Plain STATUS does not draw.
+  Overlapping polygons use balanced boundaries plus interior; nonoverlapping
+  coverage excludes right/bottom edges and gives degenerate lines no area.
+  Ties round to screen right/down. Lines also obey the clipping window.
+- 7/9/10: font coordinates are already screen coordinates; RASTEROP two-bit
+  selectors ignore zero writes, while the truth table loads normally.
+
+The retained generic bank removes all primitive-specific pending queues.
+Triangle/quadrilateral scan conversion handles two active edges per scanline,
+including Xsun's CDE clock/decorations; unsupported four-edge cases stop before
+changing VRAM. Overlap coverage is collected before the ROP, preventing double
+XOR on shared vertices or edges. Raster loops are bounded to the screen.
+Full geometric/exception status, indexed Z and TEC arithmetic remain pending.
+
+## Reproduction and validation
+
+Evidence directory: `/tmp/helios-xw-evidence`.
+Durable captures and logs are under the shared repository's ignored
+`local/probes/x-windows-fbc/`; guest disks and ROMs are not included there.
+`base` is an instrumented copy of 92a05d3, capturing CGsix writes and DRAW/BLIT
+reads to `cg6.bin` (16-byte little-endian records: operation, offset, value,
+mask/width). The private source is `/tmp/helios-cg6-baseline`; none of its trace
+instrumentation is included in the fix. The replay tool is in the ignored
+external `harness` package and applies records through the real SystemBus API.
+It reproduced the broken dtlogin and CDE images, then rendered the same traffic
+correctly with the fix. Replaying record 573088 first exposed a genuine Xsun
+quadrilateral/triangle, which motivated the polygon rasterizer.
+The final replay consumed all 811,624 records without an unsupported operation.
+
+`final` boots the fixed core independently from original SS5 OBP/TurboGX ROMs
+with 128 MiB RAM, a copied Solaris 2.6 installation and the configured NVRAM.
+Both graphical root login and serial root login use the existing empty local
+test password. CDE, File Manager and an overlapping xterm show intact borders,
+window controls, icons and backgrounds. Source disks/ROMs remain untouched;
+each running machine owns a separate writable copy under the evidence tree.
+Large injected mouse bursts in the baseline triggered a pre-existing
+`zs3:ring buffer overflow`; no mouse code was changed. Guest X clients are also
+controlled through the serial root shell for expose/repaint checks.
+
+The second test xterm (`HELIOS-expose-check`, geometry `60x15+360+260`)
+covered portions of both File Manager windows and the desktop. After closing
+it, the covered icons, frame edges and background were restored. A subsequent
+`DISPLAY=:0 /usr/openwin/bin/xrefresh` returned successfully and produced a
+clean desktop. Durable image names are `before-login`, `before-desktop`,
+`before-terminal`, `after-login`, `after-desktop`, `after-overlap`,
+`after-expose` and `after-refresh` (PPM originals plus PNG conversions).
+Both probe guests were synced and halted to OBP before stopping their host
+processes. No mouse-drag claim is made from these tests.
+
+Tests cover all indexed destination masks/indices and relative bases, command
+submission/context restoration, ROP retention, clipping, midpoint ties,
+triangle tiling/XOR coverage, quadrilateral scanlines in both windings
+(including crossed edges) and failure atomicity.
+27 CGsix tests; 412 total core tests and 4 UI tests passed. Both format/Clippy
+checks, release builds and all four built-in demos passed. The full core suite
+needs loopback bind permission for its existing network/serial-host tests;
+the restricted sandbox initially rejected the two UDP/DNS test sockets, and
+the suite passed with host loopback access.
+
+Earlier startup work (retained): full TEC register storage, FSQRTd, Type 5
+keyboard and the Sun Mouse Systems endpoint. These limited checks do not
+establish full graphics, mouse timing or audio support.

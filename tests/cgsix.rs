@@ -200,10 +200,10 @@ fn rectangles_exclude_upper_edges_and_clip_signed_coordinates() {
     }
     rectangle(&mut b, (-2i32) as u32, (-2i32) as u32, 2, 1);
     assert_eq!(b.read32(VRAM).unwrap(), 0x76760000);
-    // A second status poll does not resubmit a completed rectangle.
+    // Reading DRAW is a command each time, with the retained vertex bank.
     b.write8(VRAM, 0).unwrap();
     assert_eq!(b.read32(FBC + 0x14).unwrap(), 0);
-    assert_eq!(b.read8(VRAM).unwrap(), 0);
+    assert_eq!(b.read8(VRAM).unwrap(), 0x76);
 }
 
 #[test]
@@ -270,7 +270,7 @@ fn unsupported_accesses_do_not_draw_or_consume_dac_components() {
 fn line_engine_draws_between_alternating_absolute_endpoints() {
     let mut b = bus();
     drawing(&mut b);
-    reg(&mut b, 0x108, 0xea80ff00);
+    reg(&mut b, 0x108, 0xe980ff00);
     reg(&mut b, 0x100, 0x5a);
     reg(&mut b, 0x844, 2); // y1
     reg(&mut b, 0x840, 1); // x1
@@ -344,75 +344,6 @@ fn tec_control_values_are_retained_without_transform_side_effects() {
 }
 
 #[test]
-fn relative_rectangle_mode_persists_and_does_not_leak_into_lines() {
-    let mut b = bus();
-    drawing(&mut b);
-    reg(&mut b, 0x108, 0xea80ff00);
-    reg(&mut b, 0x100, 0x11);
-    reg(&mut b, 0x914, 1);
-    reg(&mut b, 0x910, 1);
-    for (x, y, color) in [(1, 1, 0x11), (4, 4, 0x5a)] {
-        reg(&mut b, 0x904, y);
-        reg(&mut b, 0x900, x);
-        reg(&mut b, 0x100, color);
-        b.read32(FBC + 0x14).unwrap();
-    }
-    for (x, y) in [(1, 1), (2, 1), (1, 2), (2, 2)] {
-        assert_eq!(b.read8(VRAM + (y * WIDTH + x) as u64).unwrap(), 0x11);
-    }
-    for (x, y) in [(4, 4), (5, 4), (4, 5), (5, 5)] {
-        assert_eq!(b.read8(VRAM + (y * WIDTH + x) as u64).unwrap(), 0x5a);
-    }
-    reg(&mut b, 0x844, 7);
-    reg(&mut b, 0x840, 7);
-    reg(&mut b, 0x844, 9);
-    reg(&mut b, 0x840, 9);
-    b.read32(FBC + 0x14).unwrap();
-    assert_eq!(b.read8(VRAM + (7 * WIDTH + 7) as u64).unwrap(), 0x5a);
-    assert_eq!(b.read8(VRAM + (9 * WIDTH + 9) as u64).unwrap(), 0x5a);
-}
-
-#[test]
-fn queued_absolute_rectangles_take_precedence_over_relative_dimensions() {
-    let mut b = bus();
-    drawing(&mut b);
-    reg(&mut b, 0x108, 0xea80ff00);
-    reg(&mut b, 0x100, 0x5a);
-    reg(&mut b, 0x914, 1);
-    reg(&mut b, 0x910, 1);
-    rectangle(&mut b, 2, 2, 5, 5);
-    assert_eq!(b.read8(VRAM + (4 * WIDTH + 4) as u64).unwrap(), 0x5a);
-}
-
-#[test]
-fn rectangle_fifo_accepts_more_than_sixteen_vertices_before_drawing() {
-    let mut b = bus();
-    drawing(&mut b);
-    reg(&mut b, 0x108, 0xea80ff00);
-    reg(&mut b, 0x100, 0x31);
-    for n in 0..10u32 {
-        let x = n * 3;
-        reg(&mut b, 0x904, 1);
-        assert_eq!(b.write32(FBC + 0x900, x).unwrap(), ());
-        reg(&mut b, 0x904, 3);
-        assert_eq!(b.write32(FBC + 0x900, x + 2).unwrap(), ());
-    }
-    b.read32(FBC + 0x14).unwrap();
-    for n in 0..10u32 {
-        let x = n * 3;
-        for y in [1, 2] {
-            for dx in [0, 1] {
-                assert_eq!(
-                    b.read8(VRAM + u64::from(y * WIDTH as u32 + x + dx))
-                        .unwrap(),
-                    0x31
-                );
-            }
-        }
-    }
-}
-
-#[test]
 fn stipple_mode_uses_pattern_bits_and_ones_mode_ignores_them() {
     let mut b = bus();
     drawing(&mut b);
@@ -432,32 +363,10 @@ fn stipple_mode_uses_pattern_bits_and_ones_mode_ignores_them() {
 }
 
 #[test]
-fn fill_spans_use_apoint_and_arectx_with_drawable_offset() {
-    let mut b = bus();
-    drawing(&mut b);
-    reg(&mut b, 0x108, 0xea80ff00);
-    reg(&mut b, 0x100, 0x42);
-    reg(&mut b, 0xc0, 10);
-    reg(&mut b, 0xc4, 20);
-    reg(&mut b, 0x804, 3);
-    reg(&mut b, 0x800, 2);
-    reg(&mut b, 0x900, 5);
-    let row = VRAM + (23 * WIDTH) as u64;
-    assert_eq!(
-        (12..16)
-            .map(|x| b.read8(row + x).unwrap())
-            .collect::<Vec<_>>(),
-        [0x42; 4]
-    );
-    assert_eq!(b.read8(row + 11).unwrap(), 0);
-    assert_eq!(b.read8(row + 16).unwrap(), 0);
-}
-
-#[test]
 fn connected_absolute_lines_start_at_apoint() {
     let mut b = bus();
     drawing(&mut b);
-    reg(&mut b, 0x108, 0xea80ff00);
+    reg(&mut b, 0x108, 0xe980ff00);
     reg(&mut b, 0x100, 0x5a);
     reg(&mut b, 0x804, 2);
     reg(&mut b, 0x800, 1);
@@ -476,7 +385,7 @@ fn connected_absolute_lines_start_at_apoint() {
 fn relative_lines_advance_from_current_point() {
     let mut b = bus();
     drawing(&mut b);
-    reg(&mut b, 0x108, 0xea80ff00);
+    reg(&mut b, 0x108, 0xe980ff00);
     reg(&mut b, 0x100, 0x33);
     reg(&mut b, 0x804, 1);
     reg(&mut b, 0x800, 1);
@@ -497,7 +406,7 @@ fn stippled_lines_use_pattern_bits() {
     drawing(&mut b);
     reg(&mut b, 0x100, 0x96);
     reg(&mut b, 0x104, 0x39);
-    reg(&mut b, 0x108, 0xec80fc30);
+    reg(&mut b, 0x108, 0xed80fc30);
     reg(&mut b, 0x11c, 0);
     reg(&mut b, 0x120, 0x80008000);
     reg(&mut b, 0x844, 0);
@@ -532,130 +441,365 @@ fn color_expansion_font_words_advance_horizontally() {
     assert_eq!(b.read32(FBC + 0x80).unwrap(), 64);
 }
 
+// Sun FBC Reference Manual 3.0, table 3-1: destination-register masks,
+// explicitly transcribed for each primitive and each initial address index.
 #[test]
-fn unpaired_absolute_line_points_do_not_join_later_lines() {
-    let mut b = bus();
-    drawing(&mut b);
-    reg(&mut b, 0x108, 0xea80ff00);
-    reg(&mut b, 0x100, 0x5a);
-    reg(&mut b, 0x844, 2);
-    reg(&mut b, 0x840, 1);
-    b.read32(FBC + 0x14).unwrap();
-    reg(&mut b, 0x844, 4);
-    reg(&mut b, 0x840, 3);
-    b.read32(FBC + 0x14).unwrap();
-    for x in 0..5 {
-        for y in 0..6 {
-            assert_eq!(b.read8(VRAM + (y * WIDTH + x) as u64).unwrap(), 0);
+fn indexed_coordinates_update_the_shared_bank_and_report_the_index() {
+    let masks = [
+        [0b1111, 0b1111, 0b1111, 0b1111], // point
+        [0b0111, 0b1110, 0b1101, 0b1011], // line
+        [0b0011, 0b0110, 0b1100, 0b1001], // triangle
+        [0b0001, 0b0010, 0b0100, 0b1000], // quadrilateral
+        [0b0011, 0b0110, 0b1100, 0b1001], // rectangle
+    ];
+    for (kind, destinations) in masks.into_iter().enumerate() {
+        for (index, mask) in destinations.into_iter().enumerate() {
+            for axis in [0, 4] {
+                for relative in [false, true] {
+                    let mut b = bus();
+                    drawing(&mut b);
+                    for vertex in 0..4 {
+                        reg(&mut b, 0x80 + vertex * 16, 100 + vertex as u32);
+                        reg(&mut b, 0x84 + vertex * 16, 200 + vertex as u32);
+                    }
+                    reg(&mut b, 0xc0, 11);
+                    reg(&mut b, 0xc4, (-7i32) as u32);
+                    reg(&mut b, 4, 0x40 | (index as u32 * 16));
+                    let mode = b.read32(FBC + 4).unwrap() & !0x30;
+                    let register = 0x800 + kind as u64 * 64 + axis + if relative { 16 } else { 0 };
+                    reg(&mut b, register, 9);
+                    let value = if relative {
+                        if axis == 0 {
+                            [112, 109, 110, 111][index]
+                        } else {
+                            [212, 209, 210, 211][index]
+                        }
+                    } else if axis == 0 {
+                        20
+                    } else {
+                        2
+                    };
+                    for vertex in 0..4 {
+                        for checked_axis in [0, 4] {
+                            let original =
+                                if checked_axis == 0 { 100 } else { 200 } + vertex as u32;
+                            let expected = if checked_axis == axis && mask & (1 << vertex) != 0 {
+                                value
+                            } else {
+                                original
+                            };
+                            assert_eq!(b.read32(FBC + 0x80 + vertex * 16 + checked_axis).unwrap(), expected,
+                                "kind={kind} index={index} axis={axis} relative={relative} vertex={vertex}");
+                        }
+                    }
+                    let next = (index + usize::from(axis == 0 || kind == 4)) % 4;
+                    assert_eq!(b.read32(FBC + 4).unwrap(), mode | (next as u32 * 16));
+                }
+            }
         }
     }
 }
 
 #[test]
-fn apoint_replaces_pending_absolute_line_state() {
+fn draw_commands_use_current_vertices_and_attributes_without_a_fifo() {
     let mut b = bus();
     drawing(&mut b);
     reg(&mut b, 0x108, 0xea80ff00);
-    reg(&mut b, 0x100, 0x5a);
-    reg(&mut b, 0x844, 0);
-    reg(&mut b, 0x840, 0);
-    reg(&mut b, 0x804, 4);
-    reg(&mut b, 0x800, 4);
-    reg(&mut b, 0x844, 4);
-    reg(&mut b, 0x840, 5);
-    b.read32(FBC + 0x14).unwrap();
-    assert_eq!(b.read8(VRAM + (4 * WIDTH + 4) as u64).unwrap(), 0x5a);
-    assert_eq!(b.read8(VRAM + (4 * WIDTH + 5) as u64).unwrap(), 0x5a);
-    assert_eq!(b.read8(VRAM).unwrap(), 0);
-}
-
-#[test]
-fn unpaired_absolute_rectangle_point_does_not_join_the_next_rectangle() {
-    let mut b = bus();
-    drawing(&mut b);
-    reg(&mut b, 0x108, 0xea80ff00);
-    reg(&mut b, 0x100, 0x5a);
-    reg(&mut b, 0x904, 0);
-    reg(&mut b, 0x900, 0);
-    b.read32(FBC + 0x14).unwrap();
-    reg(&mut b, 0x904, 4);
-    reg(&mut b, 0x900, 4);
-    reg(&mut b, 0x904, 6);
-    reg(&mut b, 0x900, 6);
-    b.read32(FBC + 0x14).unwrap();
-    assert_eq!(b.read8(VRAM).unwrap(), 0);
-    assert_eq!(b.read8(VRAM + (4 * WIDTH + 4) as u64).unwrap(), 0x5a);
-}
-
-#[test]
-fn rectangle_and_line_pairs_follow_write_order() {
-    let mut b = bus();
-    drawing(&mut b);
-    reg(&mut b, 0x108, 0xea80ff00);
-
-    reg(&mut b, 0x100, 0x5a);
-    reg(&mut b, 0x844, 0);
-    reg(&mut b, 0x840, 0);
-    reg(&mut b, 0x844, 0);
-    reg(&mut b, 0x840, 5);
     reg(&mut b, 0x100, 0x11);
-    rectangle(&mut b, 0, 0, 4, 4);
-    assert_eq!(b.read8(VRAM + 2 * WIDTH as u64 + 2).unwrap(), 0x11);
-
-    reg(&mut b, 0x100, 0x22);
-    rectangle(&mut b, 10, 10, 15, 15);
-    reg(&mut b, 0x100, 0x33);
-    reg(&mut b, 0x844, 12);
-    reg(&mut b, 0x840, 10);
-    reg(&mut b, 0x844, 12);
-    reg(&mut b, 0x840, 14);
-    assert_eq!(b.read8(VRAM + 12 * WIDTH as u64 + 12).unwrap(), 0x33);
+    for (offset, value) in [(0x904, 2), (0x900, 2), (0x904, 5), (0x900, 5)] {
+        reg(&mut b, offset, value);
+    }
+    let pixel = VRAM + (3 * WIDTH + 3) as u64;
+    assert_eq!(b.read8(pixel).unwrap(), 0); // coordinate writes never submit
+    reg(&mut b, 0x100, 0x42);
+    b.read32(FBC + 0x14).unwrap();
+    assert_eq!(b.read8(pixel).unwrap(), 0x42);
+    reg(&mut b, 0x100, 0x73);
+    b.read32(FBC + 0x10).unwrap(); // plain STATUS never submits
+    assert_eq!(b.read8(pixel).unwrap(), 0x42);
+    b.read32(FBC + 0x14).unwrap(); // DRAW explicitly resubmits the same bank
+    assert_eq!(b.read8(pixel).unwrap(), 0x73);
 }
 
 #[test]
-fn vertical_and_horizontal_lines_render_their_interior_pixels() {
+fn relative_rectangles_and_lines_share_coordinates_without_stale_fills() {
     let mut b = bus();
     drawing(&mut b);
-    reg(&mut b, 0x108, 0xea80ff00);
-    reg(&mut b, 0x100, 0x5a);
-    reg(&mut b, 0x844, 2);
-    reg(&mut b, 0x840, 1);
-    reg(&mut b, 0x844, 5);
-    reg(&mut b, 0x840, 1);
-    reg(&mut b, 0x844, 7);
-    reg(&mut b, 0x840, 3);
-    reg(&mut b, 0x844, 7);
-    reg(&mut b, 0x840, 6);
-    b.read32(FBC + 0x14).unwrap();
-    for y in 2..=5 {
-        assert_eq!(
-            b.read8(VRAM + (y * WIDTH + 1) as u64).unwrap(),
-            0x5a,
-            "v y={y}"
-        );
+    reg(&mut b, 0x108, 0xe980ff00); // overlapping: relative extents include endpoint
+    reg(&mut b, 0x100, 0x31);
+    for (x, y, w, h) in [(2, 2, 3, 2), (10, 10, 1, 1)] {
+        for (r, v) in [(0x904, y), (0x900, x), (0x914, h), (0x910, w)] {
+            reg(&mut b, r, v);
+        }
+        b.read32(FBC + 0x14).unwrap();
     }
-    for x in 3..=6 {
-        assert_eq!(
-            b.read8(VRAM + (7 * WIDTH + x) as u64).unwrap(),
-            0x5a,
-            "h x={x}"
-        );
+    reg(&mut b, 0x100, 0x5a);
+    for (r, v) in [(0x844, 4), (0x840, 7), (0x844, 6), (0x840, 7)] {
+        reg(&mut b, r, v);
+    }
+    b.read32(FBC + 0x14).unwrap();
+    for y in 0..15 {
+        for x in 0..15 {
+            let expected = if x == 7 && (4..=6).contains(&y) {
+                0x5a
+            } else if ((2..=5).contains(&x) && (2..=4).contains(&y))
+                || ((10..=11).contains(&x) && (10..=11).contains(&y))
+            {
+                0x31
+            } else {
+                0
+            };
+            assert_eq!(
+                b.read8(VRAM + (y * WIDTH + x) as u64).unwrap(),
+                expected,
+                "{x},{y}"
+            );
+        }
     }
 }
 
 #[test]
-fn line_engine_ignores_fill_clip_rectangle() {
+fn apoint_arectx_spans_obey_draw_submission_offsets_and_overlap_mode() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xe980ff00);
+    reg(&mut b, 0x100, 0x42);
+    reg(&mut b, 0xc0, 10);
+    reg(&mut b, 0xc4, 20);
+    reg(&mut b, 0x804, 3);
+    reg(&mut b, 0x800, 2);
+    reg(&mut b, 0x900, 5);
+    let row = VRAM + (23 * WIDTH) as u64;
+    assert_eq!(b.read8(row + 12).unwrap(), 0);
+    // Offsets apply during indexed writes, never a second time at DRAW.
+    reg(&mut b, 0xc0, 100);
+    reg(&mut b, 0xc4, 200);
+    b.read32(FBC + 0x14).unwrap();
+    for x in 0..20 {
+        assert_eq!(
+            b.read8(row + x).unwrap(),
+            if (12..=15).contains(&x) { 0x42 } else { 0 }
+        );
+    }
+    reg(&mut b, 0x108, 0xea80ff00); // nonoverlapping lines have no area
+    reg(&mut b, 0x100, 0x99);
+    b.read32(FBC + 0x14).unwrap();
+    assert_eq!(b.read8(row + 12).unwrap(), 0x42);
+}
+
+#[test]
+fn line_clipping_and_midpoint_ties_do_not_depend_on_endpoint_order() {
+    let cases = [
+        ((1, 1), (5, 3), [(1, 1), (2, 2), (3, 2), (4, 3), (5, 3)]),
+        ((1, 3), (5, 1), [(1, 3), (2, 3), (3, 2), (4, 2), (5, 1)]),
+        ((1, 1), (3, 5), [(1, 1), (2, 2), (2, 3), (3, 4), (3, 5)]),
+        ((3, 1), (1, 5), [(3, 1), (3, 2), (2, 3), (2, 4), (1, 5)]),
+    ];
+    for (start, end, expected) in cases {
+        for reverse in [false, true] {
+            let mut b = bus();
+            drawing(&mut b);
+            reg(&mut b, 0x108, 0xe980ff00);
+            reg(&mut b, 0x100, 0x5a);
+            reg(&mut b, 0xe0, 2);
+            reg(&mut b, 0xf0, 4);
+            reg(&mut b, 0xe4, 2);
+            reg(&mut b, 0xf4, 4);
+            let points = if reverse { [end, start] } else { [start, end] };
+            for (x, y) in points {
+                reg(&mut b, 0x844, y);
+                reg(&mut b, 0x840, x);
+            }
+            b.read32(FBC + 0x14).unwrap();
+            for y in 0..7 {
+                for x in 0..7 {
+                    let visible =
+                        expected.contains(&(x, y)) && (2..=4).contains(&x) && (2..=4).contains(&y);
+                    assert_eq!(
+                        b.read8(VRAM + u64::from(y * WIDTH as u32 + x)).unwrap(),
+                        if visible { 0x5a } else { 0 },
+                        "{start:?} {end:?}, reverse={reverse}, {x},{y}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn direct_coordinates_restore_context_and_font_does_not_reapply_offsets() {
     let mut b = bus();
     drawing(&mut b);
     reg(&mut b, 0x108, 0xea80ff00);
-    reg(&mut b, 0x100, 0x5a);
-    reg(&mut b, 0xe4, 10);
-    reg(&mut b, 0xf4, 20);
-    reg(&mut b, 0x844, 0);
-    reg(&mut b, 0x840, 0);
-    reg(&mut b, 0x844, 0);
-    reg(&mut b, 0x840, 5);
+    reg(&mut b, 0x100, 0x6c);
+    reg(&mut b, 0xc0, 100);
+    reg(&mut b, 0xc4, 200);
+    for (i, (x, y)) in [(2, 3), (5, 3), (5, 6), (2, 6)].into_iter().enumerate() {
+        reg(&mut b, 0x80 + i as u64 * 16, x);
+        reg(&mut b, 0x84 + i as u64 * 16, y);
+    }
     b.read32(FBC + 0x14).unwrap();
-    assert_eq!(b.read8(VRAM).unwrap(), 0x5a);
-    assert_eq!(b.read8(VRAM + 5).unwrap(), 0x5a);
+    assert_eq!(b.read8(VRAM + (4 * WIDTH + 3) as u64).unwrap(), 0x6c);
+    reg(&mut b, 0x108, 0xea80cccc); // COLOR8 source copy
+    reg(&mut b, 0x80, 8);
+    reg(&mut b, 0x90, 8);
+    reg(&mut b, 0x84, 9);
+    reg(&mut b, 0x1c, 0xab000000);
+    assert_eq!(b.read8(VRAM + (9 * WIDTH + 8) as u64).unwrap(), 0xab);
+    assert_eq!(b.read8(VRAM + (209 * WIDTH + 108) as u64).unwrap(), 0);
+}
+
+#[test]
+fn rasterop_zero_selectors_preserve_masks_and_overlap_but_load_truth_table() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xfd80cccc);
+    reg(&mut b, 0x108, 0x6666);
+    assert_eq!(b.read32(FBC + 0x108).unwrap(), 0xfd806666);
+    reg(&mut b, 0x108, 0x0200ff00); // change only polygon selector and truth table
+    assert_eq!(b.read32(FBC + 0x108).unwrap(), 0xfe80ff00);
+    reg(&mut b, 0x10c, 0x0f);
+    reg(&mut b, 0x110, 0x80000000);
+    reg(&mut b, 0x100, 0xff);
+    b.write32(VRAM, 0x30303030).unwrap();
+    rectangle(&mut b, 0, 0, 4, 1);
+    assert_eq!(b.read32(VRAM).unwrap(), 0x3f303030);
+}
+
+#[test]
+fn indexed_wrapping_and_extreme_lines_are_bounded_and_faults_leave_vram_intact() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xe980ff00);
+    reg(&mut b, 0x100, 0x5a);
+    reg(&mut b, 0xc0, 1);
+    reg(&mut b, 0x800, i32::MAX as u32);
+    assert_eq!(b.read32(FBC + 0x80).unwrap(), i32::MIN as u32);
+    reg(&mut b, 0xc0, 0);
+    for (x, y) in [(i32::MIN as u32, 0), (i32::MAX as u32, 1)] {
+        reg(&mut b, 0x844, y);
+        reg(&mut b, 0x840, x);
+    }
+    b.read32(FBC + 0x14).unwrap();
+    assert_eq!(b.read32(VRAM + WIDTH as u64).unwrap(), 0x5a5a5a5a);
+    assert_eq!(b.read32(VRAM).unwrap(), 0);
+    // An unsupported quadrilateral must not partially draw or corrupt the bank.
+    for (i, (x, y)) in [(1, 1), (5, 5), (9, 1), (5, 3)].into_iter().enumerate() {
+        reg(&mut b, 0x80 + i as u64 * 16, x);
+        reg(&mut b, 0x84 + i as u64 * 16, y);
+    }
+    let generation = b.cgsix().unwrap().generation();
+    assert_eq!(
+        b.read32(FBC + 0x14).unwrap_err().kind,
+        BusErrorKind::Unsupported("CGsix polygon with more than two active edges")
+    );
+    assert_eq!(b.cgsix().unwrap().generation(), generation);
+    assert_eq!(b.read32(VRAM + WIDTH as u64).unwrap(), 0x5a5a5a5a);
+}
+
+#[test]
+fn adjacent_nonoverlapping_triangles_tile_without_gaps_or_double_xor() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xea806666); // XOR with all-one pattern
+    for triangle in [[(1, 1), (5, 1), (1, 5)], [(5, 1), (5, 5), (1, 5)]] {
+        for (x, y) in triangle {
+            reg(&mut b, 0x884, y);
+            reg(&mut b, 0x880, x);
+        }
+        b.read32(FBC + 0x14).unwrap();
+    }
+    for y in 0..7 {
+        for x in 0..7 {
+            let expected = if (1..5).contains(&x) && (1..5).contains(&y) {
+                255
+            } else {
+                0
+            };
+            assert_eq!(
+                b.read8(VRAM + (y * WIDTH + x) as u64).unwrap(),
+                expected,
+                "{x},{y}"
+            );
+        }
+    }
+}
+
+#[test]
+fn overlapping_triangle_edges_and_interior_apply_rop_once_per_pixel() {
+    let mut b = bus();
+    drawing(&mut b);
+    reg(&mut b, 0x108, 0xe9806666);
+    for y in 0..7 {
+        for x in 0..7 {
+            b.write8(VRAM + (y * WIDTH + x) as u64, 0x3c).unwrap();
+        }
+    }
+    for (x, y) in [(1, 1), (5, 1), (1, 5)] {
+        reg(&mut b, 0x884, y);
+        reg(&mut b, 0x880, x);
+    }
+    b.read32(FBC + 0x14).unwrap();
+    for y in 0..7 {
+        for x in 0..7 {
+            let expected = if x >= 1 && y >= 1 && x + y <= 6 {
+                0xc3
+            } else {
+                0x3c
+            };
+            assert_eq!(
+                b.read8(VRAM + (y * WIDTH + x) as u64).unwrap(),
+                expected,
+                "{x},{y}"
+            );
+        }
+    }
+    b.read32(FBC + 0x14).unwrap();
+    for y in 0..7 {
+        for x in 0..7 {
+            assert_eq!(b.read8(VRAM + (y * WIDTH + x) as u64).unwrap(), 0x3c);
+        }
+    }
+}
+
+#[test]
+fn quadrilateral_fills_use_ideal_edges_in_nonoverlap_mode() {
+    // Each mask names the covered x coordinates of an integer-pixel row.
+    let cases = [
+        (
+            [(1, 1), (6, 1), (4, 5), (3, 5)],
+            [0u8, 0b00111110, 0b00111100, 0b00011100, 0b00011000, 0, 0],
+        ),
+        (
+            // A bow tie has four rectangular corners but crossed edges.
+            [(1, 1), (5, 5), (1, 5), (5, 1)],
+            [0u8, 0b00011110, 0b00001100, 0, 0b00001100, 0, 0],
+        ),
+    ];
+    for (points, rows) in cases {
+        for reverse in [false, true] {
+            let mut b = bus();
+            drawing(&mut b);
+            reg(&mut b, 0x108, 0xea80ff00);
+            reg(&mut b, 0x100, 0x42);
+            let mut vertices = points;
+            if reverse {
+                vertices.reverse();
+            }
+            for (x, y) in vertices {
+                reg(&mut b, 0x8c4, y);
+                reg(&mut b, 0x8c0, x);
+            }
+            b.read32(FBC + 0x14).unwrap();
+            for (y, mask) in rows.into_iter().enumerate() {
+                for x in 0..8 {
+                    assert_eq!(
+                        b.read8(VRAM + (y * WIDTH + x) as u64).unwrap(),
+                        if mask & (1 << x) != 0 { 0x42 } else { 0 },
+                        "{points:?}, reverse={reverse}, {x},{y}"
+                    );
+                }
+            }
+        }
+    }
 }
