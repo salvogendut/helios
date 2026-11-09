@@ -35,6 +35,24 @@ fn ss20_layout_uses_the_high_sun4m_map_and_reference_mmu() {
     assert_eq!(layout.ecc, Some(0x0f_0000_0000));
     assert_eq!(layout, MachineProfile::Axil320.layout());
 
+    let mut ss20 = Machine::with_profile(
+        MachineProfile::Ss20,
+        16 * 1024 * 1024,
+        &0u32.to_be_bytes(),
+        MachineProfile::Ss20.default_nvram(),
+    )
+    .unwrap();
+    assert!(ss20.bus.sx().is_some());
+    let mut axil = Machine::with_profile(
+        MachineProfile::Axil320,
+        16 * 1024 * 1024,
+        &0u32.to_be_bytes(),
+        MachineProfile::Axil320.default_nvram(),
+    )
+    .unwrap();
+    assert!(axil.bus.sx().is_none());
+    let _ = (&mut ss20, &mut axil);
+
     let mmu = MachineProfile::Ss20.mmu();
     assert_eq!(mmu, MmuConfig::ss20());
     assert_eq!(mmu.prom_base, layout.prom);

@@ -906,8 +906,9 @@ during SBus enumeration. POST still reports the MBus cache-tag failure
 (`Address = 0x4000_0000`), so this is an interactive console, not a clean POST.
 
 With `--machine axil320`, the Axil 320 ROM reaches the same NVRAM checksum
-reset path; it has not yet been re-verified to a prompt after the VSIMM/TLB
-fixes. The default Axil IDPROM identity is MAC `00:00:3c:13:de:ad`, serial
+reset path. The Axil profile deliberately does not install the SS-20 built-in
+SX/VSIMM device; those address windows remain unpopulated. It has not yet been
+re-verified to a prompt after the VSIMM/TLB fixes. The default Axil IDPROM identity is MAC `00:00:3c:13:de:ad`, serial
 `c0:ff:ee`, host ID `72c0ffee` (IDPROM machine type `0x72`); the user's physical
 machine banner matches this identity.
 

@@ -119,8 +119,8 @@ impl Sun4mLayout {
         }
     }
 
-    /// SPARCstation 20 / Axil 320 sun4m decode. Device models stay the SS-5
-    /// set; only the high physical bases, PROM and IOMMU identity differ.
+    /// SPARCstation 20 sun4m decode. The Axil 320 reuses the CPU/memory map
+    /// but does not expose the SS-20 built-in SX/VSIMM device.
     #[allow(clippy::unusual_byte_groupings)]
     pub const fn ss20() -> Self {
         Self {

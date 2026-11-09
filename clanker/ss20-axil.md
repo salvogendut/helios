@@ -241,8 +241,9 @@ VSIMM there is no built-in frame buffer. NetBSD is the useful register source:
 
 ## VSIMM/SX implementation (2026-11-09)
 
-`src/devices/sx.rs` now implements a functional built-in SX/cg14 subset for the
-SS-20 and Axil profiles: the SX register block at `0xf8000000` (ID and page
+`src/devices/sx.rs` implements a functional built-in SX/cg14 subset for the
+SS-20 only; the Axil 320 uses the same CPU/memory profile but has no VSIMM or
+built-in SX device. The subset provides: the SX register block at `0xf8000000` (ID and page
 bounds), the VSIMM control block at `0x9c000000` (cursor/DAC/CLUT storage), the
 8/16/32-bit-addressable VRAM window at `0xfc000000`, and its SX-memory alias at
 `0x800000000`. `Machine::with_profile` installs it for non-SS5 profiles, and

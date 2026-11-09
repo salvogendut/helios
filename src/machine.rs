@@ -55,6 +55,10 @@ impl MachineProfile {
         }
     }
 
+    pub const fn builtin_sx(self) -> bool {
+        matches!(self, Self::Ss20)
+    }
+
     pub const fn nvram_machine_type(self) -> u8 {
         match self {
             Self::Ss5 => 0x80,
@@ -178,7 +182,7 @@ impl Machine {
         };
         machine.cpu.use_mmu_config(profile.mmu());
         machine.install_prom(prom, nvram)?;
-        if profile != MachineProfile::Ss5 {
+        if profile.builtin_sx() {
             machine
                 .bus
                 .install_sx(Sx::new())
