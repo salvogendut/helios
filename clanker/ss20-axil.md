@@ -255,3 +255,9 @@ only contains probe patterns, not a Sun logo or text. The 64 MiB VRAM window is
 a bring-up aperture so the OBP's size probe cannot hit an unmapped page; the
 modelled VSIMM is still functionally 8 MiB. SX rendering instructions, DBRI,
 CLUT/DAC indirect sequencing and the OBP cg14 console binding are not complete.
+
+The desktop frontend now accepts `--machine ss20`/`--machine axil320` and calls
+`Machine::framebuffer_pixels`, which selects the built-in SX path when no CGsix
+is installed. The OBP still opens `/obio/cgfourteen@2,0` unsuccessfully
+(`open-dev` returns 0), so the screen falls back to ttya; the UI therefore shows
+the SX VRAM state but not yet a firmware console.

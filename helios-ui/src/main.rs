@@ -8,7 +8,7 @@ use helios::devices::{
     scsi::MediaKind,
     serial::Channel,
 };
-use helios::machine::{Machine, DEFAULT_RAM_BYTES};
+use helios::machine::{Machine, MachineProfile, DEFAULT_RAM_BYTES};
 use minifb::{InputCallback, Key, Window, WindowOptions};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -18,7 +18,7 @@ use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const TITLE: &str = "HELIOS — SPARCstation 5 — Pause = Sun Stop (hold with A)";
+const TITLE_SUFFIX: &str = "Pause = Sun Stop (hold with A)";
 
 struct Display {
     pixels: Vec<u32>,
@@ -130,12 +130,12 @@ fn worker(
             break;
         }
         if frame_at.elapsed() >= Duration::from_millis(33) {
-            machine.bus.cgsix().unwrap().pixels(&mut pixels);
+            let _ = machine.framebuffer_pixels(&mut pixels);
             display.lock().unwrap().pixels.copy_from_slice(&pixels);
             frame_at = Instant::now();
         }
     }
-    machine.bus.cgsix().unwrap().pixels(&mut pixels);
+    let _ = machine.framebuffer_pixels(&mut pixels);
     {
         let mut frame = display.lock().unwrap();
         frame.pixels = pixels;
@@ -165,15 +165,25 @@ fn worker(
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let usage = "Usage: helios-ui SS5_PROM TURBOGX_ROM [--nvram IMAGE] [--nvram-out NEW_IMAGE] [--disk RAW_IMAGE | --disk-rw RAW_IMAGE] [--cdrom ISO_IMAGE]\nDisk at SCSI ID 3 (512-byte blocks); --disk-rw permits guest writes to an existing image.\n--disk and CD-ROM at ID 6 (2048-byte sectors) remain read-only. Images are never created or truncated.";
-    let Some(prom) = args.next() else {
+    let usage = "Usage: helios-ui SS5_PROM TURBOGX_ROM [OPTIONS]\n       helios-ui --machine ss20 SS20_PROM [OPTIONS]\n       helios-ui --machine axil320 AXIL_PROM [OPTIONS]\nOptions: [--nvram IMAGE] [--nvram-out NEW_IMAGE] [--disk RAW_IMAGE | --disk-rw RAW_IMAGE] [--cdrom ISO_IMAGE]\nDisk at SCSI ID 3 (512-byte blocks); --disk-rw permits guest writes to an existing image.\n--disk and CD-ROM at ID 6 (2048-byte sectors) remain read-only. Images are never created or truncated.";
+    let Some(first) = args.next() else {
         return Err(usage.into());
     };
-    if prom == "--help" || prom == "-h" {
+    if first == "--help" || first == "-h" {
         println!("{usage}\nClose the window to exit. Escape is sent to the guest.\nGuest keyboard layout: Sun Type 5 US. Hold Pause and A for Stop-A.");
         return Ok(());
     }
-    let rom = args.next().ok_or(usage)?;
+    let (profile, prom, turbo_rom) = if first == "--machine" {
+        let name = args.next().ok_or(usage)?;
+        let profile = match name.to_str() {
+            Some("ss20") => MachineProfile::Ss20,
+            Some("axil320") => MachineProfile::Axil320,
+            _ => return Err(usage.into()),
+        };
+        (profile, args.next().ok_or(usage)?, None)
+    } else {
+        (MachineProfile::Ss5, first, Some(args.next().ok_or(usage)?))
+    };
     let mut nvram = Nvram::default();
     let mut nvram_out = None;
     let mut disk = None;
@@ -213,7 +223,8 @@ fn run() -> Result<(), String> {
             _ => return Err(usage.into()),
         }
     }
-    let mut machine = Machine::ss5_with_nvram(
+    let mut machine = Machine::with_profile(
+        profile,
         DEFAULT_RAM_BYTES,
         &std::fs::read(prom).map_err(|e| e.to_string())?,
         nvram,
@@ -230,16 +241,19 @@ fn run() -> Result<(), String> {
             result.map_err(|error| format!("SCSI ID {id}, {}: {error}", path.display()))?;
         }
     }
-    machine
-        .bus
-        .install_cgsix(
-            Cgsix::new(&std::fs::read(rom).map_err(|e| e.to_string())?)
-                .map_err(|e| format!("{e:?}"))?,
-        )
-        .map_err(|e| e.to_string())?;
+    if let Some(rom) = turbo_rom {
+        machine
+            .bus
+            .install_cgsix(
+                Cgsix::new(&std::fs::read(rom).map_err(|e| e.to_string())?)
+                    .map_err(|e| format!("{e:?}"))?,
+            )
+            .map_err(|e| e.to_string())?;
+    }
     machine.bus.devices_mut().unwrap().keyboard = Some(Keyboard::default());
+    let title = format!("HELIOS — {} — {TITLE_SUFFIX}", profile.target());
     let mut window = Window::new(
-        TITLE,
+        &title,
         WIDTH,
         HEIGHT,
         WindowOptions {
@@ -255,7 +269,7 @@ fn run() -> Result<(), String> {
     }));
     window.set_input_callback(Box::new(Input(input.clone())));
     eprint!("{}", include_str!("../../sun_ascii.txt"));
-    eprintln!("{TITLE}\n128 MiB RAM, TurboGX 1152×900. Firmware startup may take a few minutes.");
+    eprintln!("{title}\n128 MiB RAM, 1152×900 framebuffer. Firmware startup may take a few minutes.");
     let display = Arc::new(Mutex::new(Display {
         pixels: vec![0; WIDTH * HEIGHT],
         stop_title: None,

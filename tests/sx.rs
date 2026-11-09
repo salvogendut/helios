@@ -19,7 +19,7 @@ fn ss20_installs_builtin_sx_and_maps_vsimm_control_and_vram() {
         .unwrap();
     machine.bus.write32(VSIMM_VRAM_BASE, 0x0101_0101).unwrap();
     let mut pixels = vec![0u32; WIDTH * HEIGHT];
-    machine.bus.sx().unwrap().pixels(&mut pixels);
+    assert!(machine.framebuffer_pixels(&mut pixels));
     assert_eq!(pixels[0], 0x00ff_0000);
     assert_eq!(pixels[1], 0x00ff_0000);
 }

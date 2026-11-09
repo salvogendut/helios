@@ -139,3 +139,10 @@ the exact probe conditions are in [firmware.md](firmware.md#graphical-obp-consol
 
 The implementation and firmware-free tests are newly written Rust; no reference
 implementation, font, firmware or framebuffer screenshot is bundled.
+
+## SS-20 built-in SX/VSIMM
+
+`helios-ui --machine ss20 local/firmware/ss10-20-v2.25r-rom --nvram local/ss20-ttya.nvram`
+uses the built-in SX framebuffer path instead of the SS-5 TurboGX card. The
+VIMM/SX model exposes registers, VRAM and CLUT pixels; the OBP cg14 console
+binding is not complete yet, so the ttya monitor remains the working console.

@@ -58,8 +58,9 @@ modules, low slots first.
   framebuffer, DBRI audio and BPP are not modeled.
 - The built-in SX/cg14 subset exposes the SX register block, VSIMM control
   block, VRAM and the ASI `0x28` SX-memory alias. `Machine::framebuffer_pixels`
-  returns SX pixels when no CGsix is installed. SX rendering instructions and
-  the OBP graphical-console binding remain unimplemented.
+  returns SX pixels when no CGsix is installed, and the desktop frontend accepts
+  `--machine ss20`/`--machine axil320` with the firmware image. SX rendering
+  instructions and the OBP graphical-console binding remain unimplemented.
 - The integrated ESP accepts the SS-20/Axil 32-bit register lane accesses and
   test-mode probe commands, while the SS-5 profile retains byte-only access and
   strict reserved-register behavior.
