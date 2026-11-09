@@ -222,7 +222,8 @@ Select an SS-20 or Axil 320 profile with its high-address firmware:
 cargo run --release -- boot local/firmware/ss10-20-v2.25r-rom \
   --machine ss20 --keyboard --nvram local/ss20-ttya.nvram --steps 300000000
 cargo run --release -- boot local/firmware/axil320-2-19.bin \
-  --machine axil320 --steps 50000000
+  --machine axil320 --keyboard --cgsix-rom local/firmware/turbogx.bin \
+  --nvram local/axil-ttya.nvram --steps 300000000
 ```
 
 TCP NAT and host port forwards are not implemented yet. See

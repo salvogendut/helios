@@ -283,3 +283,13 @@ probes `cgsix@2,0`, switches the console to the card, and draws the machine
 banner into the framebuffer (~1.0M non-black pixels). Without the card it prints
 `screen not found.` and stays on tty. Serial output stops once OBP selects the
 screen console; a valid Axil ttya NVRAM image is still needed for a serial `ok`.
+
+## Axil clean serial prompt
+
+The Axil OBP graphical console accepted Type 5 key stations and `nvstore`; the
+resulting `local/axil-ttya.nvram` selects `ttya` for both input and output,
+disables auto-boot and sets `diag-switch?` false. Booting that image with the
+CG6 and keyboard reaches a clean serial `ok` in about 126M steps, with no NVRAM
+checksum reset and no POST cache-tag error. The NVRAM image is generated state,
+kept under ignored `local/`, SHA-256
+`e9e07db1974cb11c1c62d3e02c31609d232cea5b04b6f294cedfe555a73367be`.

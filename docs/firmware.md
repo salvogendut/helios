@@ -913,9 +913,18 @@ Axil 320 ROM finds a CG6 in SBus slot 2 (`cgsix@2,0`), switches the console to
 it and draws the machine banner there. Without a CG6 the ROM prints
 `screen not found.` and falls back to tty. The default Axil IDPROM identity is
 MAC `00:00:3c:13:de:ad`, serial `c0:ff:ee`, host ID `72c0ffee` (IDPROM machine
-type `0x72`); the user's physical machine banner matches this identity. Axil
-still needs a valid ttya NVRAM image for a serial `ok`; its blank NVRAM takes
-the checksum-reset path and sets `diag-switch?` true.
+type `0x72`); the user's physical machine banner matches this identity.
+
+The generated `local/axil-ttya.nvram` has `input-device ttya`,
+`output-device ttya`, `auto-boot? false` and `diag-switch? false`. It was
+created from the Axil OBP's graphical console and now boots to a clean serial
+`ok` without the configuration-checksum reset:
+
+```text
+./target/release/helios boot local/firmware/axil320-2-19.bin \
+  --machine axil320 --keyboard --cgsix-rom local/firmware/turbogx.bin \
+  --nvram local/axil-ttya.nvram --steps 300000000
+```
 
 The remaining work is the `/obio/zs@0,0` device-tree/console path, a valid
 SS-20 NVRAM image with a serial console, and then the SuperSPARC-II I/D-cache
