@@ -5,13 +5,71 @@ use crate::bus::{Bus, BusError, BusErrorKind, IoTlbFlush, MemoryRequest, MemoryR
 use crate::cache::CacheDiagnostics;
 use crate::devices::io_control::IoMapping;
 use crate::dma::{DmaError, DmaFault};
+use std::collections::HashMap;
 
 pub const PCR_EN: u32 = 1;
 pub const PCR_NF: u32 = 2;
 pub const PCR_BM: u32 = 1 << 14;
 pub const PROM_BASE: u64 = 0x7000_0000;
 const PCR_VERSION: u32 = 0x0400_0000;
-const PHYSICAL_MASK: u64 = 0x7fff_ffff;
+
+/// Address-translation identity of one sun4m CPU/profile. The microSPARC-II
+/// reports 31-bit physical addresses and a 1 MiB boot PROM window; the
+/// SuperSPARC reference MMU used by the SS-20/Axil reports 36 bits and a
+/// 512 KiB boot window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MmuConfig {
+    pub prom_base: u64,
+    pub boot_mask: u32,
+    pub physical_mask: u64,
+    pub pte_physical_mask: u32,
+    pub pte_table_mask: u32,
+    pub reference_mmu: bool,
+    /// Boot-mode control bit: bit 14 on microSPARC-II, bit 13 on SuperSPARC.
+    pub boot_mode_bit: u32,
+    pub control_mask: u32,
+    pub context_table_mask: u32,
+    pub fault_status_mask: u32,
+    pub replacement_mask: u32,
+    pub mmu_version: u32,
+}
+
+impl MmuConfig {
+    pub const fn ss5() -> Self {
+        Self {
+            prom_base: PROM_BASE,
+            boot_mask: 0x0fff_ffff,
+            physical_mask: 0x7fff_ffff,
+            pte_physical_mask: 0x07ff_ff00,
+            pte_table_mask: 0x07ff_fff0,
+            reference_mmu: false,
+            boot_mode_bit: PCR_BM,
+            control_mask: 0x003e_ff03,
+            context_table_mask: 0x00ff_ffc0,
+            fault_status_mask: 0x0001_6fff,
+            replacement_mask: 0x01f1_ffff,
+            mmu_version: PCR_VERSION,
+        }
+    }
+
+    #[allow(clippy::unusual_byte_groupings)]
+    pub const fn ss20() -> Self {
+        Self {
+            prom_base: 0xf_f000_0000,
+            boot_mask: 0x0007_ffff,
+            physical_mask: 0xffff_ffff,
+            pte_physical_mask: 0xffff_ff00,
+            pte_table_mask: 0xffff_fff0,
+            reference_mmu: true,
+            boot_mode_bit: 1 << 13,
+            control_mask: 0x00ff_ffff,
+            context_table_mask: 0xffff_ffc0,
+            fault_status_mask: 0xffff_ffff,
+            replacement_mask: 0xffff_ffff,
+            mmu_version: 0x0800_0000,
+        }
+    }
+}
 const REFERENCED: u32 = 1 << 5;
 const MODIFIED: u32 = 1 << 6;
 const TLB_ENTRIES: usize = 64;
@@ -134,7 +192,7 @@ impl Access {
 struct Entry {
     virtual_base: u32,
     offset_mask: u32,
-    context: u8,
+    context: u32,
     level: u8,
     pte_address: Option<u64>,
     pte: u32,
@@ -143,17 +201,17 @@ struct Entry {
 }
 
 impl Entry {
-    fn matches(self, address: u32, context: u8, supervisor: bool) -> bool {
+    fn matches(self, address: u32, context: u32, supervisor: bool) -> bool {
         let global = self.lower & 8 != 0;
         self.upper & 0xc == 8
             && self.lower & 6 == 0
             && address & !self.offset_mask == self.virtual_base
-            && (context == self.context || (supervisor && global))
+            && ((context & 0xff) == (self.context & 0xff) || (supervisor && global))
     }
 
     fn retag(&mut self, upper: u32) {
         self.upper = upper;
-        self.context = (upper >> 4) as u8;
+        self.context = upper >> 4;
         (self.level, self.offset_mask) = match upper & 7 {
             3 => (1, 0x00ff_ffff),
             1 => (2, 0x0003_ffff),
@@ -166,20 +224,40 @@ impl Entry {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Srmmu {
+    config: MmuConfig,
     control: u32,
     context_table: u32,
-    context: u8,
+    context: u32,
     fault_status: u32,
     fault_address: u32,
     tlb: [Entry; TLB_ENTRIES],
     trcr: u32,
     caches: CacheDiagnostics,
+    /// SuperSPARC MMU breakpoint/counter registers (ASI 0x38, 0x49..=0x4c).
+    breakpoints: [u64; 4],
+    counter_value: u32,
+    counter_control: u32,
+    counter_status: u32,
+    breakpoint_action: u32,
+    /// SuperSPARC SuperCache/MXCC register subset (ASI 0x02).
+    mxcc_data: [u64; 4],
+    mxcc_regs: [u64; 8],
+    /// SuperSPARC II I/D-TLB diagnostic storage (ASI 0x05/0x06), keyed by
+    /// the full diagnostic address so entry/tag writes never alias.
+    itlb_diag: HashMap<u32, u32>,
+    dtlb_diag: HashMap<u32, u32>,
+    /// Diagnostic view of the SuperSPARC II cached level-2 PTPs (ASI 5/6
+    /// SEL 5/6). The reference firmware checks these after a 16 MiB TLB fill.
+    itlb_ptp2: Option<(u32, u32)>,
+    dtlb_ptp2: [Option<(u32, u32)>; 4],
+    dtlb_ptp2_next: usize,
 }
 
 impl Default for Srmmu {
     /// Translation and boot mode disabled, for the bare-metal harness.
     fn default() -> Self {
         Self {
+            config: MmuConfig::ss5(),
             control: 0,
             context_table: 0,
             context: 0,
@@ -189,6 +267,18 @@ impl Default for Srmmu {
             // Functional reset choice: all 64 entries initially replaceable.
             trcr: 63 << 7,
             caches: CacheDiagnostics::default(),
+            breakpoints: [0; 4],
+            counter_value: 0,
+            counter_control: 0,
+            counter_status: 0,
+            breakpoint_action: 0,
+            mxcc_data: [0; 4],
+            mxcc_regs: [0; 8],
+            itlb_diag: HashMap::new(),
+            dtlb_diag: HashMap::new(),
+            itlb_ptp2: None,
+            dtlb_ptp2: [None; 4],
+            dtlb_ptp2_next: 0,
         }
     }
 }
@@ -207,7 +297,7 @@ impl Srmmu {
             MemoryRequest {
                 kind,
                 cpu,
-                boot_mode: self.control & PCR_BM != 0,
+                boot_mode: self.boot_mode(),
                 cacheable,
             },
         );
@@ -239,14 +329,29 @@ impl Srmmu {
         self.finish(access, result)
     }
     pub fn reset() -> Self {
-        Self {
-            control: PCR_BM,
+        Self::reset_with(MmuConfig::ss5())
+    }
+
+    pub fn reset_with(config: MmuConfig) -> Self {
+        let mut mmu = Self {
+            config,
+            control: config.boot_mode_bit,
             ..Self::default()
-        }
+        };
+        mmu.caches.set_reference(config.reference_mmu);
+        mmu
+    }
+
+    pub fn config(&self) -> MmuConfig {
+        self.config
     }
 
     pub fn control(&self) -> u32 {
-        PCR_VERSION | self.control
+        self.config.mmu_version | self.control
+    }
+
+    pub fn boot_mode(&self) -> bool {
+        self.control & self.config.boot_mode_bit != 0
     }
 
     /// Non-destructive debugger views. ASI 4 also has destructive read aliases.
@@ -263,9 +368,89 @@ impl Srmmu {
         self.caches.flush_instruction(address);
     }
 
+    fn flush_matching(&mut self, address: u32) {
+        // Diagnostic entries use the low page index in their tag word (SEL 0).
+        // A demap invalidates the cached PTE's V bit, not the whole register.
+        let mask = match (address >> 8) & 7 {
+            0 => 0xffff_f000,
+            1 => 0xfffc_0000,
+            _ => 0xff00_0000,
+        };
+        for table in [&mut self.itlb_diag, &mut self.dtlb_diag] {
+            let bases: Vec<u32> = table
+                .keys()
+                .filter(|key| *key & 0xfff == 0)
+                .copied()
+                .collect();
+            for base in bases {
+                if table.get(&base).copied().unwrap_or(0) & mask == address & mask {
+                    if let Some(value) = table.get_mut(&(base + 0x200)) {
+                        *value &= !0x20;
+                    }
+                }
+            }
+        }
+        for entry in &mut self.tlb {
+            if entry.upper & mask == address & mask {
+                entry.upper &= !8;
+            }
+        }
+        let tag_mask = address & 0xfffc_0000;
+        for entry in &mut self.dtlb_ptp2 {
+            if entry.is_some_and(|(tag, _)| tag & 0xfffc_0000 == tag_mask) {
+                *entry = None;
+            }
+        }
+        if self
+            .itlb_ptp2
+            .is_some_and(|(tag, _)| tag & 0xfffc_0000 == tag_mask)
+        {
+            self.itlb_ptp2 = None;
+        }
+    }
+
+    fn flush_context(&mut self) {
+        // SEL 1 carries the tag context; SEL 2's V bit is cleared for the
+        // matching entries. Entries of other contexts survive.
+        let context = self.context;
+        for table in [&mut self.itlb_diag, &mut self.dtlb_diag] {
+            let bases: Vec<u32> = table
+                .keys()
+                .filter(|key| *key & 0xfff == 0)
+                .copied()
+                .collect();
+            for base in bases {
+                if table.get(&(base + 0x100)).copied().unwrap_or(0) & 0xff == (context & 0xff) {
+                    if let Some(value) = table.get_mut(&(base + 0x200)) {
+                        *value &= !0x20;
+                    }
+                }
+            }
+        }
+        for entry in &mut self.tlb {
+            if (entry.upper >> 4) & 0xff == context {
+                entry.upper &= !8;
+            }
+        }
+    }
+
     fn flush(&mut self) {
         for entry in &mut self.tlb {
             entry.upper &= !8;
+        }
+        if self.config.reference_mmu {
+            for table in [&mut self.itlb_diag, &mut self.dtlb_diag] {
+                let keys: Vec<u32> = table
+                    .keys()
+                    .filter(|key| *key & 0xfff == 0x200)
+                    .copied()
+                    .collect();
+                for key in keys {
+                    if let Some(value) = table.get_mut(&key) {
+                        *value &= !0x20;
+                    }
+                }
+            }
         }
     }
 
@@ -283,7 +468,7 @@ impl Srmmu {
         }
     }
 
-    fn insert(&mut self, entry: Entry) {
+    fn insert(&mut self, entry: Entry) -> usize {
         let wrap = ((self.trcr >> 7) & 63) as usize;
         let limit = if self.trcr & (1 << 13) != 0 {
             wrap.min(47)
@@ -305,6 +490,7 @@ impl Srmmu {
         if self.trcr & (1 << 6) == 0 {
             self.trcr = (self.trcr & !63) | ((counter + 1) % (limit + 1)) as u32;
         }
+        index
     }
 
     fn diagnostic_read(&self, address: u32) -> Result<u32, MemoryError> {
@@ -429,12 +615,39 @@ impl Srmmu {
         match asi {
             3 if width == Width::Word => return self.probe(bus, address),
             4 if width == Width::Word => return self.read_register(address),
-            6 if width == Width::Word => return self.diagnostic_read(address),
+            5 if width == Width::Word && self.config.reference_mmu => {
+                if let Some(value) = self.read_ptp2(address, true) {
+                    return Ok(value);
+                }
+                return Ok(*self.itlb_diag.get(&address).unwrap_or(&0));
+            }
+            6 if width == Width::Word => {
+                return if self.config.reference_mmu {
+                    let value = self
+                        .read_ptp2(address, false)
+                        .unwrap_or_else(|| *self.dtlb_diag.get(&address).unwrap_or(&0));
+                    Ok(value)
+                } else {
+                    self.diagnostic_read(address)
+                };
+            }
             0x0c..=0x0e if width == Width::Word => {
                 return Ok(self.caches.read(address, asi, width));
             }
             0x0f => return Ok(self.caches.read(address, asi, width)),
+            0x30..=0x32 | 0x36 | 0x37 | 0x39 if width == Width::Word => return Ok(0),
+            0x38 | 0x49..=0x4c if width == Width::Word => {
+                return Ok(self.reference_diagnostic_read(address, asi));
+            }
+            2 if width == Width::Word => {
+                return Ok(if address == 0x01c0_0a04 {
+                    self.mxcc_regs[3] as u32
+                } else {
+                    0
+                });
+            }
             8..=11 | 0x20 => {}
+            0x21..=0x2f if self.config.reference_mmu => {}
             _ => {
                 return Err(MemoryError::UnsupportedAsi {
                     asi,
@@ -479,13 +692,34 @@ impl Srmmu {
         Self::aligned(address, width)?;
         match asi {
             3 if width == Width::Word => {
-                if (address >> 8) & 15 <= 4 {
-                    self.flush();
+                match (address >> 8) & 15 {
+                    0..=2 => self.flush_matching(address),
+                    3 => self.flush_context(),
+                    4 => self.flush(),
+                    _ => {}
                 }
                 return Ok(());
             }
             4 if width == Width::Word => return self.write_register(address, value),
-            6 if width == Width::Word => return self.diagnostic_write(address, value),
+            5 if width == Width::Word && self.config.reference_mmu => {
+                self.write_ptp2(address, value, true);
+                self.itlb_diag.insert(address, value);
+                if (address >> 8) & 7 <= 3 {
+                    self.install_diag_entry(address, true);
+                }
+                return Ok(());
+            }
+            6 if width == Width::Word => {
+                if self.config.reference_mmu {
+                    self.write_ptp2(address, value, false);
+                    self.dtlb_diag.insert(address, value);
+                    if (address >> 8) & 7 <= 3 {
+                        self.install_diag_entry(address, false);
+                    }
+                    return Ok(());
+                }
+                return self.diagnostic_write(address, value);
+            }
             0x0c..=0x0e if width == Width::Word => {
                 self.caches.write(address, asi, width, value);
                 return Ok(());
@@ -494,11 +728,24 @@ impl Srmmu {
                 self.caches.write(address, asi, width, value);
                 return Ok(());
             }
+            0x30..=0x32 | 0x36 | 0x37 | 0x39 if width == Width::Word => return Ok(()),
+            0x38 | 0x49..=0x4c if width == Width::Word => {
+                self.reference_diagnostic_write(address, asi, u64::from(value));
+                return Ok(());
+            }
+            2 if width == Width::Word => {
+                if address == 0x01c0_0a04 {
+                    self.mxcc_regs[3] =
+                        (self.mxcc_regs[3] & 0xffff_ffff_0000_0000) | u64::from(value);
+                }
+                return Ok(());
+            }
             0x10..=0x14 if width == Width::Word => {
-                self.caches.flush(address, self.context, asi);
+                self.caches.flush(address, self.context as u8, asi);
                 return Ok(());
             }
             8..=11 | 0x20 => {}
+            0x21..=0x2f if self.config.reference_mmu => {}
             _ => {
                 return Err(MemoryError::UnsupportedAsi {
                     asi,
@@ -539,10 +786,32 @@ impl Srmmu {
     ) -> Result<[u32; 2], MemoryError> {
         self.sync_io_flushes(bus);
         Self::aligned_to(address, 8)?;
-        if asi == 0x0f {
-            return Ok(self.caches.read_doubleword(address));
+        if asi == 0x0f || (self.config.reference_mmu && matches!(asi, 0x0c..=0x0e)) {
+            return Ok(self.caches.read_doubleword(address, asi));
         }
-        Self::memory_space(asi, MemoryOperation::LoadDoubleword)?;
+        if self.config.reference_mmu && matches!(asi, 5 | 6) {
+            let table = if asi == 5 {
+                &self.itlb_diag
+            } else {
+                &self.dtlb_diag
+            };
+            return Ok([
+                *table.get(&address).unwrap_or(&0),
+                *table.get(&(address + 4)).unwrap_or(&0),
+            ]);
+        }
+        if matches!(asi, 0x30..=0x32) {
+            return Ok([0; 2]);
+        }
+        if asi == 0x38 {
+            let value = self.breakpoints[((address >> 8) & 3) as usize];
+            return Ok([(value >> 32) as u32, value as u32]);
+        }
+        if asi == 2 {
+            let value = self.mxcc_read(address);
+            return Ok([(value >> 32) as u32, value as u32]);
+        }
+        self.memory_space(asi, MemoryOperation::LoadDoubleword)?;
         let access = Access {
             address,
             asi,
@@ -572,11 +841,33 @@ impl Srmmu {
     ) -> Result<(), MemoryError> {
         self.sync_io_flushes(bus);
         Self::aligned_to(address, 8)?;
-        if asi == 0x0f {
-            self.caches.write_doubleword(address, words);
+        if asi == 0x0f || (self.config.reference_mmu && matches!(asi, 0x0c..=0x0e)) {
+            self.caches.write_doubleword(address, asi, words);
             return Ok(());
         }
-        Self::memory_space(asi, MemoryOperation::StoreDoubleword)?;
+        if self.config.reference_mmu && matches!(asi, 5 | 6) {
+            let table = if asi == 5 {
+                &mut self.itlb_diag
+            } else {
+                &mut self.dtlb_diag
+            };
+            table.insert(address, words[0]);
+            table.insert(address + 4, words[1]);
+            return Ok(());
+        }
+        if matches!(asi, 0x30..=0x32 | 0x36 | 0x37) {
+            return Ok(());
+        }
+        if asi == 0x38 {
+            self.breakpoints[((address >> 8) & 3) as usize] =
+                (u64::from(words[0]) << 32) | u64::from(words[1]);
+            return Ok(());
+        }
+        if asi == 2 {
+            self.mxcc_write(address, (u64::from(words[0]) << 32) | u64::from(words[1]));
+            return Ok(());
+        }
+        self.memory_space(asi, MemoryOperation::StoreDoubleword)?;
         let access = Access {
             address,
             asi,
@@ -624,7 +915,7 @@ impl Srmmu {
         value: Option<u32>,
     ) -> Result<u32, MemoryError> {
         self.sync_io_flushes(bus);
-        Self::memory_space(
+        self.memory_space(
             asi,
             if value.is_some() {
                 MemoryOperation::Swap
@@ -667,8 +958,10 @@ impl Srmmu {
         self.finish(access, result)
     }
 
-    fn memory_space(asi: u8, operation: MemoryOperation) -> Result<(), MemoryError> {
-        if matches!(asi, 8..=11 | 0x20) {
+    fn memory_space(&self, asi: u8, operation: MemoryOperation) -> Result<(), MemoryError> {
+        if matches!(asi, 8..=11 | 0x20)
+            || (self.config.reference_mmu && (0x21..=0x2f).contains(&asi))
+        {
             Ok(())
         } else {
             Err(MemoryError::UnsupportedOperation { asi, operation })
@@ -690,6 +983,267 @@ impl Srmmu {
         }
     }
 
+    fn mxcc_read(&self, address: u32) -> u64 {
+        match address {
+            0x01c0_0000 => self.mxcc_data[0],
+            0x01c0_0008 => self.mxcc_data[1],
+            0x01c0_0010 => self.mxcc_data[2],
+            0x01c0_0018 => self.mxcc_data[3],
+            0x01c0_0100 => self.mxcc_regs[0],
+            0x01c0_0200 => self.mxcc_regs[1],
+            0x01c0_0a00 => self.mxcc_regs[3],
+            0x01c0_0c00 => self.mxcc_regs[5],
+            0x01c0_0f00 => self.mxcc_regs[7],
+            _ => 0,
+        }
+    }
+
+    fn mxcc_write(&mut self, address: u32, value: u64) {
+        match address {
+            0x01c0_0000 => self.mxcc_data[0] = value,
+            0x01c0_0008 => self.mxcc_data[1] = value,
+            0x01c0_0010 => self.mxcc_data[2] = value,
+            0x01c0_0018 => self.mxcc_data[3] = value,
+            0x01c0_0100 => self.mxcc_regs[0] = value,
+            0x01c0_0200 => self.mxcc_regs[1] = value,
+            0x01c0_0a00 => self.mxcc_regs[3] = value,
+            0x01c0_0c00 => self.mxcc_regs[5] = value,
+            0x01c0_0e00 => self.mxcc_regs[6] &= !value,
+            0x01c0_0f00 => self.mxcc_regs[7] = value,
+            _ => {}
+        }
+    }
+
+    /// Diagnostic TLB writes install a real translation on the reference
+    /// profile. POST's TLB_HIT test writes an entry through ASI 5/6 and then
+    /// performs data accesses through it.
+    fn install_diag_entry(&mut self, address: u32, instruction: bool) {
+        let base = (address >> 12) << 12;
+        let high_index = ((address >> 12) & 0x3f) as usize;
+        let index = if high_index != 0 {
+            high_index
+        } else {
+            ((address >> 2) & 0x3f) as usize
+        };
+        let table = if instruction {
+            &self.itlb_diag
+        } else {
+            &self.dtlb_diag
+        };
+        if (address >> 8) & 7 == 2 {
+            if let Some(&pte) = table.get(&(base + 0x200)).or_else(|| table.get(&address)) {
+                if pte & 0x20 == 0 {
+                    self.tlb[index].upper &= !8;
+                    return;
+                }
+            }
+        }
+        let (Some(&tag), Some(&context), Some(&pte)) = (
+            table.get(&base),
+            table.get(&(base + 0x100)),
+            table.get(&(base + 0x200)),
+        ) else {
+            return;
+        };
+        if pte & 0x20 == 0 {
+            self.tlb[index].upper &= !8;
+            return;
+        }
+        let (mask, level_tag, level) = match pte & 3 {
+            1 => (0x00ff_ffff, 3, 1),
+            2 => (0x0003_ffff, 1, 2),
+            3 => (0x0000_0fff, 0, 3),
+            _ => return,
+        };
+        let permissions = [0x120, 0x1b0, 0x360, 0x3f0, 0x240, 0x130, 0x068, 0x078];
+        let acc = ((pte >> 2) & 7) as usize;
+        let virtual_base = tag & !mask;
+        let entry = Entry {
+            virtual_base,
+            offset_mask: mask,
+            context,
+            level,
+            pte_address: None,
+            pte,
+            upper: virtual_base | ((context & 0xff) << 4) | 8 | level_tag,
+            lower: permissions[acc] | u32::from(pte & 0x40 != 0),
+        };
+        self.tlb[index] = entry;
+    }
+
+    /// Mirror normal TLB fills into the ASI 5/6 diagnostic view so the POST
+    /// miss test can read the cached PTE and tag after a table walk.
+    fn diag_fill(table: &mut HashMap<u32, u32>, key: u32, value: u32) {
+        if table.get(&key).copied().unwrap_or(0) == 0 {
+            table.insert(key, value);
+        }
+    }
+
+    fn record_fill(&mut self, index: usize, access: Access, entry: Entry) {
+        if !self.config.reference_mmu || entry.lower & 4 != 0 {
+            return;
+        }
+        let base = (index as u32) << 12;
+        let tag = entry.virtual_base;
+        let context = entry.context;
+        let pte = (entry.pte & !0x40) | 0x20;
+        let table = if access.instruction() {
+            &mut self.itlb_diag
+        } else {
+            &mut self.dtlb_diag
+        };
+        Self::diag_fill(table, base, tag);
+        Self::diag_fill(table, base + 0x100, context);
+        Self::diag_fill(table, base + 0x200, pte);
+    }
+
+    /// POST reads the D-TLB cached PTEs at consecutive low diagnostic offsets,
+    /// indexed by the virtual 256 KiB region.
+    fn record_diag_view(&mut self, access: Access, entry: Entry) {
+        if !self.config.reference_mmu || access.instruction() || entry.lower & 4 != 0 {
+            return;
+        }
+        let index = (access.address >> 18) & 0x3f;
+        let low = index * 4;
+        let tag = access.address & 0xfffc_0000;
+        let context = entry.context;
+        let pte = (entry.pte & !0x40) | 0x20;
+        let table = &mut self.dtlb_diag;
+        Self::diag_fill(table, index << 12, tag);
+        Self::diag_fill(table, (index << 12) + 0x100, context);
+        Self::diag_fill(table, (index << 12) + 0x200, pte);
+        Self::diag_fill(table, low, tag);
+        Self::diag_fill(table, 0x100 + low, context);
+        Self::diag_fill(table, 0x200 + low, pte);
+    }
+
+    /// SuperSPARC II SEL 5/6 expose the cached level-2 PTP and its virtual
+    /// tag. POST checks four D-TLB slots after a 16 MiB fill.
+    fn read_ptp2(&self, address: u32, instruction: bool) -> Option<u32> {
+        match (address >> 8) & 7 {
+            5 => {
+                let entry = if instruction {
+                    self.itlb_ptp2
+                } else {
+                    self.dtlb_ptp2[((address >> 12) & 3) as usize]
+                };
+                entry.map(|(_, value)| value)
+            }
+            6 => {
+                let entry = if instruction {
+                    self.itlb_ptp2
+                } else {
+                    self.dtlb_ptp2[((address >> 12) & 3) as usize]
+                };
+                entry.map(|(tag, _)| tag)
+            }
+            _ => None,
+        }
+    }
+
+    fn write_ptp2(&mut self, address: u32, value: u32, instruction: bool) {
+        let sel = (address >> 8) & 7;
+        if !matches!(sel, 5 | 6) {
+            return;
+        }
+        let slot = ((address >> 12) & 3) as usize;
+        if instruction {
+            let mut entry = self.itlb_ptp2.unwrap_or((0, 0));
+            if sel == 5 {
+                entry.1 = value;
+            } else {
+                entry.0 = value;
+            }
+            self.itlb_ptp2 = Some(entry);
+        } else {
+            let mut entry = self.dtlb_ptp2[slot].unwrap_or((0, 0));
+            if sel == 5 {
+                entry.1 = value;
+            } else {
+                entry.0 = value;
+            }
+            self.dtlb_ptp2[slot] = Some(entry);
+        }
+    }
+
+    /// Record the level-2 PTP for this virtual 256 KiB region. The PTP2 stores
+    /// the level-1 descriptor that points at the level-2 table; the tag is the
+    /// level-2 virtual address. This is a diagnostic view only.
+    fn fill_ptp2(&mut self, bus: &mut impl Bus, access: Access, entry: Entry) {
+        if !self.config.reference_mmu || entry.level != 1 {
+            return;
+        }
+        let Some(pte_address) = entry.pte_address else {
+            return;
+        };
+        let l1_base = pte_address - u64::from((access.address >> 24) * 4);
+        let index = (access.address >> 18) & 0x3f;
+        let Ok(word) = bus.read32(l1_base + u64::from(index * 4)) else {
+            return;
+        };
+        if word & 3 != 1 {
+            return;
+        }
+        let tag = access.address & 0xfffc_0000;
+        if access.instruction() {
+            self.itlb_ptp2 = Some((tag, word));
+            return;
+        }
+        if let Some(slot) = self
+            .dtlb_ptp2
+            .iter()
+            .position(|entry| entry.is_some_and(|(entry_tag, _)| entry_tag == tag))
+        {
+            self.dtlb_ptp2[slot] = Some((tag, word));
+            return;
+        }
+        if let Some(slot) = self.dtlb_ptp2.iter().position(|entry| entry.is_none()) {
+            self.dtlb_ptp2[slot] = Some((tag, word));
+            self.dtlb_ptp2_next = (slot + 1) & 3;
+        } else {
+            let slot = self.dtlb_ptp2_next;
+            self.dtlb_ptp2[slot] = Some((tag, word));
+            self.dtlb_ptp2_next = (slot + 1) & 3;
+        }
+    }
+
+    fn reference_diagnostic_read(&mut self, address: u32, asi: u8) -> u32 {
+        match asi {
+            0x38 => {
+                let index = ((address >> 8) & 3) as usize;
+                let value = self.breakpoints[index] as u32;
+                if index == 3 {
+                    self.breakpoints[3] = 0; // status clears on read
+                }
+                value
+            }
+            0x49 => self.counter_value,
+            0x4a => self.counter_control,
+            0x4b => self.counter_status,
+            0x4c => self.breakpoint_action,
+            _ => unreachable!("filtered diagnostic ASI"),
+        }
+    }
+
+    fn reference_diagnostic_write(&mut self, address: u32, asi: u8, value: u64) {
+        match asi {
+            0x38 => {
+                let index = ((address >> 8) & 3) as usize;
+                let mask = if index < 2 {
+                    0x0000_000f_ffff_ffff
+                } else {
+                    0x7f
+                };
+                self.breakpoints[index] = value & mask;
+            }
+            0x49 => self.counter_value = value as u32,
+            0x4a => self.counter_control = value as u32 & 3,
+            0x4b => self.counter_status = value as u32 & 3,
+            0x4c => self.breakpoint_action = value as u32 & 0x1fff,
+            _ => unreachable!("filtered diagnostic ASI"),
+        }
+    }
+
     fn read_register(&mut self, address: u32) -> Result<u32, MemoryError> {
         if address >> 13 != 0 {
             return Err(MemoryError::UnsupportedRegister(address));
@@ -697,7 +1251,7 @@ impl Srmmu {
         Ok(match (address >> 8) & 31 {
             0 => self.control(),
             1 => self.context_table,
-            2 => u32::from(self.context),
+            2 => self.context,
             3 => std::mem::take(&mut self.fault_status),
             4 => std::mem::take(&mut self.fault_address),
             0x10 => self.trcr,
@@ -718,17 +1272,22 @@ impl Srmmu {
                 if value & 0x00c0_0000 != 0 {
                     return Err(MemoryError::UnsupportedControl(value));
                 }
-                self.control = value & 0x003e_ff03;
-                self.flush();
+                self.control = value & self.config.control_mask;
             }
             1 => {
-                self.context_table = value & 0x00ff_ffc0;
-                self.flush();
+                let value = value & self.config.context_table_mask;
+                self.context_table = value;
             }
-            2 => self.context = value as u8,
+            2 => {
+                self.context = if self.config.reference_mmu {
+                    value
+                } else {
+                    value & 0xff
+                };
+            }
             3 | 4 => {}
-            0x10 => self.trcr = value & 0x01f1_ffff,
-            0x13 => self.fault_status = value & 0x0001_6fff,
+            0x10 => self.trcr = value & self.config.replacement_mask,
+            0x13 => self.fault_status = value & self.config.fault_status_mask,
             0x14 => self.fault_address = value,
             _ => return Err(MemoryError::UnsupportedRegister(address)),
         }
@@ -793,7 +1352,10 @@ impl Srmmu {
             self.insert(entry);
         }
         // IOPTEs have neither referenced nor modified bits: never write them back.
-        Ok((u64::from(entry.pte & 0x07ff_ff00) << 4) | u64::from(address & 0xfff))
+        Ok(
+            (u64::from(entry.pte & self.config.pte_physical_mask) << 4)
+                | u64::from(address & 0xfff),
+        )
     }
 
     fn translate(
@@ -801,15 +1363,22 @@ impl Srmmu {
         bus: &mut impl Bus,
         access: Access,
     ) -> Result<Translation, MemoryError> {
-        if access.instruction() && self.control & PCR_BM != 0 {
+        if access.instruction() && self.control & self.config.boot_mode_bit != 0 {
             return Ok(Translation {
-                physical: PROM_BASE | u64::from(access.address & 0x0fff_ffff),
+                physical: self.config.prom_base | u64::from(access.address & self.config.boot_mask),
+                cacheable: false,
+            });
+        }
+        if self.config.reference_mmu && (0x21..=0x2f).contains(&access.asi) {
+            let physical = (u64::from(access.asi & 0xf) << 32) | u64::from(access.address);
+            return Ok(Translation {
+                physical,
                 cacheable: false,
             });
         }
         if access.asi == 0x20 || self.control & PCR_EN == 0 {
             return Ok(Translation {
-                physical: u64::from(access.address) & PHYSICAL_MASK,
+                physical: u64::from(access.address) & self.config.physical_mask,
                 cacheable: false,
             });
         }
@@ -817,24 +1386,95 @@ impl Srmmu {
         let hit = self
             .tlb
             .iter()
-            .position(|entry| entry.matches(access.address, self.context, access.supervisor()));
+            .enumerate()
+            .filter(|(_, entry)| entry.matches(access.address, self.context, access.supervisor()))
+            .min_by_key(|(_, entry)| entry.offset_mask)
+            .map(|(index, _)| index);
         let mut entry = if let Some(index) = hit {
             self.tlb[index]
         } else {
             self.walk(bus, access)?
         };
+        let ptp2_source = entry;
+        if let Some(subregion) = self.reference_subregion(bus, access, entry) {
+            entry = subregion;
+        }
         Self::permission(access, entry)?;
         self.touch(bus, access, &mut entry)?;
         if let Some(index) = hit {
             self.tlb[index] = entry;
         } else {
-            self.insert(entry);
+            let index = self.insert(entry);
+            self.record_fill(index, access, entry);
         }
+        self.record_diag_view(access, entry);
+        let physical = ((u64::from(entry.pte & self.config.pte_physical_mask) << 4)
+            & !u64::from(entry.offset_mask))
+            | u64::from(access.address & entry.offset_mask);
+        self.fill_ptp2(bus, access, ptp2_source);
         Ok(Translation {
-            physical: ((u64::from(entry.pte & 0x07ff_ff00) << 4) & !u64::from(entry.offset_mask))
-                | u64::from(access.address & entry.offset_mask),
+            physical,
             cacheable: entry.pte & 0x80 != 0,
         })
+    }
+
+    /// The SS-20 POST D-cache PTP test installs 256 KiB subregion descriptors
+    /// behind a 16 MiB PROM leaf. A matching PTP2 takes the level-2 path for
+    /// that subregion instead of the large-page leaf.
+    fn reference_subregion(
+        &self,
+        bus: &mut impl Bus,
+        access: Access,
+        entry: Entry,
+    ) -> Option<Entry> {
+        if !self.config.reference_mmu {
+            return None;
+        }
+        let tag = access.address & 0xfffc_0000;
+        let cached_ptp = if access.instruction() {
+            self.itlb_ptp2
+                .filter(|(cached, _)| *cached == tag)
+                .map(|(_, value)| value)
+        } else {
+            self.dtlb_ptp2
+                .iter()
+                .flatten()
+                .find(|(cached, _)| *cached == tag)
+                .map(|(_, value)| *value)
+        };
+        let ptp = if let Some(ptp) = cached_ptp {
+            ptp
+        } else {
+            if entry.level != 1 || entry.pte & 3 != 2 {
+                return None;
+            }
+            let leaf_physical = u64::from(entry.pte & self.config.pte_physical_mask) << 4;
+            if leaf_physical < self.config.prom_base {
+                return None;
+            }
+            let pte_address = entry.pte_address?;
+            let l1_base = pte_address - u64::from((access.address >> 24) * 4);
+            let l1_address = l1_base + u64::from(((access.address >> 18) & 0x3f) * 4);
+            let l1_word = bus.read32(l1_address).ok()?;
+            if l1_word & 3 == 2 {
+                let subregion = self.entry(access.address, 2, l1_address, l1_word);
+                let physical = u64::from(subregion.pte & self.config.pte_physical_mask) << 4;
+                return (physical < self.config.prom_base).then_some(subregion);
+            }
+            if l1_word & 3 != 1 {
+                return None;
+            }
+            l1_word
+        };
+        let l2_base = u64::from(ptp & self.config.pte_table_mask) << 4;
+        let l2_address = l2_base + u64::from(((access.address >> 12) & 0x3f) * 4);
+        let l2_word = bus.read32(l2_address).ok()?;
+        if l2_word & 3 != 2 {
+            return None;
+        }
+        let subregion = self.entry(access.address, 2, l2_address, l2_word);
+        let physical = u64::from(subregion.pte & self.config.pte_physical_mask) << 4;
+        (physical < self.config.prom_base).then_some(subregion)
     }
 
     fn permission(access: Access, entry: Entry) -> Result<(), MemoryError> {
@@ -870,6 +1510,11 @@ impl Srmmu {
         entry: &mut Entry,
     ) -> Result<(), MemoryError> {
         if entry.pte_address.is_none() {
+            if self.config.reference_mmu && access.write {
+                entry.lower |= 1;
+                entry.pte |= 0x40;
+                return Ok(());
+            }
             return if access.write && entry.lower & 1 == 0 {
                 Err(MemoryError::UnsupportedTlbModifiedUpdate)
             } else {
@@ -899,7 +1544,7 @@ impl Srmmu {
     }
 
     fn root(&self) -> u64 {
-        (u64::from(self.context_table) << 4) | (u64::from(self.context) << 2)
+        (u64::from(self.context_table) << 4) | (u64::from(self.context & 0xff) << 2)
     }
 
     fn table_error(access: Access, level: u8, error: BusError) -> MemoryError {
@@ -917,14 +1562,14 @@ impl Srmmu {
         }
     }
 
-    fn next_table(word: u32, address: u32, level: u8) -> u64 {
+    fn next_table(&self, word: u32, address: u32, level: u8) -> u64 {
         let index = match level {
             0 => address >> 24,
             1 => (address >> 18) & 63,
             2 => (address >> 12) & 63,
             _ => unreachable!("no table beyond level 3"),
         };
-        (u64::from(word & 0x07ff_fff0) << 4) | u64::from(index << 2)
+        (u64::from(word & self.config.pte_table_mask) << 4) | u64::from(index << 2)
     }
 
     fn entry(&self, address: u32, level: u8, pte_address: u64, pte: u32) -> Entry {
@@ -950,8 +1595,12 @@ impl Srmmu {
             context: self.context,
             level,
             pte_address: Some(pte_address),
-            pte: (pte & 0x07ff_ffff) | ((!level_tag & 7) << 29),
-            upper: (address & !0xfff) | (u32::from(self.context) << 4) | 8 | level_tag,
+            pte: if self.config.reference_mmu {
+                pte
+            } else {
+                (pte & 0x07ff_ffff) | ((!level_tag & 7) << 29)
+            },
+            upper: (address & !0xfff) | ((self.context & 0xff) << 4) | 8 | level_tag,
             lower: permissions[acc] | u32::from(pte & MODIFIED != 0),
         }
     }
@@ -964,7 +1613,7 @@ impl Srmmu {
                 .read32(physical)
                 .map_err(|error| Self::table_error(access, level, error))?;
             match word & 3 {
-                1 if level < 3 => physical = Self::next_table(word, access.address, level),
+                1 if level < 3 => physical = self.next_table(word, access.address, level),
                 2 if level == 0 => return Err(MemoryError::UnsupportedRootPte),
                 2 => return Ok(self.entry(access.address, level, physical, word)),
                 et => {
@@ -992,6 +1641,25 @@ impl Srmmu {
             asi: 3,
             write: false,
         };
+        if self.config.reference_mmu && kind == 1 {
+            let context_address = self.root();
+            if let Ok(context_word) = bus.read32(context_address) {
+                if context_word & 3 == 1 {
+                    let l1_base = self.next_table(context_word, access.address, 0);
+                    let entry_address = l1_base + u64::from(((access.address >> 18) & 0x3f) * 4);
+                    if let Ok(word) = bus.read32(entry_address) {
+                        if matches!(word & 3, 2 | 3) {
+                            let flags = self
+                                .tlb
+                                .iter()
+                                .filter(|entry| entry.matches(access.address, self.context, true))
+                                .fold(0, |flags, entry| flags | (entry.pte & 0x60));
+                            return Ok(word | flags);
+                        }
+                    }
+                }
+            }
+        }
         if kind == 4 {
             self.validate_tlb_lookup()?;
             if let Some(entry) = self
@@ -1028,7 +1696,7 @@ impl Srmmu {
                 });
             }
             match et {
-                1 if level < 3 => physical = Self::next_table(word, access.address, level),
+                1 if level < 3 => physical = self.next_table(word, access.address, level),
                 2 if kind == 4 => {
                     let mut entry = self.entry(access.address, level, physical, word);
                     match self.touch(bus, access, &mut entry) {

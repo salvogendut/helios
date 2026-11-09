@@ -277,6 +277,16 @@ codec timing and interrupts are not modeled. Software that needs actual audio
 I/O remains unsupported; the register subset exists so device discovery does
 not manufacture an SBus timeout.
 
+## SMC ECC memory controller (SS-20/Axil)
+
+The SS-20 and Axil profiles expose the sun4m SMC controller at physical
+`0xf00000000`: Memory Enable, Memory Delay, Fault Status, Video Configuration,
+two Fault Address, Diagnostic and two Event Count registers. The Memory Enable
+Register reports implementation 2, version 0 (`0x20000000`); configuration
+fields and fault/event storage follow the sun4m definitions. PARITY/ECC
+generation, injected errors and the correctable-error interrupt are not modeled.
+The SS-5 profile does not install this aperture.
+
 ## NCR89C100 SCSI DMA initialization
 
 The onboard MACIO identifies itself with the read-only word `0xfe810103` at

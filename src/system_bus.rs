@@ -5,6 +5,7 @@ use crate::devices::{
     auxiliary::Auxiliary,
     cgsix::{Cgsix, VRAM_BYTES, VRAM_OFFSET},
     cs4231::Cs4231,
+    ecc::{Ecc, ECC_SIZE},
     esp::Esp,
     ethernet::Ethernet,
     ethernet_dma::EthernetDma,
@@ -47,31 +48,280 @@ pub const ETHERNET_DMA_BASE: u64 = 0x7840_0010;
 pub const ESP_BASE: u64 = 0x7880_0000;
 pub const ETHERNET_BASE: u64 = 0x78c0_0000;
 const MACIO_DMA_SIZE: u64 = 0x40;
-const DEVICE_RANGES: [(u64, u64); 18] = [
-    (IO_CONTROL_BASE, IO_CONTROL_BASE + IO_CONTROL_SIZE),
-    (AFX_PRESENCE_BASE, AFX_PRESENCE_BASE + 1),
-    (CS4231_BASE, CS4231_BASE + 0x40),
-    (KEYBOARD_SERIAL_BASE, KEYBOARD_SERIAL_BASE + 8),
-    (SERIAL_BASE, SERIAL_BASE + 8),
-    (NVRAM_BASE, NVRAM_BASE + NVRAM_SIZE as u64),
-    (FLOPPY_BASE, FLOPPY_BASE + 0x10_0000),
-    (AUXILIARY_BASE, AUXILIARY_BASE + 1),
-    (AUXILIARY_POWER_BASE, AUXILIARY_POWER_BASE + 1),
-    (CPU_TIMER_BASE, CPU_TIMER_BASE + 0x10),
-    (SYSTEM_TIMER_BASE, SYSTEM_TIMER_BASE + 0x14),
-    (CPU_INTERRUPT_BASE, CPU_INTERRUPT_BASE + 0x10),
-    (SYSTEM_INTERRUPT_BASE, SYSTEM_INTERRUPT_BASE + 0x14),
-    (RESET_BASE, RESET_BASE + 4),
-    (MACIO_ID_BASE, MACIO_ID_BASE + 4),
-    (SCSI_DMA_BASE, SCSI_DMA_BASE + MACIO_DMA_SIZE),
-    (ESP_BASE, ESP_BASE + 0x40),
-    (ETHERNET_BASE, ETHERNET_BASE + 4),
-];
+
+/// Physical decode for one sun4m profile. The device models are shared; only
+/// their physical bases, PROM aperture and SBus error classification change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sun4mLayout {
+    pub io_control: u64,
+    pub cs4231: Option<u64>,
+    pub ecc: Option<u64>,
+    pub cgsix: u64,
+    pub afx_presence: Option<u64>,
+    pub keyboard_serial: u64,
+    pub serial: u64,
+    pub nvram: u64,
+    pub floppy: u64,
+    pub auxiliary: u64,
+    pub auxiliary_power: u64,
+    pub cpu_timer: u64,
+    pub system_timer: u64,
+    pub cpu_interrupt: u64,
+    pub system_interrupt: u64,
+    pub reset: u64,
+    /// Unpopulated CPU timer/interrupt slots (SS-20 CPU1..15 reads/writes).
+    pub zero_windows: [Option<(u64, u64)>; 22],
+    pub macio_id: u64,
+    pub scsi_dma: u64,
+    pub esp: u64,
+    pub ethernet: u64,
+    pub prom: u64,
+    /// Decoded boot PROM alias size. SS-20/Axil OBP maps a 16 MiB page over
+    /// this space; only the first MAX_PROM_BYTES are populated by the image.
+    pub prom_aperture: u64,
+    /// The reference-MMU PROM alias ignores write strobes: SS-20 POST
+    /// rewrites bytes in the D-cache level-2 PTP test and must not fault.
+    pub prom_writes_ignored: bool,
+    /// SS-5 NCR windows have documented slave-error holes; other profiles do
+    /// not yet classify reserved NCR windows differently from empty slots.
+    pub ncr_windows: bool,
+}
+
+impl Sun4mLayout {
+    pub const fn ss5() -> Self {
+        Self {
+            io_control: IO_CONTROL_BASE,
+            cs4231: Some(CS4231_BASE),
+            ecc: None,
+            cgsix: CGSIX_BASE,
+            afx_presence: Some(AFX_PRESENCE_BASE),
+            keyboard_serial: KEYBOARD_SERIAL_BASE,
+            serial: SERIAL_BASE,
+            nvram: NVRAM_BASE,
+            floppy: FLOPPY_BASE,
+            auxiliary: AUXILIARY_BASE,
+            auxiliary_power: AUXILIARY_POWER_BASE,
+            cpu_timer: CPU_TIMER_BASE,
+            system_timer: SYSTEM_TIMER_BASE,
+            cpu_interrupt: CPU_INTERRUPT_BASE,
+            system_interrupt: SYSTEM_INTERRUPT_BASE,
+            reset: RESET_BASE,
+            zero_windows: [None; 22],
+            macio_id: MACIO_ID_BASE,
+            scsi_dma: SCSI_DMA_BASE,
+            esp: ESP_BASE,
+            ethernet: ETHERNET_BASE,
+            prom: 0x7000_0000,
+            prom_aperture: 0x10_0000,
+            prom_writes_ignored: false,
+            ncr_windows: true,
+        }
+    }
+
+    /// SPARCstation 20 / Axil 320 sun4m decode. Device models stay the SS-5
+    /// set; only the high physical bases, PROM and IOMMU identity differ.
+    #[allow(clippy::unusual_byte_groupings)]
+    pub const fn ss20() -> Self {
+        Self {
+            io_control: 0xf_e000_0000,
+            cs4231: None,
+            ecc: Some(0xf_0000_0000),
+            cgsix: CGSIX_BASE,
+            afx_presence: None,
+            keyboard_serial: 0xf_f100_0000,
+            serial: 0xf_f110_0000,
+            nvram: 0xf_f120_0000,
+            floppy: 0xf_f170_0000,
+            auxiliary: 0xf_f180_0000,
+            auxiliary_power: 0xf_f1a0_1000,
+            cpu_timer: 0xf_f130_0000,
+            system_timer: 0xf_f131_0000,
+            cpu_interrupt: 0xf_f140_0000,
+            system_interrupt: 0xf_f141_0000,
+            reset: 0xf_f1f0_0000,
+            zero_windows: [
+                Some((0xf_f130_1000, 0xf_f131_0000)),
+                Some((0xf_f140_1000, 0xf_f141_0000)),
+                Some((0x9c00_0000, 0x9c00_2000)),
+                Some((0x9000_0000, 0x9000_2000)),
+                Some((0x9400_0000, 0x9400_2000)),
+                Some((0x9800_0000, 0x9800_2000)),
+                Some((0x8c00_0000, 0x8c00_2000)),
+                Some((0x8800_0000, 0x8800_2000)),
+                Some((0x8400_0000, 0x8400_2000)),
+                Some((0x8000_0000, 0x8000_2000)),
+                Some((0xf_f9c0_0000, 0xf_f9c0_2000)),
+                Some((0xf_f900_0000, 0xf_f900_2000)),
+                Some((0xf_f940_0000, 0xf_f940_2000)),
+                Some((0xf_f980_0000, 0xf_f980_2000)),
+                Some((0xf_f8c0_0000, 0xf_f8c0_2000)),
+                Some((0xf_f880_0000, 0xf_f880_2000)),
+                Some((0xf_f840_0000, 0xf_f840_2000)),
+                Some((0xf_f800_0000, 0xf_f800_2000)),
+                Some((0xf_8000_0000, 0xf_8000_2000)),
+                Some((0xe_e000_1000, 0xe_e000_1030)),
+                Some((0xe_e001_0000, 0xe_e001_0100)),
+                Some((0xe_f480_0000, 0xe_f480_0020)),
+            ],
+            macio_id: 0xe_f000_0000,
+            scsi_dma: 0xe_f040_0000,
+            esp: 0xe_f080_0000,
+            ethernet: 0xe_f0c0_0000,
+            prom: 0xf_f000_0000,
+            prom_aperture: 0x100_0000,
+            prom_writes_ignored: true,
+            ncr_windows: false,
+        }
+    }
+
+    pub const fn axil320() -> Self {
+        Self::ss20()
+    }
+
+    pub const fn ethernet_dma(&self) -> u64 {
+        self.scsi_dma + 0x10
+    }
+
+    /// SS-5's integrated I/O control identifies as microSPARC-II rev 4; the
+    /// SS-20/Axil standalone IOMMU reports implementation 1, version 3.
+    pub const fn io_control_version(&self) -> u32 {
+        if self.ncr_windows {
+            0x0400_0000
+        } else {
+            0x1300_0000
+        }
+    }
+
+    pub const fn device_ranges(&self) -> [(u64, u64); 41] {
+        let cs4231 = match self.cs4231 {
+            Some(base) => (base, base + 0x40),
+            None => (0, 0),
+        };
+        let afx = match self.afx_presence {
+            Some(base) => (base, base + 1),
+            None => (0, 0),
+        };
+        let ecc = match self.ecc {
+            Some(base) => (base, base + ECC_SIZE),
+            None => (0, 0),
+        };
+        [
+            (self.io_control, self.io_control + IO_CONTROL_SIZE),
+            cs4231,
+            afx,
+            (self.keyboard_serial, self.keyboard_serial + 8),
+            (self.serial, self.serial + 8),
+            (self.nvram, self.nvram + NVRAM_SIZE as u64),
+            (self.floppy, self.floppy + 0x10_0000),
+            (self.auxiliary, self.auxiliary + 1),
+            (self.auxiliary_power, self.auxiliary_power + 1),
+            (self.cpu_timer, self.cpu_timer + 0x10),
+            (self.system_timer, self.system_timer + 0x14),
+            (self.cpu_interrupt, self.cpu_interrupt + 0x10),
+            (self.system_interrupt, self.system_interrupt + 0x14),
+            (self.reset, self.reset + 4),
+            (self.macio_id, self.macio_id + 4),
+            (self.scsi_dma, self.scsi_dma + MACIO_DMA_SIZE),
+            (self.esp, self.esp + 0x40),
+            (self.ethernet, self.ethernet + 4),
+            ecc,
+            match self.zero_windows[0] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[1] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[2] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[3] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[4] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[5] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[6] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[7] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[8] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[9] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[10] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[11] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[12] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[13] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[14] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[15] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[16] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[17] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[18] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[19] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[20] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[21] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+        ]
+    }
+}
 
 #[derive(Clone, Copy)]
 enum WordDevice {
     IoControl,
     Cs4231,
+    Ecc,
     Timer(bool),
     Interrupt(bool),
     Reset,
@@ -84,6 +334,7 @@ enum WordDevice {
 pub struct Sun4mDevices {
     pub auxiliary: Auxiliary,
     pub cs4231: Cs4231,
+    pub ecc: Ecc,
     pub floppy: Floppy,
     pub io_control: IoControl,
     pub nvram: Nvram,
@@ -139,8 +390,9 @@ impl Sun4mDevices {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SystemBus {
+    layout: Sun4mLayout,
     memory: MemoryBus,
     devices: Option<Sun4mDevices>,
     dram: Option<Ss5Dram>,
@@ -150,14 +402,60 @@ pub struct SystemBus {
     cgsix: Option<Cgsix>,
 }
 
+impl Default for SystemBus {
+    fn default() -> Self {
+        Self::with_layout(Sun4mLayout::ss5())
+    }
+}
+
 /// SS5/85 SBus clock (CPU / 4), SPARCengine 5 table 2-1.
 pub const SBUS_CLOCK_HZ: u64 = 21_250_000;
 /// NCR89C105 table 6-10: six SBus clocks for each byte-wide PROM read.
 pub const PROM_BYTE_CYCLES: u64 = 6;
 
 impl SystemBus {
+    pub fn with_layout(layout: Sun4mLayout) -> Self {
+        Self {
+            layout,
+            memory: MemoryBus::default(),
+            devices: None,
+            dram: None,
+            cpu_user: false,
+            prom_cycles: None,
+            prom_phase: 0,
+            cgsix: None,
+        }
+    }
+
+    pub fn layout(&self) -> Sun4mLayout {
+        self.layout
+    }
+
+    pub fn prom_base(&self) -> u64 {
+        self.layout.prom
+    }
+
+    pub fn prom_aperture(&self) -> u64 {
+        self.layout.prom_aperture
+    }
+
+    /// The reference-MMU PROM chips ignore write strobes; OBP's POST relies on
+    /// this when it rewrites the low boot alias. Reads still come from the
+    /// padded image.
+    fn prom_contains(&self, address: u64) -> bool {
+        (self.layout.prom..self.layout.prom + self.layout.prom_aperture).contains(&address)
+    }
+
+    fn prom_writes_ignored(&self, address: u64) -> bool {
+        self.layout.prom_writes_ignored && self.prom_contains(address)
+    }
+
     pub fn install_cgsix(&mut self, card: Cgsix) -> Result<(), MapError> {
-        if self.cgsix.is_some() || self.memory.overlaps(CGSIX_BASE, CGSIX_BASE + CGSIX_SIZE) {
+        if self.cgsix.is_some()
+            || self
+                .memory
+                .overlaps(self.layout.cgsix, self.layout.cgsix + CGSIX_SIZE)
+        {
             return Err(MapError::Overlap);
         }
         self.cgsix = Some(card);
@@ -172,7 +470,7 @@ impl SystemBus {
         }
     }
     fn cgsix_at(&mut self, address: u64) -> Option<&mut Cgsix> {
-        if (CGSIX_BASE..CGSIX_BASE + CGSIX_SIZE).contains(&address) {
+        if (self.layout.cgsix..self.layout.cgsix + CGSIX_SIZE).contains(&address) {
             self.cgsix.as_mut()
         } else {
             None
@@ -201,18 +499,32 @@ impl SystemBus {
     }
 
     fn check_macio_access(&mut self, address: u64, bytes: u64) -> Result<(), BusError> {
-        let dma = (SCSI_DMA_BASE..SCSI_DMA_BASE + MACIO_DMA_SIZE).contains(&address);
+        let dma = (self.layout.scsi_dma..self.layout.scsi_dma + MACIO_DMA_SIZE).contains(&address);
         let scsi = dma && address & 0x10 == 0;
         let ethernet = dma && address & 0x10 != 0;
-        let mac = (ETHERNET_BASE..ETHERNET_BASE + 4).contains(&address);
-        let id = (MACIO_ID_BASE..MACIO_ID_BASE + 4).contains(&address);
-        let esp = (ESP_BASE..ESP_BASE + 0x40).contains(&address);
+        let mac = (self.layout.ethernet..self.layout.ethernet + 4).contains(&address);
+        let id = (self.layout.macio_id..self.layout.macio_id + 4).contains(&address);
+        let esp = (self.layout.esp..self.layout.esp + 0x40).contains(&address);
         if let Some(devices) = &mut self.devices {
-            if esp && bytes != 1 {
+            if esp && self.layout.ncr_windows && bytes != 1 {
                 return Err(BusError {
                     address,
                     kind: BusErrorKind::Unsupported("wide ESP access"),
                 });
+            }
+            if esp && !self.layout.ncr_windows {
+                if address % bytes != 0 {
+                    return Err(BusError {
+                        address,
+                        kind: BusErrorKind::Misaligned,
+                    });
+                }
+                if bytes > 4 {
+                    return Err(BusError {
+                        address,
+                        kind: BusErrorKind::SBusError,
+                    });
+                }
             }
             if scsi || ethernet || mac || id {
                 if address % bytes != 0 {
@@ -238,7 +550,9 @@ impl SystemBus {
         Ok(())
     }
     fn check_floppy_access(&self, address: u64, bytes: u64) -> Result<(), BusError> {
-        if self.devices.is_some() && (FLOPPY_BASE..FLOPPY_BASE + 0x10_0000).contains(&address) {
+        if self.devices.is_some()
+            && (self.layout.floppy..self.layout.floppy + 0x10_0000).contains(&address)
+        {
             if address % bytes != 0 {
                 return Err(BusError {
                     address,
@@ -258,6 +572,7 @@ impl SystemBus {
     fn physical_error(&self, error: BusError) -> BusError {
         // microSPARC-II table 15: PA[30:28]=3..7 select SBus slots.
         if self.devices.is_some()
+            && self.layout.ncr_windows
             && (0x3000_0000..0x8000_0000).contains(&error.address)
             && error.kind == BusErrorKind::Unmapped
         {
@@ -294,7 +609,11 @@ impl SystemBus {
     }
 
     fn dram_at(&mut self, address: u64) -> Option<&mut Ss5Dram> {
-        if address < APERTURE_BYTES {
+        if self
+            .dram
+            .as_ref()
+            .is_some_and(|dram| address < dram.aperture_bytes())
+        {
             self.dram.as_mut()
         } else {
             None
@@ -303,17 +622,20 @@ impl SystemBus {
 
     pub fn install_sun4m(&mut self, nvram: Nvram) -> Result<(), MapError> {
         if self.devices.is_some()
-            || DEVICE_RANGES
+            || self
+                .layout
+                .device_ranges()
                 .iter()
                 .any(|&(start, end)| self.memory.overlaps(start, end))
         {
             return Err(MapError::Overlap);
         }
-        self.devices = Some(Sun4mDevices {
+        let mut devices = Sun4mDevices {
             auxiliary: Auxiliary::default(),
             cs4231: Cs4231::default(),
+            ecc: Ecc::default(),
             floppy: Floppy::default(),
-            io_control: IoControl::default(),
+            io_control: IoControl::new(self.layout.io_control_version()),
             nvram,
             serial: Serial::default(),
             keyboard_serial: Serial::default(),
@@ -328,7 +650,11 @@ impl SystemBus {
             ethernet_dma: EthernetDma::default(),
             ethernet: Ethernet::default(),
             rtc_phase_ns: 0,
-        });
+        };
+        devices
+            .esp
+            .set_reference_registers(!self.layout.ncr_windows);
+        self.devices = Some(devices);
         Ok(())
     }
     pub fn devices(&self) -> Option<&Sun4mDevices> {
@@ -360,6 +686,7 @@ impl SystemBus {
             devices.io_control.reset();
             devices.auxiliary.reset();
             devices.cs4231.reset();
+            devices.ecc.reset();
             devices.floppy.reset();
             devices.scsi_dma.reset();
             devices.esp.reset();
@@ -419,11 +746,19 @@ impl SystemBus {
             0
         }
     }
+    fn zero_at(&self, address: u64) -> bool {
+        self.layout
+            .zero_windows
+            .iter()
+            .flatten()
+            .any(|&(start, end)| (start..end).contains(&address))
+    }
+
     fn word_device(&self, address: u64) -> Option<(WordDevice, u64)> {
         self.devices.as_ref()?;
         // NCR89C100 table 2-7 footnote 2 and DMA2 table 3-1: bit 5 is
         // not decoded. The second 32 bytes alias the same register bank.
-        if (SCSI_DMA_BASE..SCSI_DMA_BASE + MACIO_DMA_SIZE).contains(&address) {
+        if (self.layout.scsi_dma..self.layout.scsi_dma + MACIO_DMA_SIZE).contains(&address) {
             let device = if address & 0x10 == 0 {
                 WordDevice::ScsiDma
             } else {
@@ -431,15 +766,36 @@ impl SystemBus {
             };
             return Some((device, address & 0xf));
         }
+        if let Some(base) = self.layout.cs4231 {
+            if (base..base + 0x40).contains(&address) {
+                return Some((WordDevice::Cs4231, address - base));
+            }
+        }
+        if let Some(base) = self.layout.ecc {
+            if (base..base + ECC_SIZE).contains(&address) {
+                return Some((WordDevice::Ecc, address - base));
+            }
+        }
         for (base, size, device) in [
-            (IO_CONTROL_BASE, IO_CONTROL_SIZE, WordDevice::IoControl),
-            (CS4231_BASE, 0x40, WordDevice::Cs4231),
-            (CPU_TIMER_BASE, 0x10, WordDevice::Timer(false)),
-            (SYSTEM_TIMER_BASE, 0x14, WordDevice::Timer(true)),
-            (CPU_INTERRUPT_BASE, 0x10, WordDevice::Interrupt(false)),
-            (SYSTEM_INTERRUPT_BASE, 0x14, WordDevice::Interrupt(true)),
-            (RESET_BASE, 4, WordDevice::Reset),
-            (MACIO_ID_BASE, 4, WordDevice::MacioId),
+            (
+                self.layout.io_control,
+                IO_CONTROL_SIZE,
+                WordDevice::IoControl,
+            ),
+            (self.layout.cpu_timer, 0x10, WordDevice::Timer(false)),
+            (self.layout.system_timer, 0x14, WordDevice::Timer(true)),
+            (
+                self.layout.cpu_interrupt,
+                0x10,
+                WordDevice::Interrupt(false),
+            ),
+            (
+                self.layout.system_interrupt,
+                0x14,
+                WordDevice::Interrupt(true),
+            ),
+            (self.layout.reset, 4, WordDevice::Reset),
+            (self.layout.macio_id, 4, WordDevice::MacioId),
         ] {
             if (base..base + size).contains(&address) {
                 return Some((device, address - base));
@@ -459,10 +815,12 @@ impl SystemBus {
     }
     fn overlaps_device(&self, address: u64, size: u64) -> bool {
         (self.cgsix.is_some()
-            && address < CGSIX_BASE + CGSIX_SIZE
-            && address.saturating_add(size) > CGSIX_BASE)
+            && address < self.layout.cgsix + CGSIX_SIZE
+            && address.saturating_add(size) > self.layout.cgsix)
             || self.devices.is_some()
-                && DEVICE_RANGES
+                && self
+                    .layout
+                    .device_ranges()
                     .iter()
                     .any(|&(start, end)| address < end && address.saturating_add(size) > start)
     }
@@ -471,7 +829,13 @@ impl SystemBus {
             return Err(MapError::InvalidRange);
         }
         if self.overlaps_device(address, size as u64)
-            || (self.dram.is_some() && size != 0 && address < APERTURE_BYTES)
+            || (self.dram.is_some()
+                && size != 0
+                && address
+                    < self
+                        .dram
+                        .as_ref()
+                        .map_or(APERTURE_BYTES, Ss5Dram::aperture_bytes))
         {
             Err(MapError::Overlap)
         } else {
@@ -523,7 +887,11 @@ impl Bus for SystemBus {
     }
 
     fn observe_memory_request(&mut self, address: u64, request: MemoryRequest) {
-        if address < APERTURE_BYTES {
+        let dram_aperture = self
+            .dram
+            .as_ref()
+            .map_or(APERTURE_BYTES, Ss5Dram::aperture_bytes);
+        if address < dram_aperture {
             if let Some(devices) = &mut self.devices {
                 devices
                     .io_control
@@ -555,35 +923,41 @@ impl Bus for SystemBus {
     }
 
     fn read8(&mut self, address: u64) -> Result<u8, BusError> {
+        let cgsix_base = self.layout.cgsix;
         if let Some(card) = self.cgsix_at(address) {
             return card
-                .read(address - CGSIX_BASE, 1)
+                .read(address - cgsix_base, 1)
                 .map(|v| v as u8)
                 .map_err(|kind| BusError { address, kind });
         }
         self.check_macio_access(address, 1)?;
-        if self.devices.is_some() && (MACIO_ID_BASE..MACIO_ID_BASE + 4).contains(&address) {
-            return Ok((0xfe81_0103u32 >> ((3 - (address - MACIO_ID_BASE)) * 8)) as u8);
+        if self.devices.is_some()
+            && (self.layout.macio_id..self.layout.macio_id + 4).contains(&address)
+        {
+            return Ok((0xfe81_0103u32 >> ((3 - (address - self.layout.macio_id)) * 8)) as u8);
         }
         self.check_floppy_access(address, 1)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.read8(address);
         }
-        if let Some(devices) = self.devices.as_ref() {
-            if (CS4231_BASE..CS4231_BASE + 0x40).contains(&address) {
+        if self.zero_at(address) {
+            return Ok(0);
+        }
+        if let (Some(base), Some(devices)) = (self.layout.cs4231, self.devices.as_ref()) {
+            if (base..base + 0x40).contains(&address) {
                 return devices
                     .cs4231
-                    .read_byte(address - CS4231_BASE)
+                    .read_byte(address - base)
                     .map_err(|kind| BusError { address, kind });
             }
         }
         self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
-            if (ESP_BASE..ESP_BASE + 0x40).contains(&address) {
+            if (self.layout.esp..self.layout.esp + 0x40).contains(&address) {
                 let result = if devices.scsi_dma.reset_asserted() {
                     Ok(0)
                 } else {
-                    devices.esp.read(address - ESP_BASE)
+                    devices.esp.read(address - self.layout.esp)
                 };
                 devices.sync_interrupts();
                 return result.map_err(|kind| BusError { address, kind });
@@ -593,31 +967,33 @@ impl Bus for SystemBus {
                 // presence port exists even when the AFX slot is empty.
                 return Ok(0);
             }
-            if (FLOPPY_BASE..FLOPPY_BASE + 0x10_0000).contains(&address) {
-                let result = devices.floppy.read(address - FLOPPY_BASE);
+            if (self.layout.floppy..self.layout.floppy + 0x10_0000).contains(&address) {
+                let result = devices.floppy.read(address - self.layout.floppy);
                 devices.sync_interrupts();
                 return result.map_err(|kind| BusError { address, kind });
             }
-            if address == AUXILIARY_BASE {
+            if address == self.layout.auxiliary {
                 return Ok(devices.auxiliary.read());
             }
-            if address == AUXILIARY_POWER_BASE {
+            if address == self.layout.auxiliary_power {
                 return Ok(devices.auxiliary.read_power());
             }
-            if (KEYBOARD_SERIAL_BASE..KEYBOARD_SERIAL_BASE + 8).contains(&address) {
-                let result = devices.keyboard_serial.read(address - KEYBOARD_SERIAL_BASE);
+            if (self.layout.keyboard_serial..self.layout.keyboard_serial + 8).contains(&address) {
+                let result = devices
+                    .keyboard_serial
+                    .read(address - self.layout.keyboard_serial);
                 devices.sync_interrupts();
                 return result.map_err(|kind| BusError { address, kind });
             }
-            if (SERIAL_BASE..SERIAL_BASE + 8).contains(&address) {
-                let result = devices.serial.read(address - SERIAL_BASE);
+            if (self.layout.serial..self.layout.serial + 8).contains(&address) {
+                let result = devices.serial.read(address - self.layout.serial);
                 devices.sync_interrupts();
                 return result.map_err(|kind| BusError { address, kind });
             }
-            if (NVRAM_BASE..NVRAM_BASE + NVRAM_SIZE as u64).contains(&address) {
+            if (self.layout.nvram..self.layout.nvram + NVRAM_SIZE as u64).contains(&address) {
                 return devices
                     .nvram
-                    .read((address - NVRAM_BASE) as usize)
+                    .read((address - self.layout.nvram) as usize)
                     .map_err(|kind| BusError { address, kind });
             }
         }
@@ -628,11 +1004,15 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write8(&mut self, address: u64, value: u8) -> Result<(), BusError> {
+        if self.prom_writes_ignored(address) {
+            return Ok(());
+        }
+        let cgsix_base = self.layout.cgsix;
         if let Some(card) = self.cgsix_at(address) {
             let shift = (3 - address % 4) * 8;
             return card
                 .write(
-                    (address - CGSIX_BASE) & !3,
+                    (address - cgsix_base) & !3,
                     u32::from(value) << shift,
                     255 << shift,
                 )
@@ -643,22 +1023,25 @@ impl Bus for SystemBus {
         if let Some(dram) = self.dram_at(address) {
             return dram.write8(address, value);
         }
-        if let Some(devices) = self.devices.as_mut() {
-            if (CS4231_BASE..CS4231_BASE + 0x40).contains(&address) {
+        if self.zero_at(address) {
+            return Ok(());
+        }
+        if let (Some(base), Some(devices)) = (self.layout.cs4231, self.devices.as_mut()) {
+            if (base..base + 0x40).contains(&address) {
                 return devices
                     .cs4231
-                    .write_byte(address - CS4231_BASE, value)
+                    .write_byte(address - base, value)
                     .map_err(|kind| BusError { address, kind });
             }
         }
         self.reject_narrow_word_device(address)?;
         if let Some(devices) = &mut self.devices {
-            if (ESP_BASE..ESP_BASE + 0x40).contains(&address) {
+            if (self.layout.esp..self.layout.esp + 0x40).contains(&address) {
                 let result = if devices.scsi_dma.reset_asserted() {
                     Ok(())
                 } else {
-                    let result = devices.esp.write(address - ESP_BASE, value);
-                    if result.is_ok() && address == ESP_BASE + 12 && value & 0x7f == 3 {
+                    let result = devices.esp.write(address - self.layout.esp, value);
+                    if result.is_ok() && address == self.layout.esp + 12 && value & 0x7f == 3 {
                         devices.scsi.reset();
                     }
                     result
@@ -672,37 +1055,37 @@ impl Bus for SystemBus {
                     kind: BusErrorKind::Unsupported("write to AFX presence port"),
                 });
             }
-            if (FLOPPY_BASE..FLOPPY_BASE + 0x10_0000).contains(&address) {
-                let result = devices.floppy.write(address - FLOPPY_BASE, value);
+            if (self.layout.floppy..self.layout.floppy + 0x10_0000).contains(&address) {
+                let result = devices.floppy.write(address - self.layout.floppy, value);
                 devices.sync_interrupts();
                 return result.map_err(|kind| BusError { address, kind });
             }
-            if address == AUXILIARY_BASE {
+            if address == self.layout.auxiliary {
                 devices.auxiliary.write(value);
                 return Ok(());
             }
-            if address == AUXILIARY_POWER_BASE {
+            if address == self.layout.auxiliary_power {
                 return devices
                     .auxiliary
                     .write_power(value)
                     .map_err(|kind| BusError { address, kind });
             }
-            if (KEYBOARD_SERIAL_BASE..KEYBOARD_SERIAL_BASE + 8).contains(&address) {
+            if (self.layout.keyboard_serial..self.layout.keyboard_serial + 8).contains(&address) {
                 let result = devices
                     .keyboard_serial
-                    .write(address - KEYBOARD_SERIAL_BASE, value);
+                    .write(address - self.layout.keyboard_serial, value);
                 devices.sync_interrupts();
                 return result.map_err(|kind| BusError { address, kind });
             }
-            if (SERIAL_BASE..SERIAL_BASE + 8).contains(&address) {
-                let result = devices.serial.write(address - SERIAL_BASE, value);
+            if (self.layout.serial..self.layout.serial + 8).contains(&address) {
+                let result = devices.serial.write(address - self.layout.serial, value);
                 devices.sync_interrupts();
                 return result.map_err(|kind| BusError { address, kind });
             }
-            if (NVRAM_BASE..NVRAM_BASE + NVRAM_SIZE as u64).contains(&address) {
+            if (self.layout.nvram..self.layout.nvram + NVRAM_SIZE as u64).contains(&address) {
                 return devices
                     .nvram
-                    .write((address - NVRAM_BASE) as usize, value)
+                    .write((address - self.layout.nvram) as usize, value)
                     .map_err(|kind| BusError { address, kind });
             }
         }
@@ -711,37 +1094,40 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read16(&mut self, address: u64) -> Result<u16, BusError> {
+        let cgsix_base = self.layout.cgsix;
         if let Some(card) = self.cgsix_at(address) {
             return card
-                .read(address - CGSIX_BASE, 2)
+                .read(address - cgsix_base, 2)
                 .map(|v| v as u16)
                 .map_err(|kind| BusError { address, kind });
         }
         self.check_macio_access(address, 2)?;
-        if (ETHERNET_BASE..ETHERNET_BASE + 4).contains(&address) {
+        if (self.layout.ethernet..self.layout.ethernet + 4).contains(&address) {
             if let Some(devices) = &mut self.devices {
                 return if devices.ethernet_dma.reset_asserted() {
                     Ok(0)
                 } else {
                     devices
                         .ethernet
-                        .read(address - ETHERNET_BASE)
+                        .read(address - self.layout.ethernet)
                         .map_err(|kind| BusError { address, kind })
                 };
             }
         }
-        if self.devices.is_some() && (MACIO_ID_BASE..MACIO_ID_BASE + 4).contains(&address) {
-            return Ok((0xfe81_0103u32 >> ((2 - (address - MACIO_ID_BASE)) * 8)) as u16);
+        if self.devices.is_some()
+            && (self.layout.macio_id..self.layout.macio_id + 4).contains(&address)
+        {
+            return Ok((0xfe81_0103u32 >> ((2 - (address - self.layout.macio_id)) * 8)) as u16);
         }
         self.check_floppy_access(address, 2)?;
         if let Some(dram) = self.dram_at(address) {
             return dram.read16(address);
         }
-        if let Some(devices) = self.devices.as_ref() {
-            if (CS4231_BASE..CS4231_BASE + 0x40).contains(&address) {
+        if let (Some(base), Some(devices)) = (self.layout.cs4231, self.devices.as_ref()) {
+            if (base..base + 0x40).contains(&address) {
                 return devices
                     .cs4231
-                    .read_half(address - CS4231_BASE)
+                    .read_half(address - base)
                     .map_err(|kind| BusError { address, kind });
             }
         }
@@ -753,6 +1139,10 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write16(&mut self, address: u64, value: u16) -> Result<(), BusError> {
+        if self.prom_writes_ignored(address) {
+            return Ok(());
+        }
+        let cgsix_base = self.layout.cgsix;
         if let Some(card) = self.cgsix_at(address) {
             if address & 1 != 0 {
                 return Err(BusError {
@@ -763,19 +1153,21 @@ impl Bus for SystemBus {
             let shift = (2 - address % 4) * 8;
             return card
                 .write(
-                    (address - CGSIX_BASE) & !3,
+                    (address - cgsix_base) & !3,
                     u32::from(value) << shift,
                     65535 << shift,
                 )
                 .map_err(|kind| BusError { address, kind });
         }
         self.check_macio_access(address, 2)?;
-        if (ETHERNET_BASE..ETHERNET_BASE + 4).contains(&address) {
+        if (self.layout.ethernet..self.layout.ethernet + 4).contains(&address) {
             if let Some(devices) = &mut self.devices {
                 let result = if devices.ethernet_dma.reset_asserted() {
                     Ok(())
                 } else {
-                    devices.ethernet.write(address - ETHERNET_BASE, value)
+                    devices
+                        .ethernet
+                        .write(address - self.layout.ethernet, value)
                 };
                 devices.sync_interrupts();
                 return result.map_err(|kind| BusError { address, kind });
@@ -785,11 +1177,11 @@ impl Bus for SystemBus {
         if let Some(dram) = self.dram_at(address) {
             return dram.write16(address, value);
         }
-        if let Some(devices) = self.devices.as_mut() {
-            if (CS4231_BASE..CS4231_BASE + 0x40).contains(&address) {
+        if let (Some(base), Some(devices)) = (self.layout.cs4231, self.devices.as_mut()) {
+            if (base..base + 0x40).contains(&address) {
                 return devices
                     .cs4231
-                    .write_half(address - CS4231_BASE, value)
+                    .write_half(address - base, value)
                     .map_err(|kind| BusError { address, kind });
             }
         }
@@ -799,9 +1191,10 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read32(&mut self, address: u64) -> Result<u32, BusError> {
+        let cgsix_base = self.layout.cgsix;
         if let Some(card) = self.cgsix_at(address) {
             return card
-                .read(address - CGSIX_BASE, 4)
+                .read(address - cgsix_base, 4)
                 .map_err(|kind| BusError { address, kind });
         }
         self.check_macio_access(address, 4)?;
@@ -809,11 +1202,25 @@ impl Bus for SystemBus {
         if let Some(dram) = self.dram_at(address) {
             return dram.read32(address);
         }
+        if self.zero_at(address) {
+            return Ok(0);
+        }
         if address & 3 != 0 {
             return Err(BusError {
                 address,
                 kind: BusErrorKind::Misaligned,
             });
+        }
+        if let Some(devices) = &mut self.devices {
+            if (self.layout.esp..self.layout.esp + 0x40).contains(&address) {
+                let result = if devices.scsi_dma.reset_asserted() {
+                    Ok(0)
+                } else {
+                    devices.esp.read(address - self.layout.esp).map(u32::from)
+                };
+                devices.sync_interrupts();
+                return result.map_err(|kind| BusError { address, kind });
+            }
         }
         if let Some((device, offset)) = self.word_device(address) {
             let devices = self.devices.as_mut().expect("decoded installed device");
@@ -821,6 +1228,7 @@ impl Bus for SystemBus {
             let result = match device {
                 WordDevice::IoControl => devices.io_control.read(offset),
                 WordDevice::Cs4231 => devices.cs4231.read(offset),
+                WordDevice::Ecc => devices.ecc.read(offset),
                 WordDevice::Timer(system) => devices.timers.read(system, offset),
                 WordDevice::Interrupt(system) => devices.interrupts.read(system, offset),
                 WordDevice::Reset => Ok(devices.reset.read()),
@@ -839,16 +1247,20 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError> {
+        if self.prom_writes_ignored(address) {
+            return Ok(());
+        }
+        let cgsix_base = self.layout.cgsix;
         if let Some(card) = self.cgsix_at(address) {
             let result = card
-                .write(address - CGSIX_BASE, value, mask)
+                .write(address - cgsix_base, value, mask)
                 .map_err(|kind| BusError { address, kind });
             self.sync_cgsix_irq();
             return result;
         }
         if mask != u32::MAX
             && self.devices.is_some()
-            && (ETHERNET_BASE..ETHERNET_BASE + 4).contains(&address)
+            && (self.layout.ethernet..self.layout.ethernet + 4).contains(&address)
         {
             return Err(BusError {
                 address,
@@ -858,7 +1270,7 @@ impl Bus for SystemBus {
         self.check_macio_access(address, 4)?;
         if mask != u32::MAX
             && self.devices.is_some()
-            && (FLOPPY_BASE..FLOPPY_BASE + 0x10_0000).contains(&address)
+            && (self.layout.floppy..self.layout.floppy + 0x10_0000).contains(&address)
         {
             return Err(BusError {
                 address,
@@ -869,11 +1281,35 @@ impl Bus for SystemBus {
         if let Some(dram) = self.dram_at(address) {
             return dram.write32_masked(address, value, mask);
         }
+        if self.zero_at(address) {
+            return Ok(());
+        }
         if address & 3 != 0 {
             return Err(BusError {
                 address,
                 kind: BusErrorKind::Misaligned,
             });
+        }
+        if let Some(devices) = &mut self.devices {
+            if (self.layout.esp..self.layout.esp + 0x40).contains(&address) {
+                if mask != u32::MAX {
+                    return Err(BusError {
+                        address,
+                        kind: BusErrorKind::Unsupported("masked ESP register store"),
+                    });
+                }
+                let result = if devices.scsi_dma.reset_asserted() {
+                    Ok(())
+                } else {
+                    let result = devices.esp.write(address - self.layout.esp, value as u8);
+                    if result.is_ok() && address == self.layout.esp + 12 && value & 0x7f == 3 {
+                        devices.scsi.reset();
+                    }
+                    result
+                };
+                devices.sync_interrupts();
+                return result.map_err(|kind| BusError { address, kind });
+            }
         }
         if let Some((device, offset)) = self.word_device(address) {
             if mask != u32::MAX {
@@ -886,6 +1322,7 @@ impl Bus for SystemBus {
             let result = match device {
                 WordDevice::IoControl => devices.io_control.write(offset, value),
                 WordDevice::Cs4231 => devices.cs4231.write(offset, value),
+                WordDevice::Ecc => devices.ecc.write(offset, value),
                 WordDevice::MacioId => Err(BusErrorKind::Unsupported("write to MACIO ID")),
                 WordDevice::ScsiDma => {
                     let result = devices.scsi_dma.write(offset, value);
@@ -917,8 +1354,9 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read_doubleword(&mut self, address: u64) -> Result<[u32; 2], BusError> {
+        let cgsix_base = self.layout.cgsix;
         if let Some(card) = self.cgsix_at(address) {
-            let offset = address - CGSIX_BASE;
+            let offset = address - cgsix_base;
             if address & 7 != 0 {
                 return Err(BusError {
                     address,
@@ -946,7 +1384,10 @@ impl Bus for SystemBus {
         if let Some(dram) = self.dram_at(address) {
             return dram.read_doubleword(address);
         }
-        if address == CPU_TIMER_BASE {
+        if self.zero_at(address) {
+            return Ok([0; 2]);
+        }
+        if address == self.layout.cpu_timer {
             if let Some(devices) = &self.devices {
                 return devices
                     .timers
@@ -962,8 +1403,12 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write_doubleword(&mut self, address: u64, words: [u32; 2]) -> Result<(), BusError> {
+        if self.prom_writes_ignored(address) {
+            return Ok(());
+        }
+        let cgsix_base = self.layout.cgsix;
         if let Some(card) = self.cgsix_at(address) {
-            let offset = address - CGSIX_BASE;
+            let offset = address - cgsix_base;
             if address & 7 != 0 {
                 return Err(BusError {
                     address,
@@ -990,7 +1435,10 @@ impl Bus for SystemBus {
         if let Some(dram) = self.dram_at(address) {
             return dram.write_doubleword(address, words);
         }
-        if address == CPU_TIMER_BASE {
+        if self.zero_at(address) {
+            return Ok(());
+        }
+        if address == self.layout.cpu_timer {
             if let Some(devices) = &mut self.devices {
                 return devices
                     .timers
@@ -1004,8 +1452,17 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn swap32(&mut self, address: u64, value: u32) -> Result<u32, BusError> {
+        if self.prom_writes_ignored(address) {
+            return self
+                .memory
+                .read32(address)
+                .map_err(|error| self.physical_error(error));
+        }
         if let Some(dram) = self.dram_at(address) {
             return dram.swap32(address, value);
+        }
+        if self.zero_at(address) {
+            return Ok(0);
         }
         self.memory_only(address, 4)?;
         self.memory
@@ -1013,8 +1470,31 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn ldstub8(&mut self, address: u64) -> Result<u8, BusError> {
+        if self.prom_writes_ignored(address) {
+            return self
+                .memory
+                .read8(address)
+                .map_err(|error| self.physical_error(error));
+        }
         if let Some(dram) = self.dram_at(address) {
             return dram.ldstub8(address);
+        }
+        if self.zero_at(address) {
+            return Ok(0);
+        }
+        if let Some(devices) = &mut self.devices {
+            if (self.layout.nvram..self.layout.nvram + NVRAM_SIZE as u64).contains(&address) {
+                let offset = (address - self.layout.nvram) as usize;
+                let old = devices
+                    .nvram
+                    .read(offset)
+                    .map_err(|kind| BusError { address, kind })?;
+                devices
+                    .nvram
+                    .write(offset, 0xff)
+                    .map_err(|kind| BusError { address, kind })?;
+                return Ok(old);
+            }
         }
         self.memory_only(address, 1)?;
         self.memory

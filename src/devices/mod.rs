@@ -2,6 +2,7 @@
 pub mod auxiliary;
 pub mod cgsix;
 pub mod cs4231;
+pub mod ecc;
 pub mod esp;
 pub mod ethernet;
 pub mod ethernet_dma;

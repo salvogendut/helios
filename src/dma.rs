@@ -207,7 +207,7 @@ impl Machine {
             MemoryRequest {
                 kind,
                 cpu: false,
-                boot_mode: self.cpu.mmu.control() & crate::mmu::PCR_BM != 0,
+                boot_mode: self.cpu.mmu.boot_mode(),
                 cacheable: false,
             },
         );

@@ -68,6 +68,11 @@ by separate device tests. No image conversion is needed to change this mode.
 
 ## Controller and DMA behavior
 
+The SS-20/Axil integrated ESP profile accepts 32-bit register-lane accesses and
+the test/read-reserved register probes used by their POST, including test-mode
+probe commands. The SS-5 microSPARC-II profile keeps strict byte-only accesses
+and rejects reserved/test registers as documented below.
+
 The ESP supports select without ATN (`41`), select with ATN (`42`), select with
 ATN and stop (`43`), IDENTIFY, six-, ten- and twelve-byte CDB framing,
 TRANSFER INFORMATION, INITIATOR COMMAND COMPLETE and MESSAGE ACCEPTED. Commands

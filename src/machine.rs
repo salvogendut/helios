@@ -5,8 +5,8 @@ use crate::bus::{BusError, MapError};
 use crate::cpu::{Cpu, CpuFault, FaultKind, Step};
 use crate::devices::nvram::Nvram;
 use crate::dram::Ss5Dram;
-use crate::mmu::PROM_BASE;
-use crate::system_bus::SystemBus;
+use crate::mmu::MmuConfig;
+use crate::system_bus::{Sun4mLayout, SystemBus};
 use std::fmt;
 
 pub const TARGET: &str = "SPARCstation 5 (sun4m), SPARC V8 / microSPARC-II";
@@ -18,6 +18,76 @@ pub const MAX_PROM_BYTES: usize = 1024 * 1024;
 /// Base functional quantum; physical PROM reads add documented EBus wait time.
 /// This is not a cycle-accurate microSPARC pipeline model.
 pub const STEP_NS: u64 = 100;
+
+/// Initial full-system profiles. All three run the same device models; the
+/// SS-20/Axil profiles use the high sun4m physical map, a 36-bit reference MMU
+/// and their own IDPROM identity. The CPU model remains the tested
+/// microSPARC-II interpreter; single-processor SS-20 only for now.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MachineProfile {
+    #[default]
+    Ss5,
+    Ss20,
+    Axil320,
+}
+
+impl MachineProfile {
+    pub const fn target(self) -> &'static str {
+        match self {
+            Self::Ss5 => TARGET,
+            Self::Ss20 => "SPARCstation 20 (sun4m, single processor), SPARC V8 profile",
+            Self::Axil320 => "Axil 320 (SPARCstation 20 clone), SPARC V8 profile",
+        }
+    }
+
+    pub const fn layout(self) -> Sun4mLayout {
+        match self {
+            Self::Ss5 => Sun4mLayout::ss5(),
+            Self::Ss20 => Sun4mLayout::ss20(),
+            Self::Axil320 => Sun4mLayout::axil320(),
+        }
+    }
+
+    pub const fn mmu(self) -> MmuConfig {
+        match self {
+            Self::Ss5 => MmuConfig::ss5(),
+            Self::Ss20 | Self::Axil320 => MmuConfig::ss20(),
+        }
+    }
+
+    pub const fn nvram_machine_type(self) -> u8 {
+        match self {
+            Self::Ss5 => 0x80,
+            Self::Ss20 | Self::Axil320 => 0x72,
+        }
+    }
+
+    pub const fn default_mac(self) -> [u8; 6] {
+        match self {
+            Self::Ss5 | Self::Ss20 => [0x08, 0x00, 0x20, 0xc0, 0xff, 0xee],
+            Self::Axil320 => [0x00, 0x00, 0x3c, 0x13, 0xde, 0xad],
+        }
+    }
+
+    pub const fn default_serial(self) -> [u8; 3] {
+        [0xc0, 0xff, 0xee]
+    }
+
+    pub fn dram(self, ram_bytes: usize) -> Result<Ss5Dram, MapError> {
+        match self {
+            Self::Ss5 => Ss5Dram::from_total(ram_bytes),
+            Self::Ss20 | Self::Axil320 => Ss5Dram::from_ss20_total(ram_bytes),
+        }
+    }
+
+    pub fn default_nvram(self) -> Nvram {
+        Nvram::with_machine_type(
+            self.nvram_machine_type(),
+            self.default_mac(),
+            self.default_serial(),
+        )
+    }
+}
 
 #[derive(Debug)]
 pub enum MachineError {
@@ -34,7 +104,7 @@ impl fmt::Display for MachineError {
                 f.write_str("RAM must be a nonzero multiple of 4 bytes, at most 256 MiB")
             }
             Self::InvalidDramSize => {
-                f.write_str("SS-5 RAM must fit in eight 8 MiB or 32 MiB DSIMMs (8–256 MiB)")
+                f.write_str("RAM must fit in eight 8 MiB or 32 MiB DSIMMs (8–256 MiB)")
             }
             Self::Memory(error) => error.fmt(f),
             Self::InvalidPromSize => {
@@ -55,7 +125,7 @@ pub struct Machine {
 impl Machine {
     /// Hardware SS-5 memory layout; low slots receive 32 MiB then 8 MiB DSIMMs.
     pub fn ss5(ram_bytes: usize, prom: &[u8]) -> Result<Self, MachineError> {
-        Self::ss5_with_nvram(ram_bytes, prom, Nvram::default())
+        Self::ss5_with_nvram(ram_bytes, prom, MachineProfile::Ss5.default_nvram())
     }
 
     pub fn ss5_with_nvram(
@@ -63,21 +133,55 @@ impl Machine {
         prom: &[u8],
         nvram: Nvram,
     ) -> Result<Self, MachineError> {
-        let dram = Ss5Dram::from_total(ram_bytes).map_err(|error| match error {
+        Self::with_profile(MachineProfile::Ss5, ram_bytes, prom, nvram)
+    }
+
+    pub fn ss20(ram_bytes: usize, prom: &[u8]) -> Result<Self, MachineError> {
+        Self::ss20_with_nvram(ram_bytes, prom, MachineProfile::Ss20.default_nvram())
+    }
+
+    pub fn ss20_with_nvram(
+        ram_bytes: usize,
+        prom: &[u8],
+        nvram: Nvram,
+    ) -> Result<Self, MachineError> {
+        Self::with_profile(MachineProfile::Ss20, ram_bytes, prom, nvram)
+    }
+
+    pub fn axil320(ram_bytes: usize, prom: &[u8]) -> Result<Self, MachineError> {
+        Self::axil320_with_nvram(ram_bytes, prom, MachineProfile::Axil320.default_nvram())
+    }
+
+    pub fn axil320_with_nvram(
+        ram_bytes: usize,
+        prom: &[u8],
+        nvram: Nvram,
+    ) -> Result<Self, MachineError> {
+        Self::with_profile(MachineProfile::Axil320, ram_bytes, prom, nvram)
+    }
+
+    pub fn with_profile(
+        profile: MachineProfile,
+        ram_bytes: usize,
+        prom: &[u8],
+        nvram: Nvram,
+    ) -> Result<Self, MachineError> {
+        let dram = profile.dram(ram_bytes).map_err(|error| match error {
             MapError::InvalidRange => MachineError::InvalidDramSize,
             error => MachineError::Memory(error),
         })?;
-        let mut bus = SystemBus::default();
+        let mut bus = SystemBus::with_layout(profile.layout());
         bus.install_ss5_dram(dram).map_err(MachineError::Memory)?;
         let mut machine = Self {
             cpu: Cpu::new(0),
             bus,
         };
+        machine.cpu.use_mmu_config(profile.mmu());
         machine.install_prom(prom, nvram)?;
         Ok(machine)
     }
 
-    /// Load a raw PROM into a 1 MiB read-only aperture, padded with 0xff.
+    /// Load a raw PROM into the profile's read-only alias (padded with 0xff).
     /// Install the polling serial console and a fresh deterministic NVRAM/RTC.
     pub fn sun4m(ram_bytes: usize, prom: &[u8]) -> Result<Self, MachineError> {
         Self::sun4m_with_nvram(ram_bytes, prom, Nvram::default())
@@ -97,10 +201,11 @@ impl Machine {
         if prom.is_empty() || prom.len() > MAX_PROM_BYTES {
             return Err(MachineError::InvalidPromSize);
         }
-        let mut image = vec![0xff; MAX_PROM_BYTES];
+        let mut image = vec![0xff; self.bus.prom_aperture() as usize];
         image[..prom.len()].copy_from_slice(prom);
+        let prom_base = self.bus.prom_base();
         self.bus
-            .map_rom(PROM_BASE, &image)
+            .map_rom(prom_base, &image)
             .map_err(MachineError::Memory)?;
         self.bus
             .install_sun4m(nvram)

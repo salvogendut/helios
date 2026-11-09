@@ -62,6 +62,8 @@ pub struct Esp {
     dma: bool,
     remaining: u32,
     complete_sequence: bool,
+    /// SS-20/Axil integrated-core test/read-reserved registers are accepted.
+    reference_registers: bool,
 }
 
 impl Default for Esp {
@@ -102,11 +104,17 @@ impl Default for Esp {
             dma: false,
             remaining: 0,
             complete_sequence: false,
+            reference_registers: false,
         }
     }
 }
 
 impl Esp {
+    /// Select the SS-20/Axil core's wider register readback behavior.
+    pub fn set_reference_registers(&mut self, reference: bool) {
+        self.reference_registers = reference;
+    }
+
     pub fn reset(&mut self) {
         // Count/counter, destination and timeout survive all resets. Only the
         // bottom FIFO element is cleared; the other storage is unspecified.
@@ -195,6 +203,7 @@ impl Esp {
                 }
             }
             14 => 0, // High counter disabled in 16-bit compatibility mode.
+            10 | 13 | 15 if self.reference_registers => 0,
             _ => return Err(BusErrorKind::Unsupported("read of reserved ESP register")),
         };
         Ok(result)
@@ -236,6 +245,7 @@ impl Esp {
                     self.high_written = true;
                 }
             }
+            10 | 13 | 15 if self.reference_registers => {}
             _ => {
                 return Err(BusErrorKind::Unsupported(
                     "write of reserved/test ESP register",
@@ -252,6 +262,12 @@ impl Esp {
             return Ok(());
         }
         if self.test_mode && code != 0 {
+            // Test-mode commands have no modeled transfer effect. The
+            // SS-20/Axil PROM probes them before resetting the chip; ordinary
+            // SCSI commands remain unsupported until that reset.
+            if self.reference_registers && matches!(code, 0x20..=0x2f) {
+                return Ok(());
+            }
             return Err(BusErrorKind::Unsupported("ESP command in chip test mode"));
         }
         if !matches!(

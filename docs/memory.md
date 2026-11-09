@@ -2,10 +2,13 @@
 
 The first memory-system target is microSPARC-II, as used in SPARCstation 5.
 Its physical addresses are **31 bits**, virtual addresses are 32 bits, and the
-context register is eight bits. This is a functional implementation with
-synchronous memory access. [Cache diagnostic storage](cache.md) is implemented;
-cache hit/fill behavior and timing remain pending. The installed peripheral
-subset is described in [devices.md](devices.md).
+context register is eight bits. The SS-20/Axil profiles select a functional
+SuperSPARC-II-style reference-MMU identity: 36-bit physical addresses, boot mode
+in PCR bit 13, and the high sun4m address map (see [machine profiles](machines.md)).
+This is a functional implementation with synchronous memory access. [Cache
+diagnostic storage](cache.md) is implemented; cache hit/fill behavior and timing
+remain pending. The installed peripheral subset is described in
+[devices.md](devices.md).
 
 The sources are the Sun **microSPARC-II User's Manual**, revision 1.1, July 1994,
 chapters 5 and 12, and SPARC V8 appendix H. Links and the pinned QEMU comparison
@@ -20,6 +23,10 @@ PSR.S. Alternate-space instructions require supervisor mode and register
 addressing (`i=0`). Privilege/encoding checks happen before memory effects.
 Supported instructions are LDA/LDUBA/LDUHA/LDSBA/LDSHA/LDDA,
 STA/STBA/STHA/STDA and SWAPA/LDSTUBA.
+For the reference profile PSR.DE (bit 15) selects little-endian data accesses:
+halfword, word, integer doubleword and FPU loads/stores apply the documented
+byte conversions, while instruction fetches and page-table accesses remain
+big-endian. The microSPARC-II profile masks PSR.DE.
 Alignment is checked before translation and is not suppressed by PCR.NF.
 The public MMU load/store methods assume that the CPU has checked privilege.
 
@@ -33,8 +40,9 @@ The reset baseline is:
 
 - PC=0, nPC=4; PSR.S=PSR.PS=1, ET=0, CWP=0; WIM=1.
 - TBR, Y, general registers and ICC are deterministically zero.
-- PCR implementation/version=`0x04000000`, BM=1, EN=NF=IE=DE=0.
-- Context, CTPR, fault registers and the TLB are cleared.
+- SS-5: PCR implementation/version=`0x04000000`, BM(bit 14)=1.
+- SS-20/Axil: PCR implementation/version=`0x08000000`, BM(bit 13)=1.
+- EN=NF=IE=DE=0; context, CTPR, fault registers and the TLB are cleared.
 
 The deterministic values for otherwise unspecified state are emulator choices,
 not a claim about power-on RAM/register contents. `Machine::reset` retains RAM
@@ -49,15 +57,17 @@ The translation modes follow microSPARC-II table 40:
 
 | Access | Mode | Physical address |
 | --- | --- | --- |
-| ASI 8/9, BM=1 | Boot instruction space, regardless of EN | `0x70000000 \| (VA & 0x0fffffff)` |
+| ASI 8/9, BM=1 | SS-5 boot instruction space, regardless of EN | `0x70000000 \| (VA & 0x0fffffff)` |
+| ASI 8/9, BM=1 | SS-20/Axil boot instruction space | `0xff0000000 \| (VA & 0x7ffff)` |
 | ASI 8/9, BM=0, EN=0 | Instruction pass-through | `VA & 0x7fffffff` |
 | ASI A/B, EN=0 | Data pass-through, regardless of BM | `VA & 0x7fffffff` |
 | ASI 8/9 with BM=0, or A/B, EN=1 | Page-table translation | PTE and page offset |
-| ASI 20 | Physical bypass, regardless of BM/EN | `VA & 0x7fffffff` |
+| ASI 20 | Physical bypass, regardless of BM/EN | `VA & 0x7fffffff` (SS-5) / full VA (SS-20) |
+| ASI 21–2f | Physical bypass, regardless of BM/EN | `(ASI & 0xf) << 32 \| VA` |
 
 `boot FILE` accepts a nonempty raw image of at most 1 MiB. The PROM aperture
-starts at physical `0x70000000`; unused bytes are filled with `0xff`, including
-an incomplete last word. ROM stores fail. Console serial and NVRAM/RTC are also
+starts at physical `0x70000000` for SS-5 and `0xff0000000` for SS-20/Axil;
+unused bytes are filled with `0xff`, including an incomplete last word. ROM stores fail. Console serial and NVRAM/RTC are also
 installed, together with interrupt control and counter timers. An ELF loader,
 QEMU `fw_cfg` and complete firmware boot remain pending.
 
@@ -107,7 +117,7 @@ turns a read-only mapping into a writable one.
 | --- | --- |
 | `03` | Word load: probe; word store: TLB flush |
 | `04` | Word reads/writes of the registers below |
-| `06` | Word TLB diagnostic data and tag ports; see [diagnostic contract](dram-tlb.md) |
+| `05` / `06` | SS-20/Axil I/D-TLB diagnostics. SEL 0–3 writes install a real reference-profile entry; SEL 5/6 expose a diagnostic PTP2 view. On SS-5, `06` is the microSPARC-II TLB diagnostic space |
 | `08` / `09` | User / supervisor instruction space, byte/halfword/word/doubleword and atomics |
 | `0a` / `0b` | User / supervisor data space, byte/halfword/word/doubleword and atomics |
 | `0c` / `0e` | Word instruction/data cache diagnostic tag loads/stores |
@@ -115,18 +125,23 @@ turns a read-only mapping into a writable one.
 | `0f` | Byte/halfword/word/doubleword data-cache diagnostic data loads/stores |
 | `10`–`14` | Word stores: conditionally invalidate one diagnostic tag in each cache |
 | `20` | Physical bypass, byte/halfword/word/doubleword and atomics |
+| `21`–`2f` | 36-bit physical bypass for SS-20/Axil; applies the ASI low nibble to PA[35:32] |
+| `30`–`32`, `36`, `37`, `39` | SuperSPARC counter/store-buffer diagnostics accepted as no-op storage |
+| `38`, `49`–`4c` | SuperSPARC MMU breakpoint/counter registers and action storage |
+| `02` | SuperSPARC MXCC register subset; unrecognized addresses read zero, writes are ignored |
 
 For ASI 4, VA bits 12:8 select a register and bits 7:0 are ignored after alignment
-checking. Bits 31:13 must be zero.
+checking. Bits 31:13 must be zero. CTPR and replacement-control masks widen for
+the SS-20/Axil reference profile (`0xffffffc0` and `0xffffffff`).
 
 | Register address | Behavior |
 | --- | --- |
 | `0000` | Processor Control Register (PCR) |
-| `0100` | Context Table Pointer Register, writable mask `0x00ffffc0` |
+| `0100` | Context Table Pointer Register, writable mask `0x00ffffc0` (SS-5) / `0xffffffc0` (SS-20/Axil) |
 | `0200` | Context register, writable mask `0xff` |
 | `0300` | Synchronous Fault Status Register (SFSR), read clears; writes ignored |
 | `0400` | Synchronous Fault Address Register (SFAR), read clears; writes ignored |
-| `1000` | TLB Replacement Control Register, mask `0x01f1ffff`; functional fill-driven counter |
+| `1000` | TLB Replacement Control Register, mask `0x01f1ffff` (SS-5) / `0xffffffff` (SS-20/Axil); functional fill-driven counter |
 | `1300` | SFSR diagnostic alias: reads retain state, writes masked by `0x00016fff` |
 | `1400` | SFAR diagnostic alias: reads retain state, writes retain all 32 bits |
 
@@ -140,13 +155,15 @@ PCR diagnostics need hardware confirmation before claiming full compatibility.
 
 Other ASIs, unsupported widths in control spaces, unimplemented registers and
 unsupported controls produce an explicit emulator stop. Hardware control-space
-fault synthesis is pending. In particular, generic 36-bit bypass ASIs `21`–`2f`
-are not implemented as microSPARC-II extensions. injected PTP walks, diagnostic M-bit rewalks, ASI `39`,
-software table walks and watchpoints are still pending.
+fault synthesis is pending. Generic 36-bit bypass ASIs `21`–`2f` are enabled only
+for the SS-20/Axil reference profile, not the microSPARC-II SS-5 profile.
+Injected PTP walks, diagnostic M-bit rewalks, software table walks and
+watchpoints are still pending.
 
 ## Page tables and TLB
 
-The root entry address is `(CTPR << 4) | (context << 2)`. Further indices select
+The root entry address is `(CTPR << 4) | (context << 2)`. Reference-profile
+PTEs carry a 36-bit physical page number; microSPARC-II PTEs remain 31-bit. Further indices select
 VA bits 31:24, 23:18 and 17:12. Entry types are invalid (0), table pointer (1),
 leaf (2) and reserved (3). Level 1/2/3 leaves map 16 MiB/256 KiB/4 KiB regions.
 Physical page numbers use PTE bits 26:8. Table pointers can address all 31
@@ -179,13 +196,16 @@ actual entries. TRCR controls wrapping, counter freeze and reserved slots, using
 a functional counter advanced on fills. Intermediate PTP caching, injected PTP
 walks and detached M-bit rewalks remain pending; see [dram-tlb.md](dram-tlb.md).
 Changes to cached page mappings require a flush. Context switches
-retain tagged entries; PCR and CTPR writes conservatively flush all entries.
+retain tagged entries; PCR and CTPR writes leave TLB entries intact, matching
+the reference MMU rule that a context-table-pointer change invalidates cached
+PTPs but does not demap the TLB.
 
 ASI 3 uses address bits 11:8 for the operation type and bits 31:12 for the
-virtual page. Flush types 0–4 (page, segment, region, context, entire) currently
-flush the entire shared TLB, including I/O entries. This retains the existing
-conservative full-flush implementation; selective CPU flushes remain pending.
-I/O flush registers invalidate only I/O entries. Types 5–15 do
+virtual page. Page, segment and region flushes (types 0–2) invalidate normal
+TLB entries whose virtual page matches the selected extent and diagnostic tags
+with matching Level-0 descriptors; context flush (type 3) invalidates entries
+tagged with the current context; entire flush (type 4) invalidates all CPU
+entries. I/O flush registers invalidate only I/O entries. Types 5–15 do
 nothing. Flushes clear tag Valid while retaining diagnostic contents and the
 replacement counter. Cache flush ASIs do not invalidate translations.
 

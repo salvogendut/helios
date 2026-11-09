@@ -91,12 +91,15 @@ fn unimplemented_facilities_stop_without_fabricating_success_or_changing_configu
         );
         assert_eq!(io, before);
     }
-    // No generic register RAM or multiprocessor MBus-arbiter register.
-    for offset in [8, 0x1008, 0x1024, 0x2004, 0x3020, 0x7ffc] {
+    // No generic register RAM; the SS-20/Axil MBus arbiter-enable register is
+    // implemented separately from the microSPARC-II configuration.
+    for offset in [8, 0x1024, 0x2004, 0x3020, 0x7ffc] {
         assert_eq!(io.read(offset), Err(BusErrorKind::Unmapped));
         assert_eq!(io.write(offset, 123), Err(BusErrorKind::Unmapped));
         assert_eq!(io, before);
     }
+    io.write(0x1008, 0x003f_0000).unwrap();
+    assert_eq!(io.read(0x1008).unwrap(), 0x001f_0001);
 }
 
 #[test]

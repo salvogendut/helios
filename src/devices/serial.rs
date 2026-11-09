@@ -33,6 +33,7 @@ struct Port {
     rx_pending: bool,
     rx_first_armed: bool,
     tx_pending: bool,
+    receiver_epoch: u64,
 }
 
 impl Default for Port {
@@ -48,6 +49,7 @@ impl Default for Port {
             rx_pending: false,
             rx_first_armed: false,
             tx_pending: false,
+            receiver_epoch: 0,
         };
         port.reset(true);
         port
@@ -76,6 +78,7 @@ impl Port {
         self.rx_pending = false;
         self.rx_first_armed = false;
         self.tx_pending = false;
+        self.receiver_epoch = 0;
         // Already transmitted bytes belong to the host endpoint; guest reset
         // cannot retract them. Keep output until the owner drains it.
     }
@@ -194,6 +197,9 @@ impl Port {
         }
         let previous = self.wr[reg];
         self.wr[reg] = value;
+        if reg == 3 && value & 1 != 0 {
+            self.receiver_epoch = self.receiver_epoch.wrapping_add(1);
+        }
         if reg == 1 {
             if (value ^ previous) & 0x18 != 0 {
                 self.rx_pending = false;
@@ -267,6 +273,12 @@ impl Serial {
             port.break_latch = Some(asserted);
         }
         Ok(())
+    }
+    pub fn receiver_epoch(&self, channel: Channel) -> u64 {
+        self.ports[channel.index()].receiver_epoch
+    }
+    pub fn receiver_enabled(&self, channel: Channel) -> bool {
+        self.ports[channel.index()].wr[3] & 1 != 0
     }
     pub fn take_output(&mut self, channel: Channel) -> Vec<u8> {
         self.ports[channel.index()].output.drain(..).collect()

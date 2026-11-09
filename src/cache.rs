@@ -78,15 +78,38 @@ impl<const WORDS: usize, const LINE_SHIFT: u32> Array<WORDS, LINE_SHIFT> {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CacheDiagnostics {
     instruction: Array<4096, 5>,
     data: Array<2048, 4>,
+    reference: bool,
+    instruction_tags64: Box<[[u32; 2]]>,
+    data_tags64: Box<[[u32; 2]]>,
+}
+
+impl Default for CacheDiagnostics {
+    fn default() -> Self {
+        Self {
+            instruction: Array::default(),
+            data: Array::default(),
+            reference: false,
+            instruction_tags64: vec![[0, 0]; 512].into_boxed_slice(),
+            data_tags64: vec![[0, 0]; 512].into_boxed_slice(),
+        }
+    }
 }
 
 impl CacheDiagnostics {
+    pub(crate) fn set_reference(&mut self, value: bool) {
+        self.reference = value;
+    }
+
     // The caller checks widths and alignment before any of these operations.
     pub(crate) fn read(&self, address: u32, asi: u8, width: Width) -> u32 {
+        if self.reference && asi == 0x0e {
+            return self.data_tags64[((address >> 3) & 511) as usize]
+                [((address >> 2) & 1) as usize];
+        }
         match asi {
             0x0c => self.instruction.read_tag(address),
             0x0d => self.instruction.read_word(address),
@@ -100,6 +123,30 @@ impl CacheDiagnostics {
     }
 
     pub(crate) fn write(&mut self, address: u32, asi: u8, width: Width, value: u32) {
+        if self.reference && asi == 0x0e {
+            let index = ((address >> 3) & 511) as usize;
+            let half = ((address >> 2) & 1) as usize;
+            let low_mask = if address & 0x4000_0000 != 0 && address & 0x8000_0000 == 0 {
+                0x0000_0f0e
+            } else {
+                0x00ff_ffff
+            };
+            let mask = [low_mask, 0x0100_0000][half];
+            self.data_tags64[index][half] = value & mask;
+            return;
+        }
+        if self.reference && asi == 0x0c {
+            let index = ((address >> 3) & 511) as usize;
+            let half = ((address >> 2) & 1) as usize;
+            let low_mask = if address & 0x4000_0000 != 0 && address & 0x8000_0000 == 0 {
+                0x0000_1f1e
+            } else {
+                0x00ff_ffff
+            };
+            let mask = [low_mask, 0x0300_0000][half];
+            self.instruction_tags64[index][half] = value & mask;
+            return;
+        }
         match asi {
             0x0c => self.instruction.write_tag(address, value),
             0x0d => self.instruction.write_word(address, value, u32::MAX),
@@ -112,16 +159,38 @@ impl CacheDiagnostics {
         }
     }
 
-    pub(crate) fn read_doubleword(&self, address: u32) -> [u32; 2] {
-        [
-            self.data.read_word(address),
-            self.data.read_word(address + 4),
-        ]
+    pub(crate) fn read_doubleword(&self, address: u32, asi: u8) -> [u32; 2] {
+        if self.reference && asi == 0x0e {
+            let tag = self.data_tags64[((address >> 3) & 511) as usize];
+            return [tag[1], tag[0]];
+        }
+        if self.reference && asi == 0x0c {
+            let tag = self.instruction_tags64[((address >> 3) & 511) as usize];
+            return [tag[1], tag[0]];
+        }
+        match asi {
+            0x0c..=0x0e => [
+                self.read(address, asi, Width::Word),
+                self.read(address + 4, asi, Width::Word),
+            ],
+            _ => [
+                self.data.read_word(address),
+                self.data.read_word(address + 4),
+            ],
+        }
     }
 
-    pub(crate) fn write_doubleword(&mut self, address: u32, words: [u32; 2]) {
-        self.data.write_word(address, words[0], u32::MAX);
-        self.data.write_word(address + 4, words[1], u32::MAX);
+    pub(crate) fn write_doubleword(&mut self, address: u32, asi: u8, words: [u32; 2]) {
+        match asi {
+            0x0c..=0x0e => {
+                self.write(address, asi, Width::Word, words[0]);
+                self.write(address + 4, asi, Width::Word, words[1]);
+            }
+            _ => {
+                self.data.write_word(address, words[0], u32::MAX);
+                self.data.write_word(address + 4, words[1], u32::MAX);
+            }
+        }
     }
 
     pub(crate) fn flush(&mut self, address: u32, context: u8, asi: u8) {

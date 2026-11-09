@@ -3,7 +3,7 @@
 
 use crate::bus::{Bus, BusError, BusErrorKind};
 use crate::fpu::{Action as FpAction, Fpu, Operation as FpOperation};
-use crate::mmu::{MemoryError, MmuFault, Srmmu, Width};
+use crate::mmu::{MemoryError, MmuConfig, MmuFault, Srmmu, Width};
 use std::fmt;
 
 pub const WINDOW_COUNT: usize = 8;
@@ -13,9 +13,10 @@ pub const PSR_PS: u32 = 1 << 6;
 pub const PSR_S: u32 = 1 << 7;
 pub const PSR_PIL: u32 = 0xf << 8;
 pub const PSR_EF: u32 = 1 << 12;
+pub const PSR_DE: u32 = 1 << 15;
 /// Fujitsu MB86904: implementation 0, version 4.
 pub const PSR_VERSION: u32 = 0x0400_0000;
-const PSR_CONTROL: u32 = PSR_ET | PSR_PS | PSR_S | PSR_PIL | PSR_EF;
+const PSR_CONTROL: u32 = PSR_ET | PSR_PS | PSR_S | PSR_PIL | PSR_EF | PSR_DE;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Icc {
@@ -213,9 +214,15 @@ impl Cpu {
     /// CPU/MMU reset for the sun4m harness. Unspecified registers are zeroed
     /// deterministically; the physical bus and its RAM/ROM remain owned by Machine.
     pub fn reset_sun4m(&mut self) {
+        let config = self.mmu.config();
         *self = Self::new(0);
         self.wim = 1;
-        self.mmu = Srmmu::reset();
+        self.mmu = Srmmu::reset_with(config);
+    }
+
+    /// Select a profile's physical-address/boot-window behavior before reset.
+    pub fn use_mmu_config(&mut self, config: MmuConfig) {
+        self.mmu = Srmmu::reset_with(config);
     }
 
     /// Non-power-up reset retains integer registers, PS, CWP and TT
@@ -417,7 +424,12 @@ impl Cpu {
             return Err(FaultKind::IllegalInstruction);
         }
         self.cwp = cwp;
-        self.psr_control = value & PSR_CONTROL;
+        let control_mask = if self.mmu.config().reference_mmu {
+            PSR_CONTROL
+        } else {
+            PSR_CONTROL & !PSR_DE
+        };
+        self.psr_control = value & control_mask;
         self.icc = Icc {
             n: value & (1 << 23) != 0,
             z: value & (1 << 22) != 0,
@@ -489,12 +501,14 @@ impl Cpu {
         } else {
             10
         };
+        let little = self.psr_control & PSR_DE != 0;
         match op3 {
             0x20 | 0x21 => {
                 let value = self
                     .mmu
                     .load(bus, address, asi, Width::Word)
                     .map_err(|error| Self::memory_fault(error, false))?;
+                let value = if little { value.swap_bytes() } else { value };
                 if op3 == 0x21 {
                     self.fpu.load_fsr(value);
                 } else {
@@ -502,10 +516,13 @@ impl Cpu {
                 }
             }
             0x23 => {
-                let words = self
+                let mut words = self
                     .mmu
                     .load_doubleword(bus, address, asi)
                     .map_err(|error| Self::memory_fault(error, false))?;
+                if little {
+                    words = [words[1].swap_bytes(), words[0].swap_bytes()];
+                }
                 // V8 reserves rd[0]. Match MAME's decoder by ignoring
                 // it; no optional invalid_fp_register trap is synthesized.
                 self.fpu.write_reg(rd & !1, words[0]);
@@ -517,20 +534,28 @@ impl Cpu {
                 } else {
                     self.fpu.read_reg(rd)
                 };
+                let value = if little { value.swap_bytes() } else { value };
                 self.mmu
                     .store(bus, address, asi, Width::Word, value)
                     .map_err(|error| Self::memory_fault(error, false))?;
             }
             0x27 => {
-                let words = [self.fpu.read_reg(rd & !1), self.fpu.read_reg(rd | 1)];
+                let mut words = [self.fpu.read_reg(rd & !1), self.fpu.read_reg(rd | 1)];
+                if little {
+                    words = [words[1].swap_bytes(), words[0].swap_bytes()];
+                }
                 self.mmu
                     .store_doubleword(bus, address, asi, words)
                     .map_err(|error| Self::memory_fault(error, false))?;
             }
             0x26 => {
                 if let Some(entry) = self.fpu.deferred_entry() {
+                    let mut words = [entry.pc, entry.instruction];
+                    if little {
+                        words = [words[0].swap_bytes(), words[1].swap_bytes()];
+                    }
                     self.mmu
-                        .store_doubleword(bus, address, asi, [entry.pc, entry.instruction])
+                        .store_doubleword(bus, address, asi, words)
                         .map_err(|error| Self::memory_fault(error, false))?;
                     self.fpu.finish_queue_store();
                 } else {
@@ -829,32 +854,62 @@ impl Cpu {
                     10
                 };
                 let address = a.wrapping_add(b);
+                let little = self.psr_control & PSR_DE != 0 && !matches!(asi, 8 | 9);
                 if matches!(operation, 0x03 | 0x07) && rd & 1 != 0 {
                     return Err(FaultKind::IllegalInstruction);
                 }
                 if operation == 0x03 {
-                    let words = self
+                    let mut words = self
                         .mmu
                         .load_doubleword(bus, address, asi)
                         .map_err(|error| Self::memory_fault(error, false))?;
+                    if little {
+                        words = [words[0].swap_bytes(), words[1].swap_bytes()];
+                    }
                     self.write_reg(rd, words[0]);
                     self.write_reg(rd + 1, words[1]);
                 } else if operation == 0x07 {
-                    let words = [self.read_reg(rd), self.read_reg(rd + 1)];
+                    let words = if little {
+                        [
+                            self.read_reg(rd).swap_bytes(),
+                            self.read_reg(rd + 1).swap_bytes(),
+                        ]
+                    } else {
+                        [self.read_reg(rd), self.read_reg(rd + 1)]
+                    };
                     self.mmu
                         .store_doubleword(bus, address, asi, words)
                         .map_err(|error| Self::memory_fault(error, false))?;
                 } else if matches!(operation, 0x0d | 0x0f) {
                     let value = self.read_reg(rd);
+                    let value = if operation == 0x0f && little {
+                        value.swap_bytes()
+                    } else {
+                        value
+                    };
                     let result = if operation == 0x0f {
                         self.mmu.swap(bus, address, asi, value)
                     } else {
                         self.mmu.load_store_byte(bus, address, asi)
                     }
                     .map_err(|error| Self::memory_fault(error, false))?;
+                    let result = if operation == 0x0f && little {
+                        result.swap_bytes()
+                    } else {
+                        result
+                    };
                     self.write_reg(rd, result);
                 } else if matches!(operation, 0x04..=0x06) {
                     let value = self.read_reg(rd);
+                    let value = if little {
+                        match width {
+                            Width::Half => u32::from((value as u16).swap_bytes()),
+                            Width::Word => value.swap_bytes(),
+                            Width::Byte => value,
+                        }
+                    } else {
+                        value
+                    };
                     self.mmu
                         .store(bus, address, asi, width, value)
                         .map_err(|error| Self::memory_fault(error, false))?;
@@ -863,6 +918,15 @@ impl Cpu {
                         .mmu
                         .load(bus, address, asi, width)
                         .map_err(|error| Self::memory_fault(error, false))?;
+                    let value = if little {
+                        match width {
+                            Width::Half => u32::from((value as u16).swap_bytes()),
+                            Width::Word => value.swap_bytes(),
+                            Width::Byte => value,
+                        }
+                    } else {
+                        value
+                    };
                     self.write_reg(
                         rd,
                         match operation {

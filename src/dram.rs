@@ -1,34 +1,61 @@
-//! SS-5 DSIMMs: eight fixed 32 MiB apertures, each empty, 8 MiB or 32 MiB.
-//! Empty-bank data is unspecified by hardware; use zero without parity injection.
+//! Sun4m DSIMM arrays: eight fixed apertures. SS-5 uses 32 MiB banks with
+//! 8/32 MiB modules; the SS-20 profile uses 64 MiB banks with 16/32/64 MiB
+//! modules. Empty-bank data is unspecified by hardware; use zero without
+//! parity/ECC injection.
 
 use crate::bus::{Bus, BusError, BusErrorKind, MapError, MemoryBus};
 
 pub const BANK_BYTES: usize = 32 * 1024 * 1024;
 pub const APERTURE_BYTES: u64 = 8 * BANK_BYTES as u64;
 const SMALL_BANK_BYTES: usize = 8 * 1024 * 1024;
+pub const SS20_BANK_BYTES: usize = 64 * 1024 * 1024;
+const SS20_SMALL_BANK_BYTES: usize = 16 * 1024 * 1024;
+const SS20_MID_BANK_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug)]
 pub struct Ss5Dram {
     sizes: [usize; 8],
+    bank_bytes: usize,
     memory: MemoryBus,
 }
 
 impl Ss5Dram {
     /// Explicit slot order, with 0 for an empty slot. Construction is atomic.
     pub fn new(sizes: [usize; 8]) -> Result<Self, MapError> {
+        Self::with_bank(sizes, BANK_BYTES, &[SMALL_BANK_BYTES, BANK_BYTES])
+    }
+
+    /// SS-20/Axil DSIMMs: 16, 32 or 64 MiB modules in eight 64 MiB banks.
+    pub fn ss20(sizes: [usize; 8]) -> Result<Self, MapError> {
+        Self::with_bank(
+            sizes,
+            SS20_BANK_BYTES,
+            &[SS20_SMALL_BANK_BYTES, SS20_MID_BANK_BYTES, SS20_BANK_BYTES],
+        )
+    }
+
+    fn with_bank(
+        sizes: [usize; 8],
+        bank_bytes: usize,
+        allowed: &[usize],
+    ) -> Result<Self, MapError> {
         if sizes
             .iter()
-            .any(|&size| !matches!(size, 0 | SMALL_BANK_BYTES | BANK_BYTES))
+            .any(|&size| size != 0 && !allowed.contains(&size))
         {
             return Err(MapError::InvalidRange);
         }
         let mut memory = MemoryBus::default();
         for (slot, &size) in sizes.iter().enumerate() {
             if size != 0 {
-                memory.map_ram((slot * BANK_BYTES) as u64, size)?;
+                memory.map_ram((slot * bank_bytes) as u64, size)?;
             }
         }
-        Ok(Self { sizes, memory })
+        Ok(Self {
+            sizes,
+            bank_bytes,
+            memory,
+        })
     }
 
     /// Fill low slots first with 32 MiB DSIMMs, then 8 MiB DSIMMs.
@@ -44,8 +71,31 @@ impl Ss5Dram {
         Self::new(sizes)
     }
 
+    /// Fill low slots with 64 MiB, then 32 MiB, then 16 MiB SS-20 DSIMMs.
+    pub fn from_ss20_total(bytes: usize) -> Result<Self, MapError> {
+        let large = bytes / SS20_BANK_BYTES;
+        let mid = (bytes % SS20_BANK_BYTES) / SS20_MID_BANK_BYTES;
+        let small = (bytes % SS20_MID_BANK_BYTES) / SS20_SMALL_BANK_BYTES;
+        if bytes == 0 || bytes % SS20_SMALL_BANK_BYTES != 0 || large + mid + small > 8 {
+            return Err(MapError::InvalidRange);
+        }
+        let mut sizes = [0; 8];
+        sizes[..large].fill(SS20_BANK_BYTES);
+        sizes[large..large + mid].fill(SS20_MID_BANK_BYTES);
+        sizes[large + mid..large + mid + small].fill(SS20_SMALL_BANK_BYTES);
+        Self::ss20(sizes)
+    }
+
     pub fn bank_sizes(&self) -> [usize; 8] {
         self.sizes
+    }
+
+    pub fn bank_bytes(&self) -> usize {
+        self.bank_bytes
+    }
+
+    pub fn aperture_bytes(&self) -> u64 {
+        8 * self.bank_bytes as u64
     }
 
     fn decode(&self, address: u64, alignment: u64) -> Result<Option<u64>, BusError> {
@@ -55,18 +105,18 @@ impl Ss5Dram {
                 kind: BusErrorKind::Misaligned,
             });
         }
-        if address >= APERTURE_BYTES {
+        if address >= self.aperture_bytes() {
             return Err(BusError {
                 address,
                 kind: BusErrorKind::Unmapped,
             });
         }
-        let slot = address as usize / BANK_BYTES;
+        let slot = address as usize / self.bank_bytes;
         let size = self.sizes[slot];
         Ok(if size == 0 {
             None
         } else {
-            Some((slot * BANK_BYTES) as u64 | (address & (size as u64 - 1)))
+            Some((slot * self.bank_bytes) as u64 | (address & (size as u64 - 1)))
         })
     }
 

@@ -31,17 +31,24 @@ or assume host scheduling is guest timing.
 | `src/fpu/multiplication.rs` | Exact integer products rounded onto normal/subnormal grids |
 | `src/fpu/ieee.rs` | Shared Meiko NaN propagation, IEEE flags and overflow results |
 | `src/bus.rs` | Physical bus contract, RAM/ROM mappings and external byte import |
-| `src/system_bus.rs` | Physical decoding, device widths, clock advancement and IRQ wiring |
-| `src/devices/` | NVRAM/RTC, two asynchronous SCCs, interrupt control, timers, reset/status and I/O configuration |
+| `src/system_bus.rs` | Physical decoding, per-profile sun4m layouts, device widths, clock advancement and IRQ wiring |
+| `src/devices/` | NVRAM/RTC, two asynchronous SCCs, interrupt control, timers, reset/status, ECC memory control and I/O configuration |
 | `src/serial_host.rs` | Loopback telnet serial consoles; nonblocking host I/O polled by frontends |
 | `src/net/` | User-mode NAT over the Ethernet frame endpoint: ARP/RARP, DHCP, ICMP, UDP, DNS, TFTP |
 | `src/mmu.rs` | ASI dispatch, CPU/I/O translation, shared TLB, permissions and CPU fault registers |
 | `src/dma.rs` | Machine-owned SBus DMA transfers and device-facing errors |
 | `src/cache.rs` | Cache diagnostic arrays and indexed invalidation; ordinary cache hits/fills pending |
 | `src/dram.rs` | SS-5 DSIMM layout, mirrors and empty-bank behavior |
-| `src/machine.rs` | Bare-metal/reset construction, RAM/PROM limits and demo images |
+| `src/machine.rs` | Bare-metal/reset construction, SS-5/SS-20/Axil profiles, RAM/PROM limits and demo images |
 | `src/main.rs` | CLI parsing, image files, trace printing and CPU step budget |
 | `tests/` | Architectural and boundary behavior through the public library |
+
+`MachineProfile` selects `Sun4mLayout`, `MmuConfig`, IDPROM identity and DRAM
+bank geometry. SS-20/Axil keep the same device models but use the high physical
+map, a 36-bit reference-MMU mode and SuperSPARC-II boot/TLB register behavior.
+They are single-processor functional profiles: there is no SuperSPARC pipeline,
+MBus multiprocessor, SX/VSIMM or full ECC/parity model. See
+[machines.md](docs/machines.md).
 
 `Machine::bare_metal` deliberately describes the current execution environment.
 It creates a CPU at a requested entry address and zeroed RAM at address zero.

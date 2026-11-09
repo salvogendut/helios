@@ -785,7 +785,7 @@ Select a Language
 
 Neither run had a host stop or kernel panic. The raw `*-serial.log` captures
 end at `?`; the probe supplied no menu input. Both ISO and firmware hashes
-still match the originals. All 395 core tests, four UI tests, fmt/Clippy checks,
+still match the originals. All 403 core tests, four UI tests, fmt/Clippy checks,
 release builds and four demos pass with this implementation.
 
 ## Installed Solaris disk boot
@@ -835,7 +835,83 @@ motion and buttons. A headless probe reached `Starting Desktop Login on
 display :0...` and produced a nonblank framebuffer, but did not interact with
 the login screen. See `clanker/x-windows.md` for the local evidence and limits.
 
-The configured profile remains SS5/85, but the functional 100 ns instruction
+The default profile remains SS5/85, but the functional 100 ns instruction
 quantum makes these kernels measure the CPU as 10 MHz and report an SBus clock
 warning. Normal CPU/cache timing is not yet an 85 MHz timing model. No
 external networking or audio streaming is established by this evidence.
+
+## SPARCstation 20 and Axil 320 profiles
+
+The SS-20/Axil machine profiles are bring-up targets for their original firmware
+under the high sun4m address map. They do not yet reach a stable `ok` prompt.
+Images remain under ignored `local/`:
+
+| Image | Size | SHA-256 |
+| --- | ---: | --- |
+| `local/firmware/ss10-20-v2.25r-rom` | 524288 | `b4f15bfafa69edfcea446778bd14b61b76273e4e77ddebe3a9002af757b48ca8` |
+| `local/firmware/axil320-2-19.bin` | 524288 | `bc231c32d817d09e1d8192da0475a342f88b3ac2ed64e6fb67ab61e797e77425` |
+
+With `--machine ss20`, the SMCC SPARCstation 10/20 POST identifies the CPU and
+reports CPU 1–3 absent. The ICACHE_TLB bit-pattern, all documented flush tests, the D-TLB cached
+level-2 PTP test and the `TLB_HIT`, `TLB_MISS` and `TLB_PROBE` tests pass. The SX, DBRI and BPP placeholder windows let SBus enumeration reach the
+serial monitor. The integer and FPU endianness tests pass
+after implementing PSR.DE dual byte ordering. The next full-POST diagnostic is
+the CPU/MBus module test:
+
+```text
+           SMCC SPARCstation 10/20 UP/MP POST version VRV3.45 (09/11/95)
+
+CPU_#0       TI, STP1021PGA(1.x)	1Mb External cache
+
+CPU_#1       ******* NOT installed *******
+...
+<<< CPU_00000000 on MBus Slot_00000000 >>>
+ ERROR : Address = 40000000,
+ exp[31:00] = 00000000, obs[31:00] = 0000001e, xor[31:00] = 0000001e
+ U-NUMBER : Suspect Viking Module
+Incorrect configuration checksum;
+Setting NVRAM parameters to default values.
+Setting diag-switch? NVRAM parameter to true
+```
+
+The PTP2/TLB diagnostics use a functional model that fills ASI 6 SEL 5/6 from
+the level-1 table, permits a matching 256 KiB PTP2 to override a 16 MiB leaf,
+mirrors fills into ASI 5/6 storage and installs ASI diagnostic writes as real
+translations. Split I/D TLB behaviour is not fully modeled.
+
+The blank default NVRAM is rejected after POST, so OBP rewrites defaults, sets
+`diag-switch?` true and resets instead of settling at `ok` in the tested step
+budget. With a valid NVRAM image, Stop-A (`Pause+A`) skips the long memory test
+and reaches an interactive serial `ok` prompt after the SBus probe list. The
+console becomes usable after OBP itself runs:
+
+```text
+ok setenv output-device ttya
+ok setenv input-device ttya
+ok setenv auto-boot? false
+ok setenv diag-switch? false
+ok
+```
+
+The generated image is kept under ignored `local/ss20-ttya.nvram`. It boots to
+`ok` without a host-side rewrite:
+
+```text
+./target/release/helios boot local/firmware/ss10-20-v2.25r-rom \
+  --machine ss20 --nvram local/ss20-ttya.nvram --steps 300000000
+```
+
+SX, DBRI and BPP placeholder windows prevent the previous `Data Access Error`
+during SBus enumeration. POST still reports the MBus cache-tag failure
+(`Address = 0x4000_0000`), so this is an interactive console, not a clean POST.
+
+With `--machine axil320`, the Axil 320 ROM reaches the same NVRAM checksum
+reset path; it has not yet been re-verified to a prompt after the VSIMM/TLB
+fixes. The default Axil IDPROM identity is MAC `00:00:3c:13:de:ad`, serial
+`c0:ff:ee`, host ID `72c0ffee` (IDPROM machine type `0x72`); the user's physical
+machine banner matches this identity.
+
+The remaining work is the `/obio/zs@0,0` device-tree/console path, a valid
+SS-20 NVRAM image with a serial console, and then the SuperSPARC-II I/D-cache
+tag diagnostic clear/half semantics; see [machine profiles](machines.md). No
+full SuperSPARC CPU/MBus, SX/VSIMM, DBRI or BPP claim is made.

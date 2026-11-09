@@ -11,8 +11,9 @@ const ARBITRATION_MASK: u32 = 0x003f_0000;
 // independent of the IOCR version, not QEMU's turboSPARC identity.
 const MASK_ID: u32 = 0x3000_0000;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IoControl {
+    version: u32,
     control: u32,
     table_base: u32,
     slots: [u32; 5],
@@ -27,6 +28,13 @@ pub struct IoControl {
     memory_address_locked: bool,
     virtual_address_mask: u32,
     virtual_address_compare: u32,
+    arbiter_enable: u32,
+}
+
+impl Default for IoControl {
+    fn default() -> Self {
+        Self::new(VERSION)
+    }
 }
 
 pub(crate) enum IoMapping {
@@ -35,19 +43,44 @@ pub(crate) enum IoMapping {
 }
 
 impl IoControl {
+    /// `version` is the implementation/version field of the control register:
+    /// microSPARC-II reports 0x0400_0000; the sun4m SS-20/Axil IOMMU 0x1300_0000.
+    pub const fn new(version: u32) -> Self {
+        Self {
+            version,
+            control: 0,
+            table_base: 0,
+            slots: [0; 5],
+            arbitration: 0,
+            flushes: VecDeque::new(),
+            async_status: 0,
+            async_address: 0,
+            async_locked: false,
+            memory_status: 0,
+            memory_address: 0,
+            memory_status_locked: false,
+            memory_address_locked: false,
+            virtual_address_mask: 0,
+            virtual_address_compare: 0,
+            arbiter_enable: 0,
+        }
+    }
+
     pub fn reset(&mut self) {
-        *self = Self::default();
+        *self = Self::new(self.version);
     }
 
     pub fn read(&mut self, offset: u64) -> Result<u32, BusErrorKind> {
         match offset {
-            0 => Ok(VERSION | self.control),
+            0 => Ok(self.version | self.control),
             4 => Ok(self.table_base),
             0x1000 => {
                 self.async_locked = false;
                 Ok(self.async_status | 0x0080_0000)
             }
             0x1004 => Ok(self.async_address),
+            0x1008 => Ok(self.arbiter_enable | 1), // MBus master 8 always enabled
+
             0x1050 => {
                 self.memory_status_locked = false;
                 Ok(self.memory_status)
@@ -85,6 +118,7 @@ impl IoControl {
                 self.async_locked = value & (1 << 31) != 0;
             }
             0x1004 => self.async_address = value & 0x7fff_ffff,
+            0x1008 => self.arbiter_enable = value & 0x801f_000f,
             0x1050 => {
                 self.memory_status = value & 0x8188_f8f0;
                 self.memory_status_locked = value & (1 << 31) != 0;

@@ -2,8 +2,8 @@ use helios::bus::Bus;
 use helios::cpu::{Step, PSR_ET, PSR_S};
 use helios::devices::{nvram::Nvram, scsi::MediaKind, serial::Channel};
 use helios::machine::{
-    demo_image, serial_demo_image, timer_demo_image, trap_demo_image, Machine, CPU_CLOCK_HZ,
-    DEFAULT_RAM_BYTES, TARGET,
+    demo_image, serial_demo_image, timer_demo_image, trap_demo_image, Machine, MachineProfile,
+    CPU_CLOCK_HZ, DEFAULT_RAM_BYTES, TARGET,
 };
 use helios::net::{NatConfig, NatEngine, DNS_PORT};
 use helios::serial_host::TcpSerial;
@@ -22,7 +22,7 @@ Usage:
   helios serial-demo [--trace]
   helios timer-demo [--trace]
   helios run FILE [--load-address N] [--entry N] [--steps N] [--ram-mib N] [--trace]
-  helios boot PROM [--steps N] [--ram-mib N] [--trace]
+  helios boot PROM [--machine ss5|ss20|axil320] [--steps N] [--ram-mib N] [--trace]
                    [--serial-in FILE] [--serial-port-a PORT] [--serial-port-b PORT]
                    [--nvram FILE] [--nvram-out NEW_FILE]
                    [--disk RAW_IMAGE | --disk-rw RAW_IMAGE] [--cdrom ISO_IMAGE]
@@ -39,6 +39,9 @@ state exit with status 1.
 Reaching the step budget exits successfully; it does not mean guest halt.
 
 boot loads a raw PROM (up to 1 MiB) and starts the CPU/MMU at reset.
+--machine selects the initial profile (default ss5): SS-5, single-processor
+SS-20 or the Axil 320 clone. SS-20/Axil use the high sun4m device map and a
+36-bit boot window but the same device models and 128 MiB default RAM.
 Its RAM must fit eight 8 MiB or 32 MiB DSIMMs; low slots receive larger modules first.
 boot and serial-demo send TTYA bytes to stdout and diagnostics to stderr.
 --serial-in supplies bytes as the guest enables and drains its receiver.
@@ -266,7 +269,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             if args.next().is_some() {
                 return Err("info takes no options".into());
             }
-            println!("Helios {}\nTarget: {TARGET}\nStatus: integer subset, SRMMU, reset/PROM, polled serial, NVRAM/RTC, interrupts and counter timers; no firmware or OS boot", env!("CARGO_PKG_VERSION"));
+            println!("Helios {}\nTarget: {TARGET}\nMachine profiles: ss5 (default), ss20, axil320\nStatus: integer subset, SRMMU, reset/PROM, polled serial, NVRAM/RTC, interrupts and counter timers; original SS-5/SS-20/Axil firmware prompts verified, no OS boot", env!("CARGO_PKG_VERSION"));
             println!("Profile: {} MHz microSPARC-II, {} MiB RAM, TTYA/TTYB\nPlanned devices: CGsix (TurboGX), SCSI disk and CD-ROM, LANCE Ethernet", CPU_CLOCK_HZ / 1_000_000, DEFAULT_RAM_BYTES / (1024 * 1024));
         }
         Some("demo") => {
@@ -386,6 +389,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             let mut steps = 1000;
             let mut ram_bytes = DEFAULT_RAM_BYTES;
             let mut trace = false;
+            let mut profile = MachineProfile::Ss5;
             let mut serial_in = None;
             let mut serial_port_a = None;
             let mut serial_port_b = None;
@@ -436,6 +440,18 @@ fn run() -> Result<(), Box<dyn Error>> {
                         }
                         _ => unreachable!(),
                     }
+                    continue;
+                }
+                if boot && option == "--machine" {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "--machine requires ss5, ss20 or axil320".to_owned())?;
+                    profile = match value.as_str() {
+                        "ss5" => MachineProfile::Ss5,
+                        "ss20" => MachineProfile::Ss20,
+                        "axil320" => MachineProfile::Axil320,
+                        _ => return Err(format!("unknown machine profile: {value}").into()),
+                    };
                     continue;
                 }
                 if boot && option == "--net" {
@@ -517,9 +533,9 @@ fn run() -> Result<(), Box<dyn Error>> {
                 let nvram = if let Some(path) = nvram_in {
                     Nvram::from_image(&std::fs::read(path)?)?
                 } else {
-                    Nvram::default()
+                    profile.default_nvram()
                 };
-                Machine::ss5_with_nvram(ram_bytes, &bytes, nvram)?
+                Machine::with_profile(profile, ram_bytes, &bytes, nvram)?
             } else {
                 let mut machine = Machine::bare_metal(ram_bytes, entry)?;
                 machine.load_image(load, &bytes)?;

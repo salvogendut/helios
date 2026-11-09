@@ -7,7 +7,9 @@ one **SCSI disk**, one **SCSI CD-ROM**, **Ethernet**, and **TTYA/TTYB**. This ke
 the first platform focused while leaving other Sun families for later profiles.
 The executable provides bare-metal and reset/PROM memory harnesses described
 in the README, with a polled console, NVRAM/RTC, interrupt control and counter
-timers and system reset/status; other peripherals are pending.
+timers and system reset/status; other peripherals are pending. Additional
+single-processor SPARCstation 20 and Axil 320 profiles reuse the same devices on
+the high sun4m map; see [machine profiles](machines.md).
 
 The graphics target is a standard 1 MiB TurboGX card in the CGsix family, now
 implemented as a console subset in SBus slot 1 at physical `0x30000000`.

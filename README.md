@@ -25,6 +25,15 @@ monitor, where `1 2 + .` returns `3`. The remaining POST fault is an unimplement
 parallel-port DMA register. Installed-system boot remains unverified. See the
 [latest firmware checkpoint](docs/firmware.md#timer-and-ethernet-bring-up).
 
+Single-processor **SPARCstation 20** and **Axil 320** profiles boot their original
+firmware to the serial `ok` prompt. They reuse the SS-5 device models on the
+high sun4m address map with 36-bit reference-MMU behavior, SMC ECC register
+access and IDPROM machine type `0x72`; the Axil profile uses its own MAC and
+host ID. The tested ROMs still print an I-TLB diagnostic and an SX data-access
+POST error before `ok`. OS boot, a SuperSPARC pipeline/cache model, multiprocessor
+MBus and SX/VSIMM devices are not implemented. See
+[machine profiles](docs/machines.md).
+
 The optional **graphical console** now runs the original TurboGX FCode ROM and
 Sun Type 5 keyboard protocol. With 128 MiB RAM, OBP displays its banner and
 `ok` prompt; keyboard Stop-A interrupts network boot and `1 2 + .` returns `3`
@@ -69,7 +78,8 @@ The implemented foundation includes:
 - Alternate-space byte, halfword, word and doubleword loads/stores and atomic
   exchanges; microSPARC-II SRMMU
   translation, access permissions, contexts, fault registers and TLB flush/probe.
-- CPU/MMU reset, boot-mode instruction mapping and a raw PROM runner.
+- CPU/MMU reset, boot-mode instruction mapping, SS-20/Axil high-address profiles,
+  36-bit reference-MMU aliases, SMC ECC registers and a raw PROM runner.
 - Z8530 asynchronous polling and receive/transmit/BREAK interrupts, bounded byte queues,
   loopback telnet serial consoles for TTYA/TTYB, and an M48T08 NVRAM/RTC with SS-5
   IDPROM and explicit clock advancement.
@@ -206,6 +216,15 @@ cargo run --release -- boot local/firmware/sun-ss5.bin --steps 1100000000 \
   --net --tftp-dir local/tftp
 ```
 
+Select an SS-20 or Axil 320 profile with its high-address firmware:
+
+```sh
+cargo run --release -- boot local/firmware/ss10-20-v2.25r-rom \
+  --machine ss20 --steps 50000000
+cargo run --release -- boot local/firmware/axil320-2-19.bin \
+  --machine axil320 --steps 50000000
+```
+
 TCP NAT and host port forwards are not implemented yet. See
 [host networking](docs/networking.md).
 
@@ -231,6 +250,7 @@ and the distinction from the contiguous RAM used by synthetic harnesses.
 
 - [HACKING.md](HACKING.md): architecture, invariants and validation commands.
 - [SPARCstation 5](docs/sparcstation5.md): target and reference memory map.
+- [Machine profiles](docs/machines.md): SS-20 and Axil 320 boot identities, high-address map and limits.
 - [Memory and reset](docs/memory.md): SRMMU, ASIs, fault behavior and PROM mapping.
 - [Floating point](docs/fpu.md): FPU state, transfers, comparisons, arithmetic, branches and deferred traps.
 - [Fault capture](docs/fault-capture.md): SBus errors, asynchronous stores and memory-request capture.

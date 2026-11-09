@@ -226,6 +226,40 @@ changeable masks, and no saved pages. The pinned QEMU `scsi-disk.c` geometry
 page was checked for field positions and disabled precompensation/reduced-current
 encoding; its configurable host geometry does not define Helios's raw target.
 
+## SPARCstation 20 and Axil 320
+
+- [Sun-4M System Architecture, 950-1373-01](https://temlib.org/pub/SparcStation/Hardware/Sun4M_SystemArchitecture_edited2.pdf),
+  revision 50 (July 1991): section 3.1.2 defines the 36-bit physical space,
+  boot-mode `PA[35:28]=0xff`, PTE `PA[35:12]=PTE[31:8]`, and ASI `0x20`–`0x2f`
+  bypass; section 3.2.1 allocates main memory, control space, and SBus slot
+  `PA[35:28]=0xEn`; section 3.2.4 defines reserved-space timeouts. These define
+  the SS-20/Axil layout and the implementation's high-address path.
+- [SuperSPARC II Addendum, STP1021UG Rev. 1.3](https://www.ele.uva.es/~jesman/BigSeti/ftp/Microprocesadores/SPARC/STP1021UG.pdf):
+  section A.4.3.3 defines ASI `0x5`/`0x6` I/D-TLB diagnostic access;
+  sections A.6.2/A.6.4 define data-cache tag diagnostics; the MMU/MXCC and
+  store-buffer diagnostic spaces used by POST are retained or accepted.
+- [SPARCstation 20 Service Manual, 801-6189-11](https://docs.oracle.com/cd/E19127-01/sparc20.ws/801-6189-12/801-6189-12.pdf),
+  July 1996: table 4-4 and section 4 give the eight 64 MiB DSIMM bank addresses,
+  VSIMM locations and POST test list. The [System Handbook memory
+  page](https://dogemicrosystems.ca/pub/Sun/System_Handbook/Sun_syshbk_V3.4/Devices/Memory/MEM_SS20.html)
+  independently lists the same bank ranges.
+- [Platform Notes: SPARCstation 10SX and SPARCstation 20](https://docs.oracle.com/cd/E19620-01/805-4450/z40001b78d3/index.html)
+  and the [SPARCstation 20 System Configuration Guide](https://docs.oracle.com/cd/E19127-01/sparc10.ws/806-2222-10/806-2222-10.pdf)
+  describe the alternating physical slot order and 64 MiB per-slot aperture.
+- [OldSilicon Sun ROM archive](https://oldsilicon.com/technologies/sun-rom-images/):
+  source of the local `ss10-20_v2.25r.zip` raw PROM used for the SS-20
+  checkpoint (raw SHA-256 recorded in [firmware.md](firmware.md)). The Axil 320
+  ROM `axil320-2-19.bin` was supplied by the user and is not bundled.
+- [The Rough Guide to MBus Modules: Axil 320](https://mbus.sunhelp.org/systems/axil/320.htm)
+  and the [Axil 320 memory listing](http://satech.com/ax320sup1hme.html): the
+  clone has two MBus slots and eight 512 MiB-class DSIMM sockets. Its physical
+  banner (ROM 2.19, MAC `00:00:3c:13:de:ad`, host ID `72c0ffee`) is the source
+  for the default Axil IDPROM identity.
+- [Wikipedia: SPARCstation 20](https://en.wikipedia.org/wiki/SPARCstation_20)
+  (user-provided): the target's single/dual SuperSPARC or hyperSPARC MBus
+  modules, 64–512 MiB RAM and optional SX/VSIMM graphics. It is background, not
+  a register-level source.
+
 ## QEMU
 
 Additional hardware timing references:

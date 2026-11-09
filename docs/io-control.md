@@ -7,6 +7,11 @@ Transfers must be naturally aligned. Values remain guest bit patterns; narrow
 accesses use big-endian lanes. These calls do not execute the CPU or advance time.
 The Ethernet engine uses these transfers; SCSI DMA and burst timing remain pending.
 
+The SS-20/Axil profiles map the standalone sun4m IOMMU at `0xfe0000000`
+instead, reporting implementation 1, version 3 (`0x13000000`) and exposing the
+Arbiter Enable Register at `+0x1008`; the register subset, translation and DMA
+rules are otherwise shared. See [machine profiles](machines.md).
+
 The primary source is the microSPARC-II User's Manual revision 1.1, sections
 5.2.1–5.2.5, 5.6.6, 5.7.1–5.7.4, 5.7.7, 5.7.10, 5.8, 5.10, 9.1/9.4 and
 chapter 11 table 50. [References](references.md) link the manual and pinned
@@ -119,7 +124,8 @@ are unmapped. No generic register array substitutes for these facilities.
 Other documented differences from QEMU remain: IOCR version 4 rather than its
 SS-5 profile's 5; microSPARC-II mask revision 3.0 instead of its
 turboSPARC mask identity; six SBAE bits rather than five; five slot registers with shared
-slot-4 restrictions; no MBus arbiter register at `+0x1008`. Figure 5.23 and the
+slot-4 restrictions; the shared model also retains the SS-20 arbiter-enable
+register at `+0x1008`, which has no effect on SS-5 DMA. Figure 5.23 and the
 six-master arbiter description resolve the prose's SBAE reserved-bit typo.
 
 Tests cover all eight ranges, first/last pages, table-base alignment, lane order,

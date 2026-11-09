@@ -136,10 +136,16 @@ impl Default for Nvram {
 
 impl Nvram {
     pub fn new(mac: [u8; 6], serial: [u8; 3]) -> Self {
+        Self::with_machine_type(0x80, mac, serial)
+    }
+
+    /// IDPROM with an explicit machine-type byte. Byte 1 is also the high byte
+    /// of the hostid: SS-5 uses 0x80; SS-20 and Axil 320 use 0x72.
+    pub fn with_machine_type(machine_type: u8, mac: [u8; 6], serial: [u8; 3]) -> Self {
         let mut bytes = Box::new([0; NVRAM_SIZE]);
         let id = &mut bytes[IDPROM_OFFSET..IDPROM_OFFSET + 16];
         id[0] = 1;
-        id[1] = 0x80; // SS-5 machine type, also the high hostid byte.
+        id[1] = machine_type;
         id[2..8].copy_from_slice(&mac);
         id[12..15].copy_from_slice(&serial);
         id[15] = id[..15].iter().fold(0, |sum, byte| sum ^ byte);

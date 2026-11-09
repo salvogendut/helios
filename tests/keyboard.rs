@@ -56,8 +56,28 @@ fn identification_obeys_1200_baud_and_layout_command() {
     assert_eq!([read(&mut b), read(&mut b)], [4, 0x7f]);
     command(&mut b, 0x0f);
     assert_eq!([read(&mut b), read(&mut b)], [0xfe, 0x21]); // Type 5 US
+    command(&mut b, 7);
+    assert_eq!([read(&mut b), read(&mut b)], [0xfe, 0x21]); // Type 5 US
     b.advance_ns(100_000_000);
     no_data(&mut b);
+}
+
+#[test]
+fn receiver_enable_resends_identification_when_fifo_is_empty() {
+    let mut b = bus();
+    b.advance_ns(8_333_333);
+    assert_eq!([read(&mut b), read(&mut b), read(&mut b)], [0xff, 4, 0x7f]);
+    b.devices_mut()
+        .unwrap()
+        .keyboard_serial
+        .write(4, 3)
+        .unwrap();
+    b.devices_mut()
+        .unwrap()
+        .keyboard_serial
+        .write(4, 0xc1)
+        .unwrap();
+    assert_eq!([read(&mut b), read(&mut b), read(&mut b)], [0xff, 4, 0x7f]);
 }
 
 #[test]

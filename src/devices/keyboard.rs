@@ -12,6 +12,7 @@ pub struct Keyboard {
     pub leds: u8,
     pub bell: bool,
     pub click: bool,
+    receiver_epoch: u64,
 }
 
 impl Default for Keyboard {
@@ -25,6 +26,7 @@ impl Default for Keyboard {
             leds: 0,
             bell: false,
             click: false,
+            receiver_epoch: 0,
         }
     }
 }
@@ -78,13 +80,23 @@ impl Keyboard {
             10 => self.click = true,
             11 => self.click = false,
             14 => self.led_command = true,
-            15 => {
+            7 | 15 => {
                 self.queue.extend([0xfe, 0x21]);
             }
             _ => {} // Undefined keyboard commands have no response.
         }
     }
     pub(crate) fn advance_ns(&mut self, ns: u64, serial: &mut Serial) {
+        let epoch = serial.receiver_epoch(Channel::A);
+        if epoch != self.receiver_epoch {
+            self.receiver_epoch = epoch;
+            if self.queue.is_empty()
+                && self.pressed.iter().all(|pressed| !pressed)
+                && serial.receiver_enabled(Channel::A)
+            {
+                self.queue.extend([0xff, 4, 0x7f]);
+            }
+        }
         while let Some(command) = self
             .pending_command
             .take()
