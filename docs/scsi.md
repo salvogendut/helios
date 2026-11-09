@@ -84,9 +84,10 @@ PIO/DMA DATA OUT now receives MODE SELECT parameter lists. Partial transfers
 retain their position; parameters take effect only after the full list passes
 validation. Invalid lists leave the previous block size intact.
 
-DMA2 services one byte per CPU boundary through SBus master 5 and the shared
-microSPARC-II IOMMU. This is functional scheduling, not SCSI wire timing or
-burst timing. Address/count advance only after successful memory access;
+DMA2 services through SBus master 5 and the shared microSPARC-II IOMMU.
+`Machine::step` services up to eight pending bytes per CPU boundary; the public
+`service_scsi` entry point retains the previous one-byte behavior. This is
+functional scheduling, not SCSI wire timing or burst timing. Address/count advance only after successful memory access;
 arbitration denial retains the byte. Memory faults latch D_ERR_PEND, stop
 DMA, and can interrupt at CPU level 4 without a CPU MMU fault. Host stops
 preserve the pending transfer. D_WRITE must match the ESP transfer direction.

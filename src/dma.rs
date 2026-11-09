@@ -41,11 +41,27 @@ impl Machine {
     /// Service the ESP and at most one DMA2 byte through the shared IOMMU.
     /// Arbitration denial retains the byte; a memory fault latches D_ERR_PEND.
     pub fn service_scsi(&mut self) -> Result<(), DmaError> {
+        self.service_scsi_batch(1).map(|_| ())
+    }
+
+    /// Run at most `max` ESP/DMA byte transfers before the CPU resumes.
+    pub fn service_scsi_batch(&mut self, max: usize) -> Result<usize, DmaError> {
+        let mut completed = 0;
+        while completed < max {
+            if !self.service_scsi_once()? {
+                break;
+            }
+            completed += 1;
+        }
+        Ok(completed)
+    }
+
+    fn service_scsi_once(&mut self) -> Result<bool, DmaError> {
         let Some(devices) = self.bus.devices_mut() else {
-            return Ok(());
+            return Ok(false);
         };
         if devices.scsi_dma.reset_asserted() {
-            return Ok(());
+            return Ok(false);
         }
         let error = |kind| {
             DmaError::Bus(BusError {
@@ -55,15 +71,16 @@ impl Machine {
         };
         let request = devices.esp.poll(&mut devices.scsi).map_err(error)?;
         devices.scsi_dma.set_request(request.is_some());
+        devices.sync_interrupts();
         let Some(request) = request else {
-            return Ok(());
+            return Ok(false);
         };
         let Some(address) = devices
             .scsi_dma
             .transfer_address(request.write.is_some())
             .map_err(error)?
         else {
-            return Ok(());
+            return Ok(false);
         };
         let result = match request.write {
             Some(byte) => self
@@ -72,18 +89,26 @@ impl Machine {
             None => self.dma_read(5, address, Width::Byte),
         };
         let devices = self.bus.devices_mut().expect("installed SCSI");
-        match result {
+        let progressed = match result {
             Ok(value) => {
                 devices.esp.validate_dma(value as u8).map_err(error)?;
                 devices.esp.complete_dma(value as u8);
                 devices.scsi_dma.complete();
+                true
             }
-            Err(DmaError::NotGranted { .. }) => {}
-            Err(DmaError::Fault { .. }) => devices.scsi_dma.memory_error(),
-            Err(DmaError::Bus(e)) if !e.kind.is_host_stop() => devices.scsi_dma.memory_error(),
+            Err(DmaError::NotGranted { .. }) => false,
+            Err(DmaError::Fault { .. }) => {
+                devices.scsi_dma.memory_error();
+                true
+            }
+            Err(DmaError::Bus(e)) if !e.kind.is_host_stop() => {
+                devices.scsi_dma.memory_error();
+                true
+            }
             Err(e) => return Err(e),
-        }
-        Ok(())
+        };
+        devices.sync_interrupts();
+        Ok(progressed)
     }
 
     /// Advance at most one MAC DMA transfer per CPU boundary. Device work is
@@ -112,7 +137,7 @@ impl Machine {
         {
             devices.ethernet_dma.record_address(request.address);
         }
-        match result {
+        let outcome = match result {
             Ok(value) => devices.ethernet.complete(value).map_err(|kind| {
                 DmaError::Bus(BusError {
                     address: u64::from(address),
@@ -131,7 +156,9 @@ impl Machine {
                 Ok(())
             }
             Err(error) => Err(error),
-        }
+        };
+        devices.sync_interrupts();
+        outcome
     }
 
     /// Read one naturally aligned byte, halfword or word from guest RAM.

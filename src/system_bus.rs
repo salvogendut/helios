@@ -101,10 +101,11 @@ pub struct Sun4mDevices {
     pub ethernet_dma: EthernetDma,
     pub ethernet: Ethernet,
     rtc_phase_ns: u32,
+    timer_ns: u64,
 }
 
 impl Sun4mDevices {
-    fn sync_interrupts(&mut self) {
+    pub(crate) fn sync_interrupts(&mut self) {
         self.ethernet_dma.set_mac_irq(self.ethernet.irq());
         self.scsi_dma.set_scsi_irq(self.esp.irq());
         self.interrupts
@@ -126,11 +127,17 @@ impl Sun4mDevices {
         if let Some(keyboard) = &mut self.keyboard {
             keyboard.advance_ns(ns, &mut self.keyboard_serial);
         }
-        self.mouse.advance_ns(ns, &mut self.keyboard_serial);
+        if !self.mouse.idle() {
+            self.mouse.advance_ns(ns, &mut self.keyboard_serial);
+        }
         self.ethernet.advance_ns(ns);
         self.esp.advance_ns(ns);
         self.floppy.advance_ns(ns);
-        self.timers.advance_ns(ns);
+        self.timer_ns += ns;
+        if self.timer_ns >= 500 {
+            self.timers.advance_ns(self.timer_ns);
+            self.timer_ns = 0;
+        }
         let remainder = ns % 1_000_000_000 + u64::from(self.rtc_phase_ns);
         self.nvram
             .advance_seconds(ns / 1_000_000_000 + remainder / 1_000_000_000);
@@ -328,6 +335,7 @@ impl SystemBus {
             ethernet_dma: EthernetDma::default(),
             ethernet: Ethernet::default(),
             rtc_phase_ns: 0,
+            timer_ns: 0,
         });
         Ok(())
     }
@@ -373,6 +381,7 @@ impl SystemBus {
             devices.mouse.reset();
             devices.interrupts.reset();
             devices.timers.reset();
+            devices.timer_ns = 0;
         }
     }
     pub fn advance_ns(&mut self, ns: u64) {
@@ -412,12 +421,9 @@ impl SystemBus {
     }
     pub fn interrupt_levels(&mut self) -> u16 {
         self.sync_cgsix_irq();
-        if let Some(devices) = &mut self.devices {
-            devices.sync_interrupts();
-            devices.interrupts.levels()
-        } else {
-            0
-        }
+        self.devices
+            .as_ref()
+            .map_or(0, |devices| devices.interrupts.levels())
     }
     fn word_device(&self, address: u64) -> Option<(WordDevice, u64)> {
         self.devices.as_ref()?;

@@ -165,7 +165,7 @@ impl Machine {
             instruction: None,
             kind: FaultKind::DeviceDma(error),
         })?;
-        self.service_scsi().map_err(|error| CpuFault {
+        self.service_scsi_batch(8).map_err(|error| CpuFault {
             pc: self.cpu.pc(),
             npc: self.cpu.npc(),
             instruction: None,

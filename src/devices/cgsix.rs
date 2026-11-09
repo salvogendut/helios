@@ -83,6 +83,9 @@ impl Cgsix {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+    pub fn scanout_key(&self) -> u64 {
+        (u64::from(self.blink_frame) << 32) ^ self.generation
+    }
     pub fn enabled(&self) -> bool {
         self.thc[6] & 0x400 != 0
     }
