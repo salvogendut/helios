@@ -85,7 +85,7 @@ retain their position; parameters take effect only after the full list passes
 validation. Invalid lists leave the previous block size intact.
 
 DMA2 services through SBus master 5 and the shared microSPARC-II IOMMU.
-`Machine::step` services up to eight pending bytes per CPU boundary; the public
+`Machine::step` services up to sixteen pending bytes per CPU boundary; the public
 `service_scsi` entry point retains the previous one-byte behavior. This is
 functional scheduling, not SCSI wire timing or burst timing. Address/count advance only after successful memory access;
 arbitration denial retains the byte. Memory faults latch D_ERR_PEND, stop

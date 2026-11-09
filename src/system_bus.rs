@@ -155,6 +155,7 @@ pub struct SystemBus {
     prom_cycles: Option<u64>,
     prom_phase: u64,
     cgsix: Option<Cgsix>,
+    device_ns: u64,
 }
 
 /// SS5/85 SBus clock (CPU / 4), SPARCengine 5 table 2-1.
@@ -364,6 +365,7 @@ impl SystemBus {
         self.cpu_user = false;
         self.prom_cycles = None;
         self.prom_phase = 0;
+        self.device_ns = 0;
         if let Some(devices) = &mut self.devices {
             devices.io_control.reset();
             devices.auxiliary.reset();
@@ -385,6 +387,20 @@ impl SystemBus {
         }
     }
     pub fn advance_ns(&mut self, ns: u64) {
+        self.advance_devices_ns(ns);
+    }
+
+    /// CPU-boundary path: coalesce device work to the 500 ns timer tick.
+    pub(crate) fn advance_ns_fast(&mut self, ns: u64) {
+        self.device_ns = self.device_ns.saturating_add(ns);
+        if self.device_ns < 500 {
+            return;
+        }
+        let elapsed = std::mem::take(&mut self.device_ns);
+        self.advance_devices_ns(elapsed);
+    }
+
+    fn advance_devices_ns(&mut self, ns: u64) {
         if let Some(card) = &mut self.cgsix {
             card.advance_ns(ns);
         }
@@ -394,6 +410,10 @@ impl SystemBus {
         self.sync_cgsix_irq();
     }
     pub fn advance_seconds(&mut self, seconds: u64) {
+        if self.device_ns != 0 {
+            let pending = std::mem::take(&mut self.device_ns);
+            self.advance_devices_ns(pending);
+        }
         if let Some(card) = &mut self.cgsix {
             card.advance_ns(seconds.saturating_mul(1_000_000_000));
         }
