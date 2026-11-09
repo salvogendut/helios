@@ -6,7 +6,8 @@
   no bus-clock pulse duration modeled. Resetoutputs/events, retainedexternalinput.
 - Baseportsimplemented; addressmirrors andconfig/modem pending. AuxIO2at71910000
   retainsbits3:2, withstablepower/noPFDinput andackno-opwhennoevent. Poweroff
-  bit0explicitlystopsbeforestatechanges. Externalpowerfailconfig/IRQ pending.
+  bit0reportsPowerOffbeforestatechanges; heliacalfinishesasStopped, notacore
+  error. Externalpowerfailconfig/IRQ pending.
   Do not copy QEMU's unrestricted8bitreadback; actualreservedbits/density/TC
   are independently defined. Wrongwidth/atomic/imageaccess stopsbeforeeffects.
 - Previous revision-probe observed caughtfaultat68099587,ffd16754 instruction

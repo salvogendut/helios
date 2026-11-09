@@ -1,6 +1,8 @@
-use helios::bus::{Bus, MapError};
+use helios::bus::{Bus, BusError, BusErrorKind, MapError};
+use helios::cpu::{CpuFault, FaultKind};
 use helios::devices::{auxiliary::Auxiliary, nvram::Nvram};
 use helios::machine::Machine;
+use helios::mmu::MemoryError;
 use helios::system_bus::{SystemBus, AUXILIARY_BASE, AUXILIARY_POWER_BASE};
 
 #[test]
@@ -88,11 +90,9 @@ fn auxiliary_power_port_preserves_only_scratch_and_stops_before_power_off() {
         assert_eq!(bus.read8(AUXILIARY_POWER_BASE).unwrap(), value & 12);
         assert_eq!(bus.read8(AUXILIARY_BASE).unwrap(), 0);
         let before = bus.devices().unwrap().auxiliary.clone();
-        assert!(bus
-            .write8(AUXILIARY_POWER_BASE, value | 1)
-            .unwrap_err()
-            .kind
-            .is_host_stop());
+        let power_off = bus.write8(AUXILIARY_POWER_BASE, value | 1).unwrap_err();
+        assert!(power_off.kind.is_host_stop());
+        assert!(power_off.kind.is_power_off());
         assert_eq!(bus.devices().unwrap().auxiliary, before);
     }
     assert!(bus
@@ -108,4 +108,19 @@ fn auxiliary_power_port_preserves_only_scratch_and_stops_before_power_off() {
     assert_eq!(bus.read8(AUXILIARY_POWER_BASE).unwrap(), 12);
     bus.reset_devices();
     assert_eq!(bus.read8(AUXILIARY_POWER_BASE).unwrap(), 0);
+}
+
+#[test]
+fn power_off_fault_is_recognized_for_graceful_frontend_shutdown() {
+    let fault = CpuFault {
+        pc: 0,
+        npc: 0,
+        instruction: None,
+        kind: FaultKind::UnsupportedMemory(MemoryError::Bus(BusError {
+            address: AUXILIARY_POWER_BASE,
+            kind: BusErrorKind::PowerOff,
+        })),
+    };
+    assert!(fault.is_power_off());
+    assert!(BusErrorKind::PowerOff.is_host_stop());
 }

@@ -47,6 +47,10 @@ impl Mouse {
         self.schedule();
     }
 
+    pub(crate) fn idle(&self) -> bool {
+        self.queue.is_empty() && self.dx == 0 && self.dy == 0 && !self.changed
+    }
+
     pub(crate) fn advance_ns(&mut self, ns: u64, serial: &mut Serial) {
         self.schedule();
         let phase = u128::from(self.phase) + u128::from(ns) * 1_000_000_000;

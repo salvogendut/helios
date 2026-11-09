@@ -353,10 +353,11 @@ pub struct Sun4mDevices {
     pub ethernet_dma: EthernetDma,
     pub ethernet: Ethernet,
     rtc_phase_ns: u32,
+    timer_ns: u64,
 }
 
 impl Sun4mDevices {
-    fn sync_interrupts(&mut self) {
+    pub(crate) fn sync_interrupts(&mut self) {
         self.ethernet_dma.set_mac_irq(self.ethernet.irq());
         self.scsi_dma.set_scsi_irq(self.esp.irq());
         self.interrupts
@@ -378,11 +379,17 @@ impl Sun4mDevices {
         if let Some(keyboard) = &mut self.keyboard {
             keyboard.advance_ns(ns, &mut self.keyboard_serial);
         }
-        self.mouse.advance_ns(ns, &mut self.keyboard_serial);
+        if !self.mouse.idle() {
+            self.mouse.advance_ns(ns, &mut self.keyboard_serial);
+        }
         self.ethernet.advance_ns(ns);
         self.esp.advance_ns(ns);
         self.floppy.advance_ns(ns);
-        self.timers.advance_ns(ns);
+        self.timer_ns += ns;
+        if self.timer_ns >= 500 {
+            self.timers.advance_ns(self.timer_ns);
+            self.timer_ns = 0;
+        }
         let remainder = ns % 1_000_000_000 + u64::from(self.rtc_phase_ns);
         self.nvram
             .advance_seconds(ns / 1_000_000_000 + remainder / 1_000_000_000);
@@ -402,6 +409,7 @@ pub struct SystemBus {
     prom_phase: u64,
     cgsix: Option<Cgsix>,
     sx: Option<Sx>,
+    device_ns: u64,
 }
 
 impl Default for SystemBus {
@@ -427,6 +435,7 @@ impl SystemBus {
             prom_phase: 0,
             cgsix: None,
             sx: None,
+            device_ns: 0,
         }
     }
 
@@ -670,6 +679,7 @@ impl SystemBus {
             ethernet_dma: EthernetDma::default(),
             ethernet: Ethernet::default(),
             rtc_phase_ns: 0,
+            timer_ns: 0,
         };
         devices
             .esp
@@ -696,6 +706,7 @@ impl SystemBus {
         }
     }
     fn reset_io(&mut self) {
+        self.flush_device_time();
         if let Some(card) = &mut self.cgsix {
             card.reset();
         }
@@ -723,9 +734,24 @@ impl SystemBus {
             devices.mouse.reset();
             devices.interrupts.reset();
             devices.timers.reset();
+            devices.timer_ns = 0;
         }
     }
     pub fn advance_ns(&mut self, ns: u64) {
+        self.advance_devices_ns(ns);
+    }
+
+    /// CPU-boundary path: coalesce device work to a 2 us boundary.
+    pub(crate) fn advance_ns_fast(&mut self, ns: u64) {
+        self.device_ns = self.device_ns.saturating_add(ns);
+        if self.device_ns < 2000 {
+            return;
+        }
+        let elapsed = std::mem::take(&mut self.device_ns);
+        self.advance_devices_ns(elapsed);
+    }
+
+    fn advance_devices_ns(&mut self, ns: u64) {
         if let Some(card) = &mut self.cgsix {
             card.advance_ns(ns);
         }
@@ -734,7 +760,18 @@ impl SystemBus {
         }
         self.sync_cgsix_irq();
     }
+
+    fn flush_device_time(&mut self) {
+        if self.device_ns != 0 {
+            let pending = std::mem::take(&mut self.device_ns);
+            self.advance_devices_ns(pending);
+        }
+    }
     pub fn advance_seconds(&mut self, seconds: u64) {
+        if self.device_ns != 0 {
+            let pending = std::mem::take(&mut self.device_ns);
+            self.advance_devices_ns(pending);
+        }
         if let Some(card) = &mut self.cgsix {
             card.advance_ns(seconds.saturating_mul(1_000_000_000));
         }
@@ -762,12 +799,9 @@ impl SystemBus {
     }
     pub fn interrupt_levels(&mut self) -> u16 {
         self.sync_cgsix_irq();
-        if let Some(devices) = &mut self.devices {
-            devices.sync_interrupts();
-            devices.interrupts.levels()
-        } else {
-            0
-        }
+        self.devices
+            .as_ref()
+            .map_or(0, |devices| devices.interrupts.levels())
     }
     fn zero_at(&self, address: u64) -> bool {
         self.layout
@@ -1278,6 +1312,7 @@ impl Bus for SystemBus {
             }
         }
         if let Some((device, offset)) = self.word_device(address) {
+            self.flush_device_time();
             let devices = self.devices.as_mut().expect("decoded installed device");
             devices.sync_interrupts();
             let result = match device {
@@ -1373,6 +1408,7 @@ impl Bus for SystemBus {
             }
         }
         if let Some((device, offset)) = self.word_device(address) {
+            self.flush_device_time();
             if mask != u32::MAX {
                 return Err(BusError {
                     address,

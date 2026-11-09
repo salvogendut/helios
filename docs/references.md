@@ -333,6 +333,17 @@ For upcoming work, continue the review of `hw/sparc/sun4m_iommu.c`,
 Verify each file at the selected revision before relying on its behavior.
 QEMU's TCX framebuffer is a different device from the selected CGsix card.
 
+## CGsix rendering
+
+[Sun GX FBC Reference Manual 3.0 (January 1988)](https://bitsavers.trailing-edge.com/components/lsiLogic/sparc/GX/Sun_GX_FBC_Jan1988.pdf)
+is the primary programming reference for the shared indexed vertex bank,
+DRAW commands, polygon edge rules, RASTEROP selectors and font coordinates.
+Section 3.2/table 3-1 was checked visually. The separate LSI SGX hardware manual
+does not provide these complete programming rules. Original Solaris 2.6 Xsun
+register traces exercise point/line/rectangle aliases and quadrilateral fills;
+see [graphics.md](graphics.md). MAME remains a comparison, and QEMU's TCX is a
+different framebuffer.
+
 ## MAME
 
 The pinned [src/devices/machine/am79c90.cpp](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/machine/am79c90.cpp)

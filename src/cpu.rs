@@ -122,6 +122,18 @@ pub struct CpuFault {
     pub kind: FaultKind,
 }
 
+impl CpuFault {
+    pub fn is_power_off(&self) -> bool {
+        matches!(
+            self.kind,
+            FaultKind::UnsupportedMemory(MemoryError::Bus(BusError {
+                kind: BusErrorKind::PowerOff,
+                ..
+            }))
+        )
+    }
+}
+
 impl fmt::Display for CpuFault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(

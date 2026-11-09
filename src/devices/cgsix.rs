@@ -30,11 +30,6 @@ pub struct Cgsix {
     blink_frame: u8,
     vblank_pending: bool,
     generation: u64,
-    vertices: Vec<(i32, i32)>,
-    line_start: Option<(i32, i32)>,
-    line_end: Option<(i32, i32)>,
-    line_y: Option<i32>,
-    rect_relative: bool,
 }
 
 impl Cgsix {
@@ -67,11 +62,6 @@ impl Cgsix {
             blink_frame: 0,
             vblank_pending: false,
             generation: 0,
-            vertices: Vec::new(),
-            line_start: None,
-            line_end: None,
-            line_y: None,
-            rect_relative: false,
         })
     }
     pub fn reset(&mut self) {
@@ -79,11 +69,6 @@ impl Cgsix {
         self.thc = [0; 7];
         self.timing = [0; 64];
         self.oscillator = 0;
-        self.vertices.clear();
-        self.line_start = None;
-        self.line_end = None;
-        self.line_y = None;
-        self.rect_relative = false;
         self.fbc = [0; 1024];
         self.tec = [0; 1024];
         self.dac_address = 0;
@@ -97,6 +82,9 @@ impl Cgsix {
     }
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+    pub fn scanout_key(&self) -> u64 {
+        (u64::from(self.blink_frame) << 32) ^ self.generation
     }
     pub fn enabled(&self) -> bool {
         self.thc[6] & 0x400 != 0
@@ -292,7 +280,6 @@ impl Cgsix {
                 if value & 0x8000 != 0 {
                     self.fbc = [0; 1024];
                     self.tec = [0; 1024];
-                    self.vertices.clear();
                 }
                 self.fhc = (self.fhc & 0xfff00000) | (value & 0x000f3fff);
             }
@@ -327,44 +314,17 @@ impl Cgsix {
             0x700010 | 0x700014 | 0x700018 => {}
             0x70001c => self.font(value)?,
             0x700108 => {
-                self.fbc[0x108 / 4] = (self.fbc[0x108 / 4] & 0xffc00000) | (value & 0x003fffff);
+                // RASTEROP's two-bit selectors use zero to retain a field.
+                // The Boolean truth table and rasterop/plot bits always load.
                 for shift in [22, 24, 26, 28, 30] {
                     let mask = 3 << shift;
                     if value & mask != 0 {
                         self.fbc[0x108 / 4] = (self.fbc[0x108 / 4] & !mask) | (value & mask);
                     }
                 }
+                self.fbc[0x108 / 4] = (self.fbc[0x108 / 4] & !0x3ffff) | (value & 0x3ffff);
             }
-            0x700900 => {
-                if self.vertices.len() == 16 {
-                    return Err(BusErrorKind::Unsupported("CGsix rectangle FIFO full"));
-                }
-                self.vertices
-                    .push((value as i32, self.fbc[0x904 / 4] as i32));
-                self.fbc[0x900 / 4] = value;
-            }
-            0x700904 => {
-                self.fbc[(offset - 0x700000) as usize / 4] = value;
-            }
-            0x700910 | 0x700914 => {
-                self.fbc[(offset - 0x700000) as usize / 4] = value;
-                self.rect_relative = true;
-            }
-            0x700844 => {
-                self.fbc[(offset - 0x700000) as usize / 4] = value;
-                self.line_y = Some(value as i32);
-            }
-            0x700840 => {
-                self.fbc[(offset - 0x700000) as usize / 4] = value;
-                if let Some(y) = self.line_y.take() {
-                    let point = (value as i32, y);
-                    if self.line_start.is_some() {
-                        self.line_end = Some(point);
-                    } else {
-                        self.line_start = Some(point);
-                    }
-                }
-            }
+            0x700800..=0x700918 => self.indexed_coordinate(offset, value)?,
             0x700000..=0x700ffc => self.fbc[(offset - 0x700000) as usize / 4] = value,
             0x701000..=0x701ffc => self.tec[(offset - 0x701000) as usize / 4] = value,
             _ => return Err(BusErrorKind::Unsupported("CGsix register")),
@@ -403,6 +363,10 @@ impl Cgsix {
         {
             return;
         }
+        self.plot_pixel(x, y, source);
+    }
+
+    fn plot_pixel(&mut self, x: i64, y: i64, source: u8) {
         let rop = self.fbc[0x108 / 4];
         let pixel_mask = match (rop >> 28) & 3 {
             1 => 0,
@@ -448,11 +412,7 @@ impl Cgsix {
             } else {
                 0
             };
-            self.plot(
-                x + n + self.fbc[0xc0 / 4] as i32 as i64,
-                y + self.fbc[0xc4 / 4] as i32 as i64,
-                source,
-            );
+            self.plot(x + n, y, source);
         }
         for (coord, inc) in [(0x80, 0xd0), (0x90, 0xd0), (0x84, 0xd4), (0x94, 0xd4)] {
             self.fbc[coord / 4] = self.fbc[coord / 4].wrapping_add(self.fbc[inc / 4]);
@@ -479,85 +439,191 @@ impl Cgsix {
         }
     }
 
+    // Sun FBC Reference Manual 3.0, section 3.2/table 3-1. These are
+    // coordinate aliases, not drawing FIFOs. All primitives share X0..Y3.
+    fn indexed_coordinate(&mut self, offset: u64, value: u32) -> Result<(), BusErrorKind> {
+        let register = (offset - 0x700800) as usize;
+        let kind = register / 0x40;
+        let component = register & 0x2f;
+        if kind > 4 || component > 4 {
+            return Err(BusErrorKind::Unsupported("CGsix indexed coordinate"));
+        }
+        let index = ((self.fbc[1] >> 4) & 3) as usize;
+        let relative = register & 0x10 != 0;
+        let base = if relative {
+            self.fbc[(0x80 + ((index + 3) & 3) * 16 + component) / 4]
+        } else {
+            self.fbc[(0xc0 + component) / 4]
+        };
+        let coordinate = base.wrapping_add(value);
+        let count = if kind == 4 { 2 } else { 4 - kind };
+        for n in 0..count {
+            self.fbc[(0x80 + ((index + n) & 3) * 16 + component) / 4] = coordinate;
+        }
+        // X advances every primitive; rectangle Y also advances the index.
+        if component == 0 || kind == 4 {
+            self.fbc[1] = (self.fbc[1] & !0x30) | (((index as u32 + 1) & 3) << 4);
+        }
+        Ok(())
+    }
+
     fn draw(&mut self) -> Result<(), BusErrorKind> {
-        if let Some(start) = self.line_start.take() {
-            if let Some(end) = self.line_end.take() {
-                self.drawing_supported()?;
-                self.draw_line(start, end);
-                self.generation = self.generation.wrapping_add(1);
-            } else {
-                self.line_start = Some(start);
-            }
-            return Ok(());
-        }
-        if self.rect_relative && (self.vertices.is_empty() || self.vertices.len() % 2 != 0) {
-            self.drawing_supported()?;
-            let x = self.fbc[0x900 / 4] as i32 as i64;
-            let y = self.fbc[0x904 / 4] as i32 as i64;
-            let width = self.fbc[0x910 / 4] as i32 as i64;
-            let height = self.fbc[0x914 / 4] as i32 as i64;
-            for py in y..=y + height {
-                for px in x..=x + width {
-                    self.plot(px, py, self.pattern(px, py));
-                }
-            }
-            self.generation = self.generation.wrapping_add(1);
-            self.vertices.clear();
-            return Ok(());
-        }
-        if self.vertices.is_empty() {
-            return Ok(());
-        }
         self.drawing_supported()?;
-        if self.vertices.len() % 2 != 0 {
-            return Err(BusErrorKind::Unsupported("CGsix incomplete rectangle"));
-        }
-        // NONOVERLAP rectangles exclude their upper/right edges (Linux cg6_fillrect).
-        let inclusive = i64::from((self.fbc[0x108 / 4] >> 24) & 3 == 1);
-        for n in (0..self.vertices.len()).step_by(2) {
-            let (x0, y0) = self.vertices[n];
-            let (x1, y1) = self.vertices[n + 1];
-            let ox = self.fbc[0xc0 / 4] as i32 as i64;
-            let oy = self.fbc[0xc4 / 4] as i32 as i64;
-            for y in (i64::from(y0.min(y1)) + oy).max(0)
-                ..(i64::from(y0.max(y1)) + oy + inclusive).min(HEIGHT as i64)
-            {
-                for x in (i64::from(x0.min(x1)) + ox).max(0)
-                    ..(i64::from(x0.max(x1)) + ox + inclusive).min(WIDTH as i64)
-                {
+        let points: [(i64, i64); 4] = std::array::from_fn(|i| {
+            (
+                self.fbc[0x80 / 4 + i * 4] as i32 as i64,
+                self.fbc[0x84 / 4 + i * 4] as i32 as i64,
+            )
+        });
+        let min_x = points.iter().map(|p| p.0).min().unwrap();
+        let max_x = points.iter().map(|p| p.0).max().unwrap();
+        let min_y = points.iter().map(|p| p.1).min().unwrap();
+        let max_y = points.iter().map(|p| p.1).max().unwrap();
+        let overlapping = (self.fbc[0x108 / 4] >> 24) & 3 == 1;
+        let start = *points.iter().min().unwrap();
+        let end = *points.iter().max().unwrap();
+        let collinear = points.iter().all(|p| {
+            i128::from(p.0 - start.0) * i128::from(end.1 - start.1)
+                == i128::from(p.1 - start.1) * i128::from(end.0 - start.0)
+        });
+        if collinear {
+            // Nonoverlapping degenerate polygons have no area (section 5.2).
+            if overlapping {
+                self.draw_line(start, end);
+            }
+        } else if [
+            (min_x, min_y),
+            (max_x, min_y),
+            (max_x, max_y),
+            (min_x, max_y),
+        ]
+        .iter()
+        .all(|p| points.contains(p))
+            && (0..4).all(|i| {
+                points[i].0 == points[(i + 1) % 4].0 || points[i].1 == points[(i + 1) % 4].1
+            })
+        {
+            let extra = i64::from(overlapping);
+            for y in min_y.max(0)..(max_y + extra).min(HEIGHT as i64) {
+                for x in min_x.max(0)..(max_x + extra).min(WIDTH as i64) {
                     self.plot(x, y, self.pattern(x, y));
                 }
             }
+        } else {
+            self.draw_polygon(&points, overlapping)?;
         }
-        self.vertices.clear();
         self.generation = self.generation.wrapping_add(1);
         Ok(())
     }
 
-    fn draw_line(&mut self, start: (i32, i32), end: (i32, i32)) {
-        let source = self.fbc[0x100 / 4] as u8;
-        let (mut x, mut y) = start;
-        let (x1, y1) = end;
-        let dx = (x1 - x).abs();
-        let sx = if x < x1 { 1 } else { -1 };
-        let dy = -(y1 - y).abs();
-        let sy = if y < y1 { 1 } else { -1 };
-        let mut error = dx + dy;
-        loop {
-            self.plot(i64::from(x), i64::from(y), source);
-            if x == x1 && y == y1 {
-                break;
+    fn draw_line(&mut self, start: (i64, i64), end: (i64, i64)) {
+        Self::line_pixels(start, end, |x, y| self.plot(x, y, self.pattern(x, y)));
+    }
+
+    fn line_pixels(mut start: (i64, i64), mut end: (i64, i64), mut pixel: impl FnMut(i64, i64)) {
+        let steep = (end.1 - start.1).abs() > (end.0 - start.0).abs();
+        if steep {
+            start = (start.1, start.0);
+            end = (end.1, end.0);
+        }
+        if start.0 > end.0 {
+            std::mem::swap(&mut start, &mut end);
+        }
+        let length = end.0 - start.0;
+        let limit = if steep { HEIGHT } else { WIDTH } as i64;
+        // Bound work to the screen, preserving the phase of a clipped line.
+        for major in start.0.max(0)..=end.0.min(limit - 1) {
+            let minor = if length == 0 {
+                start.1
+            } else {
+                let numerator = 2 * i128::from(end.1 - start.1) * i128::from(major - start.0)
+                    + i128::from(length);
+                start.1 + numerator.div_euclid(2 * i128::from(length)) as i64
+            };
+            let (x, y) = if steep {
+                (minor, major)
+            } else {
+                (major, minor)
+            };
+            // Midpoint ties round toward screen right/down, independent of
+            // endpoint order (section 5.2). Lines obey the same clip window.
+            pixel(x, y);
+        }
+    }
+
+    fn draw_polygon(
+        &mut self,
+        points: &[(i64, i64); 4],
+        overlapping: bool,
+    ) -> Result<(), BusErrorKind> {
+        // Section 5.2: nonoverlap uses ideal edges, excluding right/bottom;
+        // overlap is the union of the interior and balanced boundary lines.
+        // Collect coverage before applying the ROP so shared vertices and
+        // edge/interior intersections affect each destination pixel only once.
+        let mut rows = [None; HEIGHT];
+        for (y, row) in rows.iter_mut().enumerate() {
+            let y = y as i64;
+            let mut intersections = [(0i128, 1i128); 4];
+            let mut count = 0;
+            for edge in 0..4 {
+                let (mut a, mut b) = (points[edge], points[(edge + 1) % 4]);
+                if a.1 > b.1 {
+                    std::mem::swap(&mut a, &mut b);
+                }
+                if y < a.1 || y >= b.1 {
+                    continue;
+                }
+                let dy = i128::from(b.1 - a.1);
+                let numerator = i128::from(a.0) * dy + i128::from(b.0 - a.0) * i128::from(y - a.1);
+                intersections[count] = (numerator, dy);
+                count += 1;
             }
-            let doubled = 2 * error;
-            if doubled >= dy {
-                error += dy;
-                x += sx;
+            if count == 0 {
+                continue;
             }
-            if doubled <= dx {
-                error += dx;
-                y += sy;
+            if count != 2 {
+                // Section 5.1 limits hardware DRAW to two active edges.
+                return Err(BusErrorKind::Unsupported(
+                    "CGsix polygon with more than two active edges",
+                ));
+            }
+            let [(mut left, mut ld), (mut right, mut rd), ..] = intersections;
+            if left * rd > right * ld {
+                std::mem::swap(&mut left, &mut right);
+                std::mem::swap(&mut ld, &mut rd);
+            }
+            let start = -(-left).div_euclid(ld);
+            let end = if overlapping {
+                right.div_euclid(rd)
+            } else {
+                -(-right).div_euclid(rd) - 1
+            };
+            if start <= end {
+                *row = Some((start as i64, end as i64));
             }
         }
+        if overlapping {
+            for edge in 0..4 {
+                Self::line_pixels(points[edge], points[(edge + 1) % 4], |x, y| {
+                    if !(0..HEIGHT as i64).contains(&y) {
+                        return;
+                    }
+                    let row = &mut rows[y as usize];
+                    *row = Some(match *row {
+                        Some((left, right)) => (left.min(x), right.max(x)),
+                        None => (x, x),
+                    });
+                });
+            }
+        }
+        for (y, row) in rows.into_iter().enumerate() {
+            if let Some((left, right)) = row {
+                for x in left.max(0)..=right.min(WIDTH as i64 - 1) {
+                    self.plot(x, y as i64, self.pattern(x, y as i64));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn blit(&mut self) -> Result<(), BusErrorKind> {

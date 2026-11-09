@@ -37,4 +37,5 @@
 - [Loopback telnet serial](serial-tcp.md): IRIS-style nonblocking TCP serial consoles, CLI port flags and telnet filtering.
 - [User-mode NAT stage one](host-networking.md): ARP/RARP, DHCP, ICMP, UDP, DNS relay and TFTP ownership/subset decisions.
 - [SPARCstation 20 and Axil 320](ss20-axil.md): high sun4m map, reference-MMU/IDPROM profiles, original-firmware `ok` bring-up and remaining POST diagnostics.
-- [x-windows.md](x-windows.md) — Solaris 2.6 X startup: TEC/FBC line/rectangle, FSQRTd and Sun mouse protocol.
+- [x-windows.md](x-windows.md) — Solaris 2.6 X rendering: indexed FBC vertices, polygon coverage, trace replay and live desktop evidence.
+- [performance.md](performance.md) — MMU translation caches, device-time coalescing and frontend/SCSI throughput measurements.

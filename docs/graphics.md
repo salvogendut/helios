@@ -79,7 +79,7 @@ that base.
 | `0x301090–0x3010cc` | Selected TurboGX strap, delay and extended timing registers used by the ROM |
 | `0x301800–0x301818` | Legacy timing registers and video/vertical-blank control/status |
 | `0x3018fc`, `0x301900–0x3019fc` | Signed cursor position and two 32×32 cursor planes |
-| `0x700000–0x700fff` | FBC registers: coordinates, clipping, offsets/increments, colors, ROP/masks/patterns, font, line, rectangle and blit operations |
+| `0x700000–0x700fff` | FBC registers: coordinates, clipping, offsets/increments, colors, ROP/masks/patterns, font, polygon and blit operations |
 | `0x701000–0x701fff` | TEC register page; values retained, transformation arithmetic is not modeled |
 | `0x800000–0x8fffff` | 1 MiB packed indexed VRAM, big-endian byte lanes |
 
@@ -97,16 +97,32 @@ writes the BT467 command at DAC address 9; the selected BT458 does not decode
 that register, so this write has no effect.
 
 The drawing engine implements Boolean raster operations, foreground/background
-selection, pixel and plane masks, 16×16 patterns, inclusive destination clipping,
-one-bit and eight-bit font writes with automatic coordinate increments,
-absolute-endpoint lines, absolute/relative rectangles, and overlapping screen
-copies. Nonoverlap rectangles exclude their upper/right edges; line endpoints
-and blit endpoints include the final pixel. Operations complete synchronously;
-status reads therefore report idle after completing the requested operation.
-Buffer selectors use the single physical store in this 1 MiB profile. TEC
-values are retained for the X server, but transformation arithmetic, arbitrary
-polygons, picking, linear interpolation, TurboGX+ double buffering, other
-resolutions and little-endian framebuffer mode are unsupported.
+selection, pixel/plane masks, 16×16 patterns, clipping, font writes with automatic
+increments, and overlapping screen copies. RASTEROP's two-bit selectors preserve
+their previous value when written as zero; its truth table always loads.
+
+Indexed point, line, triangle, quadrilateral and rectangle writes update the
+same four X/Y vertex registers. The MISC address index advances after each X
+write and also after rectangle Y writes. Absolute writes add the raster offset
+at load time; relative writes add the previous indexed coordinate. Direct
+coordinate writes and FONT use screen coordinates without adding that offset.
+Coordinates remain available for readback and context restoration.
+
+Reading DRAW submits the current vertices and attributes. Coordinate writes
+only prepare state; reading plain STATUS never submits work. Lines and points
+render in overlapping mode and obey the clip window. Their midpoint ties round
+toward screen right/down. Nonoverlapping fills exclude right/bottom edges;
+triangles and quadrilaterals with two active edges per scanline are supported.
+Overlapping fills combine the interior and balanced boundary lines before
+applying the ROP, so XOR touches each covered pixel once. Rasterization work is
+bounded to the visible raster even for offscreen coordinates.
+
+Operations complete synchronously and report idle. Full geometric status and
+exception classification, indexed Z/TEC clipping, picking, linear rasterops,
+polygons with more than two active edges per scanline, TurboGX+ double buffering,
+other resolutions and little-endian framebuffer mode remain unsupported. The
+buffer selectors share the single store in this 1 MiB profile. TEC register
+storage is retained; transformation arithmetic remains unmodeled.
 
 Timing/oscillator programming is retained, but scanout currently has a fixed
 1152×900 raster using MAME's 105.561 MHz / 1472×943 timing. It does not synthesize
@@ -131,6 +147,15 @@ evaluated `1 2 + .` as `3`. This establishes the graphical firmware console;
 it does not establish OS boot or full CGsix compatibility. Firmware hashes and
 the exact probe conditions are in [firmware.md](firmware.md#graphical-obp-console).
 
+Solaris 2.6 has also been checked from a copied installed disk with the original
+SS-5 and TurboGX ROMs. Graphical login, the CDE desktop, File Manager and
+overlapping xterm windows render with intact decorations and backgrounds.
+Closing the covering terminal restores the exposed File Manager contents;
+OpenWindows `xrefresh` repaints the desktop cleanly. These checks cover the
+observed Xsun drawing paths, not every CGsix mode or X application. Mouse
+transport timing remains a separate limitation.
+
+- [Sun GX FBC Reference Manual 3.0, January 1988](https://bitsavers.trailing-edge.com/components/lsiLogic/sparc/GX/Sun_GX_FBC_Jan1988.pdf): section 3.2/table 3-1 (visually checked) defines indexed vertex updates; sections 5.1–5.2 define DRAW submission and coverage; sections 7/9/10 define font coordinates, ROP selectors and the address index.
 - [Linux v6.12 CG6 driver](https://github.com/torvalds/linux/blob/v6.12/drivers/video/fbdev/cg6.c): FHC/THC/FBC/TEC offsets, mode fields and independently observable rectangle/font/blit endpoint conventions.
 - [MAME CGsix](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/bus/sbus/cgsix.cpp) and [register definitions](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/bus/sbus/cgsix.h): option-ROM hashes, family layout, ROP truth tables, cursor and raster timing. MAME's incomplete FBC alias at `0x300000` is not used: that is FHC on the actual card. Its commented-as-untested drawing loops are not a correctness oracle.
 - [LSI L64845 SGX technical manual](https://bitsavers.org/components/lsiLogic/sparc/GX/M14015_L64845_SGX_SBus_Graphics_Accelerator_Technical_Manual_1992.pdf), chapters 2/4/6 and appendix C: single-chip graphics architecture, SBus byte lanes, monitor sense and BT458. This SGX-family document does not specify every later TurboGX register.

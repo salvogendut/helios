@@ -289,7 +289,7 @@ impl Machine {
             instruction: None,
             kind: FaultKind::DeviceDma(error),
         })?;
-        self.service_scsi().map_err(|error| CpuFault {
+        self.service_scsi_batch(16).map_err(|error| CpuFault {
             pc: self.cpu.pc(),
             npc: self.cpu.npc(),
             instruction: None,
@@ -306,7 +306,7 @@ impl Machine {
             }
         }
         let step = result?;
-        self.bus.advance_ns(STEP_NS + wait_ns);
+        self.bus.advance_ns_fast(STEP_NS + wait_ns);
         if self.software_reset_requested() {
             if let Step::Executed {
                 pc,

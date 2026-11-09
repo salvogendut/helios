@@ -14,12 +14,21 @@ pub enum BusErrorKind {
     ReadOnly,
     /// Emulator limitation or host backpressure, never a guest bus exception.
     Unsupported(&'static str),
+    /// The guest requested an orderly machine power-off.
+    PowerOff,
     WouldBlock,
 }
 
 impl BusErrorKind {
     pub fn is_host_stop(self) -> bool {
-        matches!(self, Self::Unsupported(_) | Self::WouldBlock)
+        matches!(
+            self,
+            Self::Unsupported(_) | Self::PowerOff | Self::WouldBlock
+        )
+    }
+
+    pub fn is_power_off(self) -> bool {
+        matches!(self, Self::PowerOff)
     }
 }
 

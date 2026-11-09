@@ -163,14 +163,21 @@ fn execute(
                 }
             }
         }
-        let step = step.map_err(|fault| {
-            let reason = if machine.cpu.error_state().is_some() {
-                "CPU error state"
-            } else {
-                "emulator stop"
-            };
-            format!("{reason}: {fault}")
-        })?;
+        let step = match step {
+            Ok(step) => step,
+            Err(fault) if fault.is_power_off() => {
+                report(console, format_args!("System powered off."));
+                return Ok(());
+            }
+            Err(fault) => {
+                let reason = if machine.cpu.error_state().is_some() {
+                    "CPU error state"
+                } else {
+                    "emulator stop"
+                };
+                return Err(format!("{reason}: {fault}").into());
+            }
+        };
         match step {
             Step::SoftwareReset {
                 pc,
