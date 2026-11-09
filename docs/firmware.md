@@ -908,12 +908,14 @@ cache-tag error. A headless boot still runs full POST and reports the remaining
 MBus cache-tag diagnostic (`Address = 0x4000_0000`); this is not a full-POST
 pass claim.
 
-With `--machine axil320`, the Axil 320 ROM reaches the same NVRAM checksum
-reset path. The Axil profile deliberately does not install the SS-20 built-in
-SX/VSIMM device; those address windows remain unpopulated. It has not yet been
-re-verified to a prompt after the VSIMM/TLB fixes. The default Axil IDPROM identity is MAC `00:00:3c:13:de:ad`, serial
-`c0:ff:ee`, host ID `72c0ffee` (IDPROM machine type `0x72`); the user's physical
-machine banner matches this identity.
+With `--machine axil320 --keyboard --cgsix-rom local/firmware/turbogx.bin`, the
+Axil 320 ROM finds a CG6 in SBus slot 2 (`cgsix@2,0`), switches the console to
+it and draws the machine banner there. Without a CG6 the ROM prints
+`screen not found.` and falls back to tty. The default Axil IDPROM identity is
+MAC `00:00:3c:13:de:ad`, serial `c0:ff:ee`, host ID `72c0ffee` (IDPROM machine
+type `0x72`); the user's physical machine banner matches this identity. Axil
+still needs a valid ttya NVRAM image for a serial `ok`; its blank NVRAM takes
+the checksum-reset path and sets `diag-switch?` true.
 
 The remaining work is the `/obio/zs@0,0` device-tree/console path, a valid
 SS-20 NVRAM image with a serial console, and then the SuperSPARC-II I/D-cache

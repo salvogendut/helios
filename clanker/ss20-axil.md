@@ -270,3 +270,16 @@ the keyboard-present abbreviated startup path: it prints the machine banner,
 initializes memory, and reaches serial `ok` without the full POST cache-tag
 error. The CLI exposes this as `--keyboard`. Headless boots without a keyboard
 still run full POST and stop at the remaining MBus cache-tag diagnostic.
+
+## CG6 on Axil/SS-20 SBus slot 2
+
+SS-20 and Axil 320 use the Sun-4M SBus slot map: slot 2 is at physical
+`0xe_2000_0000` (PA[35:28] = 0xe2), not the SS-5 CG6 slot-1 base
+`0x30000000`. `Sun4mLayout::ss20()` now carries that base and the boot CLI
+exposes `--cgsix-rom FILE` to attach a CG6 with its original 32 KiB FCode ROM.
+
+With Axil ROM 2.19, default NVRAM, a Type 5 keyboard and `turbogx.bin`, OBP
+probes `cgsix@2,0`, switches the console to the card, and draws the machine
+banner into the framebuffer (~1.0M non-black pixels). Without the card it prints
+`screen not found.` and stays on tty. Serial output stops once OBP selects the
+screen console; a valid Axil ttya NVRAM image is still needed for a serial `ok`.

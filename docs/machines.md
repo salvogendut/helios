@@ -95,5 +95,8 @@ the same NVRAM reset path. These are not clean-POST or OS-boot claims. The CPU
 remains the project's microSPARC-II-style V8 interpreter with a
 SuperSPARC-compatible MMU profile; there is no SuperSPARC pipeline, cache-fill,
 MBus multiprocessor, full PTP2 replacement policy, SX/VSIMM, DBRI audio, BPP or
-Axil custom-controller model. The CGsix console remains the SS-5 SBus card
-profile. No machine profile other than the SS-5 has an OS compatibility claim.
+Axil custom-controller model. CG6/TurboGX cards can be attached through
+`--cgsix-rom`; SS-20/Axil place them in SBus slot 2 at physical
+`0xe_2000_0000`, matching the Sun-4M slot map. The Axil 320 uses a CG6 as its
+usual framebuffer; Helios does not require the SS-5 AFX presence byte for it.
+No machine profile other than the SS-5 has an OS compatibility claim.

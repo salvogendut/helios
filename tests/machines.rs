@@ -33,6 +33,7 @@ fn ss20_layout_uses_the_high_sun4m_map_and_reference_mmu() {
     assert_eq!(layout.esp, 0xe_f080_0000);
     assert_eq!(layout.ethernet, 0xe_f0c0_0000);
     assert_eq!(layout.ecc, Some(0x0f_0000_0000));
+    assert_eq!(layout.cgsix, 0xe_2000_0000);
     assert_eq!(layout, MachineProfile::Axil320.layout());
 
     let mut ss20 = Machine::with_profile(

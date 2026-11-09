@@ -1,6 +1,8 @@
 use helios::bus::Bus;
 use helios::cpu::{Step, PSR_ET, PSR_S};
-use helios::devices::{keyboard::Keyboard, nvram::Nvram, scsi::MediaKind, serial::Channel};
+use helios::devices::{
+    cgsix::Cgsix, keyboard::Keyboard, nvram::Nvram, scsi::MediaKind, serial::Channel,
+};
 use helios::machine::{
     demo_image, serial_demo_image, timer_demo_image, trap_demo_image, Machine, MachineProfile,
     CPU_CLOCK_HZ, DEFAULT_RAM_BYTES, TARGET,
@@ -24,7 +26,7 @@ Usage:
   helios run FILE [--load-address N] [--entry N] [--steps N] [--ram-mib N] [--trace]
   helios boot PROM [--machine ss5|ss20|axil320] [--steps N] [--ram-mib N] [--trace]
                    [--serial-in FILE] [--serial-port-a PORT] [--serial-port-b PORT]
-                   [--keyboard] [--nvram FILE] [--nvram-out NEW_FILE]
+                   [--keyboard] [--cgsix-rom FILE] [--nvram FILE] [--nvram-out NEW_FILE]
                    [--disk RAW_IMAGE | --disk-rw RAW_IMAGE] [--cdrom ISO_IMAGE]
                    [--net] [--net-gateway IP] [--net-client IP] [--net-mask IP]
                    [--net-dns IP] [--tftp-dir DIR]
@@ -46,6 +48,7 @@ Its RAM must fit eight 8 MiB or 32 MiB DSIMMs; low slots receive larger modules 
 boot and serial-demo send TTYA bytes to stdout and diagnostics to stderr.
 --keyboard attaches a Type 5 keyboard; with diag-switch? false this selects the
 abbreviated OBP startup path, letting an SS-20 boot reach ok without full POST.
+--cgsix-rom attaches a CG6/TurboGX SBus card in slot 2 using its 32 KiB FCode ROM.
 --serial-in supplies bytes as the guest enables and drains its receiver.
 --serial-port-a PORT and --serial-port-b PORT expose TTYA/TTYB as telnet
 consoles on 127.0.0.1; PORT 0 asks the host for a free port. Console output
@@ -409,6 +412,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             let mut net_dns = None;
             let mut tftp_dir = None;
             let mut keyboard = false;
+            let mut cgsix_rom = None;
             let mut nvram_in = None;
             let mut nvram_out = None;
             let mut disk = None;
@@ -428,6 +432,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             | "--disk"
                             | "--disk-rw"
                             | "--cdrom"
+                            | "--cgsix-rom"
                     )
                 {
                     let path = args
@@ -446,6 +451,11 @@ fn run() -> Result<(), Box<dyn Error>> {
                         "--cdrom" => {
                             if cdrom.replace(path).is_some() {
                                 return Err("--cdrom supplied more than once".into());
+                            }
+                        }
+                        "--cgsix-rom" => {
+                            if cgsix_rom.replace(path).is_some() {
+                                return Err("--cgsix-rom supplied more than once".into());
                             }
                         }
                         _ => unreachable!(),
@@ -558,6 +568,14 @@ fn run() -> Result<(), Box<dyn Error>> {
             if boot && keyboard {
                 machine.bus.devices_mut().expect("boot devices").keyboard =
                     Some(Keyboard::default());
+            }
+            if let Some(path) = cgsix_rom {
+                let rom = std::fs::read(&path)?;
+                let card =
+                    Cgsix::new(&rom).map_err(|error| format!("CG6 ROM {path}: {error:?}"))?;
+                machine
+                    .install_cgsix(card)
+                    .map_err(|error| format!("CG6 ROM {path}: {error}"))?;
             }
             for (id, kind, path) in [(3, MediaKind::Disk, disk), (6, MediaKind::Cdrom, cdrom)] {
                 if let Some(path) = path {

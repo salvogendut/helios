@@ -66,9 +66,11 @@ are honored. The default IDPROM remains MAC `08:00:20:c0:ff:ee`, hostid
 
 ## Device contract
 
-The card occupies SS-5 SBus slot 1, physical base `0x30000000`, with a 32 MiB
-aperture. OBP names it `/iommu/sbus/cgsix@1,0`. Offsets below are relative to
-that base.
+On the SS-5 the card occupies SBus slot 1, physical base `0x30000000`, with a
+32 MiB aperture; OBP names it `/iommu/sbus/cgsix@1,0`. On SS-20/Axil the same
+card is installed in slot 2 at physical `0xe_2000_0000` (`cgsix@2,0`). Helios
+selects the base from the machine layout; the register offsets below are
+relative to either base.
 
 | Offset | Implemented behavior |
 | --- | --- |

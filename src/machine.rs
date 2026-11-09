@@ -3,7 +3,7 @@
 
 use crate::bus::{BusError, MapError};
 use crate::cpu::{Cpu, CpuFault, FaultKind, Step};
-use crate::devices::{nvram::Nvram, sx::Sx};
+use crate::devices::{cgsix::Cgsix, nvram::Nvram, sx::Sx};
 use crate::dram::Ss5Dram;
 use crate::mmu::MmuConfig;
 use crate::system_bus::{Sun4mLayout, SystemBus};
@@ -253,6 +253,12 @@ impl Machine {
     /// Whole-second advancement avoids overflow even for u64::MAX seconds.
     pub fn advance_seconds(&mut self, seconds: u64) {
         self.bus.advance_seconds(seconds);
+    }
+
+    /// Attach an SBus CG6 (TurboGX) card at the profile's slot-2 aperture.
+    /// The caller supplies the board's original 32 KiB FCode ROM.
+    pub fn install_cgsix(&mut self, card: Cgsix) -> Result<(), MachineError> {
+        self.bus.install_cgsix(card).map_err(MachineError::Memory)
     }
 
     pub fn framebuffer_pixels(&self, output: &mut [u32]) -> bool {

@@ -26,6 +26,8 @@ use crate::dram::{Ss5Dram, APERTURE_BYTES};
 
 pub const IO_CONTROL_BASE: u64 = 0x1000_0000;
 pub const CGSIX_BASE: u64 = 0x3000_0000; // SS5 external SBus slot 1
+/// SS-20/Axil SBus slot 2, PA(35:28) = 0xE2 (Sun-4M System Architecture 3.2.3).
+pub const SS20_CGSIX_BASE: u64 = 0xe_2000_0000;
 const CGSIX_SIZE: u64 = 0x0200_0000;
 /// SS5 onboard Crystal CS4231 audio register aperture.
 pub const CS4231_BASE: u64 = 0x6c00_0000;
@@ -127,7 +129,7 @@ impl Sun4mLayout {
             io_control: 0xf_e000_0000,
             cs4231: None,
             ecc: Some(0xf_0000_0000),
-            cgsix: CGSIX_BASE,
+            cgsix: SS20_CGSIX_BASE,
             afx_presence: None,
             keyboard_serial: 0xf_f100_0000,
             serial: 0xf_f110_0000,

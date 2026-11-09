@@ -1,7 +1,9 @@
 use helios::bus::{Bus, BusErrorKind, MapError};
 use helios::devices::cgsix::{Cgsix, HEIGHT, VRAM_BYTES, WIDTH};
 use helios::devices::nvram::Nvram;
-use helios::system_bus::{SystemBus, CGSIX_BASE as BASE, SYSTEM_INTERRUPT_BASE};
+use helios::system_bus::{
+    Sun4mLayout, SystemBus, CGSIX_BASE as BASE, SS20_CGSIX_BASE, SYSTEM_INTERRUPT_BASE,
+};
 
 const VRAM: u64 = BASE + 0x800000;
 const FBC: u64 = BASE + 0x700000;
@@ -802,4 +804,14 @@ fn quadrilateral_fills_use_ideal_edges_in_nonoverlap_mode() {
             }
         }
     }
+}
+
+#[test]
+fn ss20_cgsix_card_uses_sbus_slot_two() {
+    let mut b = SystemBus::with_layout(Sun4mLayout::ss20());
+    let mut rom = vec![0xff; 32768];
+    rom[..8].copy_from_slice(&[0xfd, 3, 0x12, 0x34, 0, 0, 0x40, 0]);
+    b.install_cgsix(Cgsix::new(&rom).unwrap()).unwrap();
+    assert_eq!(SS20_CGSIX_BASE, 0xe_2000_0000);
+    assert_eq!(b.read32(SS20_CGSIX_BASE).unwrap(), 0xfd03_1234);
 }
