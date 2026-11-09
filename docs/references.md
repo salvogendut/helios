@@ -260,6 +260,22 @@ encoding; its configurable host geometry does not define Helios's raw target.
   modules, 64–512 MiB RAM and optional SX/VSIMM graphics. It is background, not
   a register-level source.
 
+- [NetBSD cgfourteen driver](https://github.com/NetBSD/src/blob/trunk/sys/arch/sparc/dev/cgfourteen.c)
+  and [register definitions](https://github.com/NetBSD/src/blob/trunk/sys/arch/sparc/dev/cgfourteenreg.h):
+  the SS-20's built-in SX/cgfourteen is an obio/mainbus device with control,
+  cursor, DAC and CLUT pages, not an SBus card. It requires a VSIMM; the
+  [cgfourteen(4) manual](https://github.com/NetBSD/src/blob/trunk/share/man/man4/man4.sparc/cgfourteen.4)
+  documents the 8/24-bit operation and cgthree emulation mode.
+- [NetBSD SX driver](https://github.com/NetBSD/src/blob/trunk/sys/arch/sparc/dev/sx.c)
+  and [SX register map](https://github.com/NetBSD/src/blob/trunk/sys/arch/sparc/dev/sxreg.h):
+  mainbus `SUNW,sx` registers at `0xf8000000`, page-bound defaults
+  `0xfc000000`/`0xffffffff`, instruction and register pages, and ASI `0x28`
+  rendering accesses above 4 GiB. These define the built-in SX placeholder.
+- [QEMU sun4m SS-20 hwdef](https://github.com/qemu/qemu/blob/master/hw/sparc/sun4m.c):
+  the comparison maps `sx_base=0xf80000000`, VSIMM register/Vram bases
+  `0x9c000000`/`0xfc000000`, `0x90000000`/`0xf0000000`, `0x94000000` and
+  `0x98000000`, but uses empty/unimplemented devices rather than an SX model.
+
 ## QEMU
 
 Additional hardware timing references:

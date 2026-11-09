@@ -182,6 +182,10 @@ impl CacheDiagnostics {
 
     pub(crate) fn write_doubleword(&mut self, address: u32, asi: u8, words: [u32; 2]) {
         match asi {
+            0x0c..=0x0e if self.reference => {
+                self.write(address, asi, Width::Word, words[1]);
+                self.write(address + 4, asi, Width::Word, words[0]);
+            }
             0x0c..=0x0e => {
                 self.write(address, asi, Width::Word, words[0]);
                 self.write(address + 4, asi, Width::Word, words[1]);

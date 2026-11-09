@@ -217,3 +217,24 @@ The SS-20-generated `local/ss20-ttya.nvram` is not accepted by Axil ROM 2.19:
 Axil reports `screen not found`, falls back to tty, then rejects the SS-20
 configuration checksum and resets to defaults. Axil needs its own prompt/setenv
 session; do not reuse the SS-20 NVRAM image for an Axil clean-prompt claim.
+
+## VSIMM/SX research (2026-11-09)
+
+The SS-20's built-in video is the SX/cgfourteen, not an SBus CGsix. It is an
+obio/mainbus device and requires a VSIMM in one of the wide DSIMM slots; with no
+VSIMM there is no built-in frame buffer. NetBSD is the useful register source:
+
+- cg14 control block: 0x10000 bytes at VSIMM register base; control at 0x0,
+  hardware cursor 0x1000, DAC 0x2000, XLUT 0x3000, CLUT1/2/3 at
+  0x4000/0x5000/0x6000, CLUT increment 0xf000. VRAM is a second register set
+  whose size is the VSIMM size (4 or 8 MiB).
+- VSIMM slots in QEMU: control/VRAM pairs 0x9c000000/0xfc000000 and
+  0x90000000/0xf0000000; further control bases 0x94000000/0x98000000.
+- SX mainbus registers at 0xf80000000, 0x1000 bytes; user register page at
+  +0x1000. SX_ID=0x28 (arch bits 1:0, chip revision 7:3), page bounds 0x08/0x0c
+  default 0xfc000000/0xffffffff, instruction queue 0x20, direct R0 0x100,
+  queued R0 0x300. Rendering memory ops use ASI 0x28 at physical
+  0x800000000+address.
+- QEMU's SS-20 creates TCX at 0xe20000000 and only empty SX/VSIMM slots; it is
+  not an SX reference. Helios still exposes SX/VSIMM bases as zero placeholders
+  for OBP enumeration; the frame buffer/rendering engine is not modeled.
