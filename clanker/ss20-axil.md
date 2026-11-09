@@ -238,3 +238,20 @@ VSIMM there is no built-in frame buffer. NetBSD is the useful register source:
 - QEMU's SS-20 creates TCX at 0xe20000000 and only empty SX/VSIMM slots; it is
   not an SX reference. Helios still exposes SX/VSIMM bases as zero placeholders
   for OBP enumeration; the frame buffer/rendering engine is not modeled.
+
+## VSIMM/SX implementation (2026-11-09)
+
+`src/devices/sx.rs` now implements a functional built-in SX/cg14 subset for the
+SS-20 and Axil profiles: the SX register block at `0xf8000000` (ID and page
+bounds), the VSIMM control block at `0x9c000000` (cursor/DAC/CLUT storage), the
+8/16/32-bit-addressable VRAM window at `0xfc000000`, and its SX-memory alias at
+`0x800000000`. `Machine::with_profile` installs it for non-SS5 profiles, and
+`Machine::framebuffer_pixels` exposes either CGsix or SX pixels to a frontend.
+
+The OBP now probes the VSIMM control register without faulting and no longer
+reports `screen not found` during the tested SS-20 boot. It still selects ttya
+and does not initialize the cg14 console: `mctl` remains 0 and the framebuffer
+only contains probe patterns, not a Sun logo or text. The 64 MiB VRAM window is
+a bring-up aperture so the OBP's size probe cannot hit an unmapped page; the
+modelled VSIMM is still functionally 8 MiB. SX rendering instructions, DBRI,
+CLUT/DAC indirect sequencing and the OBP cg14 console binding are not complete.

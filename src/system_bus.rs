@@ -19,6 +19,7 @@ use crate::devices::{
     scsi::ScsiBus,
     scsi_dma::ScsiDma,
     serial::Serial,
+    sx::Sx,
     timer::Timers,
 };
 use crate::dram::{Ss5Dram, APERTURE_BYTES};
@@ -400,6 +401,7 @@ pub struct SystemBus {
     prom_cycles: Option<u64>,
     prom_phase: u64,
     cgsix: Option<Cgsix>,
+    sx: Option<Sx>,
 }
 
 impl Default for SystemBus {
@@ -424,6 +426,7 @@ impl SystemBus {
             prom_cycles: None,
             prom_phase: 0,
             cgsix: None,
+            sx: None,
         }
     }
 
@@ -463,6 +466,23 @@ impl SystemBus {
     }
     pub fn cgsix(&self) -> Option<&Cgsix> {
         self.cgsix.as_ref()
+    }
+    pub fn install_sx(&mut self, card: Sx) -> Result<(), MapError> {
+        if self.sx.is_some() {
+            return Err(MapError::Overlap);
+        }
+        self.sx = Some(card);
+        Ok(())
+    }
+    pub fn sx(&self) -> Option<&Sx> {
+        self.sx.as_ref()
+    }
+    fn sx_at(&mut self, address: u64) -> Option<&mut Sx> {
+        if self.sx.as_ref().is_some_and(|card| card.contains(address)) {
+            self.sx.as_mut()
+        } else {
+            None
+        }
     }
     fn sync_cgsix_irq(&mut self) {
         if let (Some(devices), Some(card)) = (&mut self.devices, &self.cgsix) {
@@ -677,6 +697,9 @@ impl SystemBus {
     }
     fn reset_io(&mut self) {
         if let Some(card) = &mut self.cgsix {
+            card.reset();
+        }
+        if let Some(card) = &mut self.sx {
             card.reset();
         }
         self.cpu_user = false;
@@ -923,6 +946,13 @@ impl Bus for SystemBus {
     }
 
     fn read8(&mut self, address: u64) -> Result<u8, BusError> {
+        if let Some(card) = self.sx_at(address) {
+            return card
+                .read(address, 1)
+                .map(|v| v as u8)
+                .map_err(|kind| BusError { address, kind });
+        }
+
         let cgsix_base = self.layout.cgsix;
         if let Some(card) = self.cgsix_at(address) {
             return card
@@ -1004,6 +1034,12 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write8(&mut self, address: u64, value: u8) -> Result<(), BusError> {
+        if let Some(card) = self.sx_at(address) {
+            return card
+                .write(address, u32::from(value), 0xff)
+                .map_err(|kind| BusError { address, kind });
+        }
+
         if self.prom_writes_ignored(address) {
             return Ok(());
         }
@@ -1094,6 +1130,13 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read16(&mut self, address: u64) -> Result<u16, BusError> {
+        if let Some(card) = self.sx_at(address) {
+            return card
+                .read(address, 2)
+                .map(|v| v as u16)
+                .map_err(|kind| BusError { address, kind });
+        }
+
         let cgsix_base = self.layout.cgsix;
         if let Some(card) = self.cgsix_at(address) {
             return card
@@ -1139,6 +1182,12 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write16(&mut self, address: u64, value: u16) -> Result<(), BusError> {
+        if let Some(card) = self.sx_at(address) {
+            return card
+                .write(address, u32::from(value), 0xffff)
+                .map_err(|kind| BusError { address, kind });
+        }
+
         if self.prom_writes_ignored(address) {
             return Ok(());
         }
@@ -1191,6 +1240,12 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read32(&mut self, address: u64) -> Result<u32, BusError> {
+        if let Some(card) = self.sx_at(address) {
+            return card
+                .read(address, 4)
+                .map_err(|kind| BusError { address, kind });
+        }
+
         let cgsix_base = self.layout.cgsix;
         if let Some(card) = self.cgsix_at(address) {
             return card
@@ -1247,6 +1302,12 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError> {
+        if let Some(card) = self.sx_at(address) {
+            return card
+                .write(address, value, mask)
+                .map_err(|kind| BusError { address, kind });
+        }
+
         if self.prom_writes_ignored(address) {
             return Ok(());
         }
@@ -1354,6 +1415,22 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read_doubleword(&mut self, address: u64) -> Result<[u32; 2], BusError> {
+        if let Some(card) = self.sx_at(address) {
+            if address & 7 != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
+            return Ok([
+                card.read(address, 4)
+                    .map_err(|kind| BusError { address, kind })?,
+                card.read(address + 4, 4).map_err(|kind| BusError {
+                    address: address + 4,
+                    kind,
+                })?,
+            ]);
+        }
         let cgsix_base = self.layout.cgsix;
         if let Some(card) = self.cgsix_at(address) {
             let offset = address - cgsix_base;
@@ -1405,6 +1482,22 @@ impl Bus for SystemBus {
     fn write_doubleword(&mut self, address: u64, words: [u32; 2]) -> Result<(), BusError> {
         if self.prom_writes_ignored(address) {
             return Ok(());
+        }
+        if let Some(card) = self.sx_at(address) {
+            if address & 7 != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
+            card.write(address, words[0], u32::MAX)
+                .map_err(|kind| BusError { address, kind })?;
+            return card
+                .write(address + 4, words[1], u32::MAX)
+                .map_err(|kind| BusError {
+                    address: address + 4,
+                    kind,
+                });
         }
         let cgsix_base = self.layout.cgsix;
         if let Some(card) = self.cgsix_at(address) {

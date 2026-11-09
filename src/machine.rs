@@ -3,7 +3,7 @@
 
 use crate::bus::{BusError, MapError};
 use crate::cpu::{Cpu, CpuFault, FaultKind, Step};
-use crate::devices::nvram::Nvram;
+use crate::devices::{nvram::Nvram, sx::Sx};
 use crate::dram::Ss5Dram;
 use crate::mmu::MmuConfig;
 use crate::system_bus::{Sun4mLayout, SystemBus};
@@ -178,6 +178,13 @@ impl Machine {
         };
         machine.cpu.use_mmu_config(profile.mmu());
         machine.install_prom(prom, nvram)?;
+        if profile != MachineProfile::Ss5 {
+            machine
+                .bus
+                .install_sx(Sx::new())
+                .map_err(MachineError::Memory)?;
+            machine.reset();
+        }
         Ok(machine)
     }
 
@@ -242,6 +249,18 @@ impl Machine {
     /// Whole-second advancement avoids overflow even for u64::MAX seconds.
     pub fn advance_seconds(&mut self, seconds: u64) {
         self.bus.advance_seconds(seconds);
+    }
+
+    pub fn framebuffer_pixels(&self, output: &mut [u32]) -> bool {
+        if let Some(card) = self.bus.cgsix() {
+            card.pixels(output);
+            true
+        } else if let Some(card) = self.bus.sx() {
+            card.pixels(output);
+            true
+        } else {
+            false
+        }
     }
 
     pub fn mouse_motion(&mut self, dx: i32, dy: i32) {

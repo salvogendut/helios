@@ -16,4 +16,5 @@ pub mod reset;
 pub mod scsi;
 pub mod scsi_dma;
 pub mod serial;
+pub mod sx;
 pub mod timer;

@@ -56,6 +56,10 @@ modules, low slots first.
   `0xe_e000_1000..0xe_e000_1030` and `0xe_e001_0000..0xe_e001_0100`, and the
   BPP placeholder at `0xe_f480_0000..0xe_f480_0020` are decoded. The SX/VSIMM
   framebuffer, DBRI audio and BPP are not modeled.
+- The built-in SX/cg14 subset exposes the SX register block, VSIMM control
+  block, VRAM and the ASI `0x28` SX-memory alias. `Machine::framebuffer_pixels`
+  returns SX pixels when no CGsix is installed. SX rendering instructions and
+  the OBP graphical-console binding remain unimplemented.
 - The integrated ESP accepts the SS-20/Axil 32-bit register lane accesses and
   test-mode probe commands, while the SS-5 profile retains byte-only access and
   strict reserved-register behavior.
