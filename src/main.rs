@@ -1,6 +1,6 @@
 use helios::bus::Bus;
 use helios::cpu::{Step, PSR_ET, PSR_S};
-use helios::devices::{nvram::Nvram, scsi::MediaKind, serial::Channel};
+use helios::devices::{keyboard::Keyboard, nvram::Nvram, scsi::MediaKind, serial::Channel};
 use helios::machine::{
     demo_image, serial_demo_image, timer_demo_image, trap_demo_image, Machine, MachineProfile,
     CPU_CLOCK_HZ, DEFAULT_RAM_BYTES, TARGET,
@@ -24,7 +24,7 @@ Usage:
   helios run FILE [--load-address N] [--entry N] [--steps N] [--ram-mib N] [--trace]
   helios boot PROM [--machine ss5|ss20|axil320] [--steps N] [--ram-mib N] [--trace]
                    [--serial-in FILE] [--serial-port-a PORT] [--serial-port-b PORT]
-                   [--nvram FILE] [--nvram-out NEW_FILE]
+                   [--keyboard] [--nvram FILE] [--nvram-out NEW_FILE]
                    [--disk RAW_IMAGE | --disk-rw RAW_IMAGE] [--cdrom ISO_IMAGE]
                    [--net] [--net-gateway IP] [--net-client IP] [--net-mask IP]
                    [--net-dns IP] [--tftp-dir DIR]
@@ -44,6 +44,8 @@ SS-20 or the Axil 320 clone. SS-20/Axil use the high sun4m device map and a
 36-bit boot window but the same device models and 128 MiB default RAM.
 Its RAM must fit eight 8 MiB or 32 MiB DSIMMs; low slots receive larger modules first.
 boot and serial-demo send TTYA bytes to stdout and diagnostics to stderr.
+--keyboard attaches a Type 5 keyboard; with diag-switch? false this selects the
+abbreviated OBP startup path, letting an SS-20 boot reach ok without full POST.
 --serial-in supplies bytes as the guest enables and drains its receiver.
 --serial-port-a PORT and --serial-port-b PORT expose TTYA/TTYB as telnet
 consoles on 127.0.0.1; PORT 0 asks the host for a free port. Console output
@@ -406,6 +408,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             let mut net_mask = None;
             let mut net_dns = None;
             let mut tftp_dir = None;
+            let mut keyboard = false;
             let mut nvram_in = None;
             let mut nvram_out = None;
             let mut disk = None;
@@ -447,6 +450,10 @@ fn run() -> Result<(), Box<dyn Error>> {
                         }
                         _ => unreachable!(),
                     }
+                    continue;
+                }
+                if boot && option == "--keyboard" {
+                    keyboard = true;
                     continue;
                 }
                 if boot && option == "--machine" {
@@ -548,6 +555,10 @@ fn run() -> Result<(), Box<dyn Error>> {
                 machine.load_image(load, &bytes)?;
                 machine
             };
+            if boot && keyboard {
+                machine.bus.devices_mut().expect("boot devices").keyboard =
+                    Some(Keyboard::default());
+            }
             for (id, kind, path) in [(3, MediaKind::Disk, disk), (6, MediaKind::Cdrom, cdrom)] {
                 if let Some(path) = path {
                     let scsi = &mut machine.bus.devices_mut().expect("boot devices").scsi;

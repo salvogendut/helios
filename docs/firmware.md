@@ -898,12 +898,15 @@ The generated image is kept under ignored `local/ss20-ttya.nvram`. It boots to
 
 ```text
 ./target/release/helios boot local/firmware/ss10-20-v2.25r-rom \
-  --machine ss20 --nvram local/ss20-ttya.nvram --steps 300000000
+  --machine ss20 --keyboard --nvram local/ss20-ttya.nvram --steps 300000000
 ```
 
 SX, DBRI and BPP placeholder windows prevent the previous `Data Access Error`
-during SBus enumeration. POST still reports the MBus cache-tag failure
-(`Address = 0x4000_0000`), so this is an interactive console, not a clean POST.
+during SBus enumeration. With a keyboard present and `diag-switch? false`, OBP
+uses its abbreviated startup path and reaches serial `ok` without the full POST
+cache-tag error. A headless boot still runs full POST and reports the remaining
+MBus cache-tag diagnostic (`Address = 0x4000_0000`); this is not a full-POST
+pass claim.
 
 With `--machine axil320`, the Axil 320 ROM reaches the same NVRAM checksum
 reset path. The Axil profile deliberately does not install the SS-20 built-in

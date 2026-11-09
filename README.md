@@ -220,7 +220,7 @@ Select an SS-20 or Axil 320 profile with its high-address firmware:
 
 ```sh
 cargo run --release -- boot local/firmware/ss10-20-v2.25r-rom \
-  --machine ss20 --steps 50000000
+  --machine ss20 --keyboard --nvram local/ss20-ttya.nvram --steps 300000000
 cargo run --release -- boot local/firmware/axil320-2-19.bin \
   --machine axil320 --steps 50000000
 ```

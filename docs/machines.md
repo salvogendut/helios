@@ -13,7 +13,7 @@ SPARCstation 5.
 
 ```sh
 cargo run --release -- boot local/firmware/ss10-20-v2.25r-rom \
-  --machine ss20 --steps 50000000
+  --machine ss20 --keyboard --nvram local/ss20-ttya.nvram --steps 300000000
 cargo run --release -- boot local/firmware/axil320-2-19.bin \
   --machine axil320 --steps 50000000
 ```
@@ -56,6 +56,10 @@ modules, low slots first.
   `0xe_e000_1000..0xe_e000_1030` and `0xe_e001_0000..0xe_e001_0100`, and the
   BPP placeholder at `0xe_f480_0000..0xe_f480_0020` are decoded. The SX/VSIMM
   framebuffer, DBRI audio and BPP are not modeled.
+- `--keyboard` attaches a Type 5 keyboard. With an SS-20 NVRAM image whose
+  `diag-switch?` is false, OBP selects abbreviated startup and reaches serial
+  `ok` without running the full POST cache-tag diagnostic. Without a keyboard,
+  the headless profile still runs full POST and reports that diagnostic.
 - The built-in SX/cg14 subset is installed only for the SS-20. It exposes the
   SX register block, VSIMM control block, VRAM and the ASI `0x28` SX-memory
   alias. `Machine::framebuffer_pixels` returns SX pixels when no CGsix is

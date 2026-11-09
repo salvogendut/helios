@@ -262,3 +262,11 @@ The desktop frontend now accepts `--machine ss20`/`--machine axil320` and calls
 is installed. The OBP still opens `/obio/cgfourteen@2,0` unsuccessfully
 (`open-dev` returns 0), so the screen falls back to ttya; the UI therefore shows
 the SX VRAM state but not yet a firmware console.
+
+## Clean SS-20 startup via keyboard
+
+With `local/ss20-ttya.nvram` and a Type 5 keyboard attached, OBP 2.25R selects
+the keyboard-present abbreviated startup path: it prints the machine banner,
+initializes memory, and reaches serial `ok` without the full POST cache-tag
+error. The CLI exposes this as `--keyboard`. Headless boots without a keyboard
+still run full POST and stop at the remaining MBus cache-tag diagnostic.
