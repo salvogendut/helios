@@ -359,13 +359,13 @@ impl SystemBus {
         }
     }
     fn reset_io(&mut self) {
+        self.flush_device_time();
         if let Some(card) = &mut self.cgsix {
             card.reset();
         }
         self.cpu_user = false;
         self.prom_cycles = None;
         self.prom_phase = 0;
-        self.device_ns = 0;
         if let Some(devices) = &mut self.devices {
             devices.io_control.reset();
             devices.auxiliary.reset();
@@ -393,7 +393,7 @@ impl SystemBus {
     /// CPU-boundary path: coalesce device work to the 500 ns timer tick.
     pub(crate) fn advance_ns_fast(&mut self, ns: u64) {
         self.device_ns = self.device_ns.saturating_add(ns);
-        if self.device_ns < 500 {
+        if self.device_ns < 2000 {
             return;
         }
         let elapsed = std::mem::take(&mut self.device_ns);
@@ -408,6 +408,13 @@ impl SystemBus {
             devices.advance_ns(ns);
         }
         self.sync_cgsix_irq();
+    }
+
+    fn flush_device_time(&mut self) {
+        if self.device_ns != 0 {
+            let pending = std::mem::take(&mut self.device_ns);
+            self.advance_devices_ns(pending);
+        }
     }
     pub fn advance_seconds(&mut self, seconds: u64) {
         if self.device_ns != 0 {
@@ -641,6 +648,8 @@ impl Bus for SystemBus {
                 return result.map_err(|kind| BusError { address, kind });
             }
             if (NVRAM_BASE..NVRAM_BASE + NVRAM_SIZE as u64).contains(&address) {
+                self.flush_device_time();
+                let devices = self.devices.as_mut().expect("installed NVRAM");
                 return devices
                     .nvram
                     .read((address - NVRAM_BASE) as usize)
@@ -726,6 +735,8 @@ impl Bus for SystemBus {
                 return result.map_err(|kind| BusError { address, kind });
             }
             if (NVRAM_BASE..NVRAM_BASE + NVRAM_SIZE as u64).contains(&address) {
+                self.flush_device_time();
+                let devices = self.devices.as_mut().expect("installed NVRAM");
                 return devices
                     .nvram
                     .write((address - NVRAM_BASE) as usize, value)
@@ -842,6 +853,7 @@ impl Bus for SystemBus {
             });
         }
         if let Some((device, offset)) = self.word_device(address) {
+            self.flush_device_time();
             let devices = self.devices.as_mut().expect("decoded installed device");
             devices.sync_interrupts();
             let result = match device {
@@ -902,6 +914,7 @@ impl Bus for SystemBus {
             });
         }
         if let Some((device, offset)) = self.word_device(address) {
+            self.flush_device_time();
             if mask != u32::MAX {
                 return Err(BusError {
                     address,

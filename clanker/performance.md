@@ -32,16 +32,17 @@ baseline measured in the same session.
 - Timer advancement is coalesced to 500 ns ticks, the idle mouse skips phase
   work, and the duplicate `sync_interrupts` in `interrupt_levels` is removed.
   DMA paths synchronize interrupt state after changing it.
-- CPU-boundary device time is accumulated to the 500 ns tick; direct
-  `advance_ns` calls used by device tests remain exact.
+- CPU-boundary device time is accumulated to 2 us (four timer ticks); direct
+  `advance_ns` calls used by device tests remain exact, and observable NVRAM,
+  timer and word-device reads flush pending device time first.
 - `Machine::step` services up to sixteen pending ESP/DMA bytes per CPU
   boundary; `service_scsi` keeps its one-byte contract for direct callers.
   Address/count, arbitration, faults and terminal count still advance one byte
   at a time.
 - Synthetic machine step with MMU improved from 16.8 to 21.1 MIPS; machine
   bypass improved to 28.4 MIPS.
-- The same Solaris 2.6 boot harness reached `The system is ready.` in 96.1
-  seconds / 1.151B steps, versus 112.1 seconds before the device-time/SCSI
+- The same Solaris 2.6 boot harness reached `The system is ready.` in 92.4
+  seconds / 1.145B steps, versus 112.1 seconds before the device-time/SCSI
   pass, 150.4 seconds after the MMU pass, and 165.5 seconds on the main
   baseline. The guest boot path changed as DMA/interrupt/device timing
   accelerated; it still completed normally.
