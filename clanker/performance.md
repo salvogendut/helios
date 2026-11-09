@@ -5,7 +5,7 @@ on `ss20-axil320`). `STEP_NS` is unchanged.
 
 ## MMU fast translation cache
 
-`Srmmu` now keeps separate 64-entry direct-mapped instruction and data
+`Srmmu` now keeps separate 256-entry direct-mapped instruction and data
 translation caches, plus cached TLB diagnostic validation. Each cache entry
 stores a full-page tag (virtual page, context, supervisor), the TLB slot, and
 the TLB generation. Insertions, flushes and diagnostic TLB writes bump the
@@ -24,9 +24,28 @@ rounds) measured:
 | Machine + CGsix | 12.65 MIPS | 15.1 MIPS |
 
 The same-host Solaris 2.6 boot harness reached `The system is ready.` in
-150.4 host seconds after this change, versus 165.5 seconds for the main
-baseline measured in the same session (the earlier 146.4-second result was
-taken before significant host variance). The full test suite, including MMU
-permission, flush, PTE-walk, fault atomicity and no-fault tests, passes. The next core targets are device
-deadline/IRQ scheduling and decoded-instruction caching; frontend batching and
-repaint reuse belong to Heliacal.
+150.4 host seconds after the MMU cache, versus 165.5 seconds for the main
+baseline measured in the same session.
+
+## Device scheduling and SCSI batching
+
+- Timer advancement is coalesced to 500 ns ticks, the idle mouse skips phase
+  work, and the duplicate `sync_interrupts` in `interrupt_levels` is removed.
+  DMA paths synchronize interrupt state after changing it.
+- CPU-boundary device time is accumulated to the 500 ns tick; direct
+  `advance_ns` calls used by device tests remain exact.
+- `Machine::step` services up to sixteen pending ESP/DMA bytes per CPU
+  boundary; `service_scsi` keeps its one-byte contract for direct callers.
+  Address/count, arbitration, faults and terminal count still advance one byte
+  at a time.
+- Synthetic machine step with MMU improved from 16.8 to 21.1 MIPS; machine
+  bypass improved to 28.4 MIPS.
+- The same Solaris 2.6 boot harness reached `The system is ready.` in 96.1
+  seconds / 1.151B steps, versus 112.1 seconds before the device-time/SCSI
+  pass, 150.4 seconds after the MMU pass, and 165.5 seconds on the main
+  baseline. The guest boot path changed as DMA/interrupt/device timing
+  accelerated; it still completed normally.
+
+The full test suite, including MMU permission, flush, PTE-walk, fault
+atomicity and no-fault tests, passes. The next core target is a decoded
+instruction cache; frontend batching and repaint reuse live in Heliacal.
