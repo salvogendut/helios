@@ -164,6 +164,46 @@ impl Entry {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FastTlbEntry {
+    generation: u64,
+    tag: u64,
+    index: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FastTlb {
+    entries: [FastTlbEntry; TLB_ENTRIES],
+}
+
+impl Default for FastTlb {
+    fn default() -> Self {
+        Self {
+            entries: [FastTlbEntry::default(); TLB_ENTRIES],
+        }
+    }
+}
+
+impl FastTlb {
+    fn get(&self, address: u32, context: u8, supervisor: bool, generation: u64) -> Option<usize> {
+        let slot = &self.entries[((address >> 12) as usize) & (TLB_ENTRIES - 1)];
+        (slot.generation == generation && slot.tag == Self::tag(address, context, supervisor))
+            .then_some(usize::from(slot.index))
+    }
+
+    fn put(&mut self, address: u32, context: u8, supervisor: bool, generation: u64, index: usize) {
+        self.entries[((address >> 12) as usize) & (TLB_ENTRIES - 1)] = FastTlbEntry {
+            generation,
+            tag: Self::tag(address, context, supervisor),
+            index: index as u8,
+        };
+    }
+
+    fn tag(address: u32, context: u8, supervisor: bool) -> u64 {
+        u64::from(address & !0xfff) | (u64::from(context) << 32) | (u64::from(supervisor) << 40)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Srmmu {
     control: u32,
@@ -172,6 +212,10 @@ pub struct Srmmu {
     fault_status: u32,
     fault_address: u32,
     tlb: [Entry; TLB_ENTRIES],
+    tlb_generation: u64,
+    tlb_diagnostic: Option<(u32, u32)>,
+    fast_instruction: FastTlb,
+    fast_data: FastTlb,
     trcr: u32,
     caches: CacheDiagnostics,
 }
@@ -186,6 +230,10 @@ impl Default for Srmmu {
             fault_status: 0,
             fault_address: 0,
             tlb: [Entry::default(); TLB_ENTRIES],
+            tlb_generation: 1,
+            tlb_diagnostic: None,
+            fast_instruction: FastTlb::default(),
+            fast_data: FastTlb::default(),
             // Functional reset choice: all 64 entries initially replaceable.
             trcr: 63 << 7,
             caches: CacheDiagnostics::default(),
@@ -267,9 +315,11 @@ impl Srmmu {
         for entry in &mut self.tlb {
             entry.upper &= !8;
         }
+        self.refresh_tlb_diagnostic();
     }
 
     fn sync_io_flushes(&mut self, bus: &mut impl Bus) {
+        let mut changed = false;
         while let Some(flush) = bus.take_io_tlb_flush() {
             for entry in &mut self.tlb {
                 let matches = match flush {
@@ -278,12 +328,16 @@ impl Srmmu {
                 };
                 if entry.lower & 4 != 0 && matches {
                     entry.upper &= !8;
+                    changed = true;
                 }
             }
         }
+        if changed {
+            self.refresh_tlb_diagnostic();
+        }
     }
 
-    fn insert(&mut self, entry: Entry) {
+    fn insert(&mut self, entry: Entry) -> usize {
         let wrap = ((self.trcr >> 7) & 63) as usize;
         let limit = if self.trcr & (1 << 13) != 0 {
             wrap.min(47)
@@ -305,6 +359,8 @@ impl Srmmu {
         if self.trcr & (1 << 6) == 0 {
             self.trcr = (self.trcr & !63) | ((counter + 1) % (limit + 1)) as u32;
         }
+        self.refresh_tlb_diagnostic();
+        index
     }
 
     fn diagnostic_read(&self, address: u32) -> Result<u32, MemoryError> {
@@ -336,19 +392,23 @@ impl Srmmu {
         // Unsupported active types are checked at lookup, not on diagnostic writes.
         entry.pte_address = None;
         *slot = entry;
+        self.refresh_tlb_diagnostic();
         Ok(())
     }
 
-    fn validate_tlb_lookup(&self) -> Result<(), MemoryError> {
-        for (index, entry) in self.tlb.iter().enumerate() {
-            if entry.upper & 8 != 0 && (entry.lower & 2 != 0 || entry.upper & 7 == 2) {
-                return Err(MemoryError::UnsupportedTlbDiagnostic {
-                    address: 0x300 | (index as u32 * 4),
-                    value: entry.upper,
-                });
-            }
+    fn refresh_tlb_diagnostic(&mut self) {
+        self.tlb_generation = self.tlb_generation.wrapping_add(1);
+        self.tlb_diagnostic = self.tlb.iter().enumerate().find_map(|(index, entry)| {
+            (entry.upper & 8 != 0 && (entry.lower & 2 != 0 || entry.upper & 7 == 2))
+                .then_some((0x300 | (index as u32 * 4), entry.upper))
+        });
+    }
+
+    fn check_tlb_diagnostic(&self) -> Result<(), MemoryError> {
+        match self.tlb_diagnostic {
+            Some((address, value)) => Err(MemoryError::UnsupportedTlbDiagnostic { address, value }),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     fn record(&mut self, fault: MmuFault) {
@@ -813,11 +873,29 @@ impl Srmmu {
                 cacheable: false,
             });
         }
-        self.validate_tlb_lookup()?;
+        self.check_tlb_diagnostic()?;
+        let context = self.context;
+        let supervisor = access.supervisor();
+        let cached = if access.instruction() {
+            self.fast_instruction
+                .get(access.address, context, supervisor, self.tlb_generation)
+        } else {
+            self.fast_data
+                .get(access.address, context, supervisor, self.tlb_generation)
+        };
+        if let Some(index) = cached {
+            let mut entry = self.tlb[index];
+            if entry.matches(access.address, context, supervisor) {
+                Self::permission(access, entry)?;
+                self.touch(bus, access, &mut entry)?;
+                self.tlb[index] = entry;
+                return Ok(Self::translation(access, entry));
+            }
+        }
         let hit = self
             .tlb
             .iter()
-            .position(|entry| entry.matches(access.address, self.context, access.supervisor()));
+            .position(|entry| entry.matches(access.address, context, supervisor));
         let mut entry = if let Some(index) = hit {
             self.tlb[index]
         } else {
@@ -825,16 +903,35 @@ impl Srmmu {
         };
         Self::permission(access, entry)?;
         self.touch(bus, access, &mut entry)?;
-        if let Some(index) = hit {
+        let index = if let Some(index) = hit {
             self.tlb[index] = entry;
+            index
         } else {
-            self.insert(entry);
+            self.insert(entry)
+        };
+        self.cache_translation(access, index);
+        Ok(Self::translation(access, entry))
+    }
+
+    fn cache_translation(&mut self, access: Access, index: usize) {
+        let context = self.context;
+        let supervisor = access.supervisor();
+        let generation = self.tlb_generation;
+        if access.instruction() {
+            self.fast_instruction
+                .put(access.address, context, supervisor, generation, index);
+        } else {
+            self.fast_data
+                .put(access.address, context, supervisor, generation, index);
         }
-        Ok(Translation {
+    }
+
+    fn translation(access: Access, entry: Entry) -> Translation {
+        Translation {
             physical: ((u64::from(entry.pte & 0x07ff_ff00) << 4) & !u64::from(entry.offset_mask))
                 | u64::from(access.address & entry.offset_mask),
             cacheable: entry.pte & 0x80 != 0,
-        })
+        }
     }
 
     fn permission(access: Access, entry: Entry) -> Result<(), MemoryError> {
@@ -993,7 +1090,7 @@ impl Srmmu {
             write: false,
         };
         if kind == 4 {
-            self.validate_tlb_lookup()?;
+            self.check_tlb_diagnostic()?;
             if let Some(entry) = self
                 .tlb
                 .iter()
