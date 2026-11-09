@@ -10,7 +10,10 @@ The Ethernet engine uses these transfers; SCSI DMA and burst timing remain pendi
 The SS-20/Axil profiles map the standalone sun4m IOMMU at `0xfe0000000`
 instead, reporting implementation 1, version 3 (`0x13000000`) and exposing the
 Arbiter Enable Register at `+0x1008`; the register subset, translation and DMA
-rules are otherwise shared. See [machine profiles](machines.md).
+rules are otherwise shared. AER bits 16:20 enable SBus slots 0:3 and the
+onboard-F slot; masters 4 and 5 use the onboard-F bit. The original Axil OBP
+uses this register instead of the SS-5 MID/arbitration bits at `+0x2000`.
+See [machine profiles](machines.md).
 
 The primary source is the microSPARC-II User's Manual revision 1.1, sections
 5.2.1–5.2.5, 5.6.6, 5.7.1–5.7.4, 5.7.7, 5.7.10, 5.8, 5.10, 9.1/9.4 and
@@ -44,7 +47,10 @@ RANGE selects a window of `16 MiB << RANGE` ending at `0xffffffff`. All address
 bits above that window must be one, even on a TLB hit. An IOPTE is a big-endian
 word in a single-level table, with PPN at bits 26:8, writable at bit 2 and valid
 at bit 1. Other bits are ignored. Pages are 4 KiB; physical addresses are 31 bits.
-There are no CPU referenced/modified updates to IOPTEs.
+There are no CPU referenced/modified updates to IOPTEs. I/O translation masks
+PPN bits 26:8 independently of the reference-MMU CPU PTE mask, whose bits 31:28
+are CPU type/access state and would otherwise make a valid IOPTE look like an
+out-of-DRAM physical address.
 
 The table has `window_bytes / 1024` bytes. Its address concatenates the high
 IBAR physical-base bits and the DVMA page index times four: base bits within

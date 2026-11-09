@@ -70,6 +70,9 @@ impl MmuConfig {
         }
     }
 }
+/// IOPTE physical page bits are 26:8. The reference-MMU config's PTE mask also
+/// covers CPU PTE bits 31:28, which translate_io sets only for TLB diagnostics.
+const IOPTE_PHYSICAL_MASK: u32 = 0x07ff_ff00;
 const REFERENCED: u32 = 1 << 5;
 const MODIFIED: u32 = 1 << 6;
 const TLB_ENTRIES: usize = 64;
@@ -1428,10 +1431,7 @@ impl Srmmu {
             self.insert(entry);
         }
         // IOPTEs have neither referenced nor modified bits: never write them back.
-        Ok(
-            (u64::from(entry.pte & self.config.pte_physical_mask) << 4)
-                | u64::from(address & 0xfff),
-        )
+        Ok((u64::from(entry.pte & IOPTE_PHYSICAL_MASK) << 4) | u64::from(address & 0xfff))
     }
 
     fn translate(

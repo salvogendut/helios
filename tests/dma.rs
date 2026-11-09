@@ -362,3 +362,15 @@ fn flush_ports_are_write_only_and_wrong_widths_do_not_enqueue_work() {
         assert_eq!(m.bus.take_io_tlb_flush(), None);
     }
 }
+
+#[test]
+fn ss20_iommu_uses_iopte_physical_bits_not_cpu_pte_type_bits() {
+    let io = helios::machine::MachineProfile::Ss20.layout().io_control;
+    let mut m = Machine::ss20(16 * 1024 * 1024, &0x0100_0000u32.to_be_bytes()).unwrap();
+    m.bus.write32(io, 1).unwrap();
+    m.bus.write32(io + 4, 0x1000).unwrap(); // 16 KiB table at PA 0x10000
+    m.bus.write32(io + 0x1008, 1 << 20).unwrap(); // onboard SBus master 5
+    m.bus.write32(0x10000, 0x806).unwrap(); // ff000000 -> PA 0x8000
+    m.bus.write32(0x8000, 0x1234_5678).unwrap();
+    assert_eq!(m.dma_read(5, 0xff00_0000, Width::Word), Ok(0x1234_5678));
+}

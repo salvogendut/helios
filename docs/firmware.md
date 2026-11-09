@@ -926,6 +926,16 @@ created from the Axil OBP's graphical console and now boots to a clean serial
   --nvram local/axil-ttya.nvram --steps 300000000
 ```
 
+With a disk attached, OBP's `probe-scsi-all` now lists it:
+
+```text
+ok probe-scsi-all
+/iommu@f,e0000000/sbus@f,e0001000/espdma@f,400000/esp@f,800000
+Target 3
+  Unit 0   Disk     HELIOS  SCSI DISK       0001
+ok
+```
+
 The remaining work is the `/obio/zs@0,0` device-tree/console path, a valid
 SS-20 NVRAM image with a serial console, and then the SuperSPARC-II I/D-cache
 tag diagnostic clear/half semantics; see [machine profiles](machines.md). No

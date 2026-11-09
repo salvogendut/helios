@@ -261,6 +261,12 @@ impl Machine {
         self.bus.install_cgsix(card).map_err(MachineError::Memory)
     }
 
+    /// Remove the built-in SX/VSIMM device. Useful for an SS-20 configuration
+    /// without a VSIMM, leaving an optional SBus CG6 as the display.
+    pub fn remove_sx(&mut self) -> Option<Sx> {
+        self.bus.remove_sx()
+    }
+
     pub fn framebuffer_pixels(&self, output: &mut [u32]) -> bool {
         if let Some(card) = self.bus.cgsix() {
             card.pixels(output);

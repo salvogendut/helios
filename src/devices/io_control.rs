@@ -191,7 +191,16 @@ impl IoControl {
         if master >= 6 {
             return Err(DmaError::Unsupported("SBus master index must be 0..5"));
         }
-        if self.arbitration & (1 << (16 + master)) == 0 {
+        let granted = if self.version == 0x1300_0000 {
+            // sun4m standalone IOMMU: the Arbiter Enable Register at +0x1008
+            // has SBus slot bits 16:20; slots 4/5 share the onboard-F bit.
+            let bit = if master < 4 { 16 + master } else { 20 };
+            self.arbiter_enable & (1 << bit) != 0
+        } else {
+            // microSPARC-II IOMMU: six SBAE bits in the MID/arbitration register.
+            self.arbitration & (1 << (16 + master)) != 0
+        };
+        if !granted {
             return Err(DmaError::NotGranted { master });
         }
         let slot = self.slots[usize::from(master.min(4))];

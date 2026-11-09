@@ -485,6 +485,10 @@ impl SystemBus {
         self.sx = Some(card);
         Ok(())
     }
+    /// Remove an SX/VSIMM card. An SS-20 without a VSIMM has no cg14 device.
+    pub fn remove_sx(&mut self) -> Option<Sx> {
+        self.sx.take()
+    }
     pub fn sx(&self) -> Option<&Sx> {
         self.sx.as_ref()
     }

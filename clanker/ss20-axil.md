@@ -293,3 +293,14 @@ CG6 and keyboard reaches a clean serial `ok` in about 126M steps, with no NVRAM
 checksum reset and no POST cache-tag error. The NVRAM image is generated state,
 kept under ignored `local/`, SHA-256
 `e9e07db1974cb11c1c62d3e02c31609d232cea5b04b6f294cedfe555a73367be`.
+
+## Axil/SS-20 SCSI discovery
+
+`probe-scsi-all` initially stopped after printing the ESP path for the Axil.
+The standalone sun4m IOMMU stored the OBP's `+0x1008` Arbiter Enable Register
+but DMA arbitration still consulted the SS-5 `+0x2000` bits, so selection was
+denied. Enabling the onboard-F bit for masters 4/5 exposed a second bug:
+I/O PTE physical bits 26:8 were masked with the reference-MMU CPU `0xffff_ff00`
+mask, retaining the synthetic `0xe000_0000` type bits. `translate_io` now uses
+the IOPTE mask directly. An attached ID 3 disk is listed by Axil OBP
+`probe-scsi-all` as `HELIOS SCSI DISK 0001`.

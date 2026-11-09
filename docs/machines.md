@@ -101,4 +101,8 @@ Axil custom-controller model. CG6/TurboGX cards can be attached through
 `--cgsix-rom`; SS-20/Axil place them in SBus slot 2 at physical
 `0xe_2000_0000`, matching the Sun-4M slot map. The Axil 320 uses a CG6 as its
 usual framebuffer; Helios does not require the SS-5 AFX presence byte for it.
-No machine profile other than the SS-5 has an OS compatibility claim.
+Axil/SS-20 SCSI discovery now works through the standalone IOMMU: OBP
+`probe-scsi-all` lists an attached ID 3 disk. The key fix is honoring the
+sun4m Arbiter Enable Register at `+0x1008` and masking IOPTE PPN bits 26:8
+instead of the wider reference-MMU CPU PTE mask. No machine profile other than
+the SS-5 has an OS compatibility claim.
