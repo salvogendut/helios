@@ -1,0 +1,59 @@
+ok boot disk -v
+Boot device: /iommu/sbus/espdma@5,8400000/esp@5,8800000/sd@3,0  File and args: -v
+|Size: /-\|243560+/-\|/-\|176918+/-\|/41926 Bytes
+-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/SunOS Release 5.6 Version Generic_105181-05 [UNIX(R) System V Release 4.0]
+Copyright (c) 1983-1997, Sun Microsystems, Inc.
+-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\vac: enabled in write through mode
+cpu0: FMI,MB86904 (mid 0 impl 0x0 ver 0x4 clock 10 MHz)
+mem = 131072K (0x8000000)
+avail mem = 127197184
+Ethernet address = 8:0:20:c0:ff:ee
+root nexus = SUNW,SPARCstation-5
+iommu0 at root: obio 0x10000000
+sbus0 at iommu0: obio 0x10001000
+espdma0 at sbus0: SBus slot 5 0x8400000
+esp0:	esp-options=0x46
+esp0 at espdma0: SBus slot 5 0x8800000 sparc ipl 4
+esp0 is /iommu@0,10000000/sbus@0,10001000/espdma@5,8400000/esp@5,8800000
+sd3 at esp0: target 3 lun 0
+sd3 is /iommu@0,10000000/sbus@0,10001000/espdma@5,8400000/esp@5,8800000/sd@3,0
+	<HELIOS-SCSIDISK-0001 cyl 4094 alt 2 hd 16 sec 64>
+WARNING: Last shutdown is later than time on time-of-day chip; check date.
+root on /iommu@0,10000000/sbus@0,10001000/espdma@5,8400000/esp@5,8800000/sd@3,0:a fstype ufs
+obio0 at root
+zs0 at obio0: obio 0x100000 sparc ipl 12
+zs0 is /obio/zs@0,100000
+zs1 at obio0: obio 0x0 sparc ipl 12
+zs1 is /obio/zs@0,0
+Hostname: helios
+dump on /dev/dsk/c0t3d0s1 size 151028K
+The / file system (/dev/rdsk/c0t3d0s0) is being checked.
+/dev/rdsk/c0t3d0s0: INCORRECT BLOCK COUNT I=23132 (2 should be 0) (CORRECTED)
+/dev/rdsk/c0t3d0s0: LINK COUNT FILE I=15518  OWNER=root MODE=100666
+/dev/rdsk/c0t3d0s0: SIZE=0 MTIME=Jan  1 01:03 2000  COUNT 2 SHOULD BE 1 (ADJUSTED)
+/dev/rdsk/c0t3d0s0: UNREF FILE  I=15551  OWNER=root MODE=100600
+/dev/rdsk/c0t3d0s0: SIZE=0 MTIME=Jan  1 01:03 2000  (CLEARED)
+/dev/rdsk/c0t3d0s0: FREE BLK COUNT(S) WRONG IN SUPERBLK (SALVAGED)
+/dev/rdsk/c0t3d0s0: 2163 files, 22559 used, 57984 free 
+/dev/rdsk/c0t3d0s0: (192 frags, 7224 blocks,  0.2% fragmentation)
+The /usr file system (/dev/rdsk/c0t3d0s6) is being checked.
+/dev/rdsk/c0t3d0s6: 8870 files, 152500 used, 80427 free 
+/dev/rdsk/c0t3d0s6: (907 frags, 9940 blocks,  0.3% fragmentation)
+The system is coming up.  Please wait.
+checking ufs filesystems
+/dev/rdsk/c0t3d0s7: is stable.
+in.rdisc: No interfaces up
+starting routing daemon.
+starting rpc services: rpcbind keyserv done.
+Setting default interface for multicast: add net 224.0.0.0: gateway helios
+syslog service starting.
+Print services started.
+pseudo-device: pm0
+pm0 is /pseudo/pm@0
+cgsix0 at sbus0: SBus slot 1 0x0 SBus level 5 sparc ipl 9
+cgsix0 is /iommu@0,10000000/sbus@0,10001000/cgsix@1,0
+cgsix0: screen 1152x900, single buffered, 1M mappable, rev 11
+volume management starting.
+pseudo-device: vol0
+vol0 is /pseudo/vol@0
+The system is ready.

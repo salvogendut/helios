@@ -15,6 +15,7 @@ const PHYSICAL_MASK: u64 = 0x7fff_ffff;
 const REFERENCED: u32 = 1 << 5;
 const MODIFIED: u32 = 1 << 6;
 const TLB_ENTRIES: usize = 64;
+const FAST_TLB_ENTRIES: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Width {
@@ -173,20 +174,20 @@ struct FastTlbEntry {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FastTlb {
-    entries: [FastTlbEntry; TLB_ENTRIES],
+    entries: [FastTlbEntry; FAST_TLB_ENTRIES],
 }
 
 impl Default for FastTlb {
     fn default() -> Self {
         Self {
-            entries: [FastTlbEntry::default(); TLB_ENTRIES],
+            entries: [FastTlbEntry::default(); FAST_TLB_ENTRIES],
         }
     }
 }
 
 impl FastTlb {
     fn get(&self, address: u32, context: u8, supervisor: bool, generation: u64) -> Option<usize> {
-        let slot = &self.entries[((address >> 12) as usize) & (TLB_ENTRIES - 1)];
+        let slot = &self.entries[((address >> 12) as usize) & (FAST_TLB_ENTRIES - 1)];
         (slot.generation == generation && slot.tag == Self::tag(address, context, supervisor))
             .then_some(usize::from(slot.index))
     }
@@ -359,7 +360,13 @@ impl Srmmu {
         if self.trcr & (1 << 6) == 0 {
             self.trcr = (self.trcr & !63) | ((counter + 1) % (limit + 1)) as u32;
         }
-        self.refresh_tlb_diagnostic();
+        self.tlb_generation = self.tlb_generation.wrapping_add(1);
+        let diagnostic = entry.upper & 8 != 0 && (entry.lower & 2 != 0 || entry.upper & 7 == 2);
+        if diagnostic {
+            self.tlb_diagnostic = Some((0x300 | (index as u32 * 4), entry.upper));
+        } else if self.tlb_diagnostic.is_some() {
+            self.tlb_diagnostic = self.find_tlb_diagnostic();
+        }
         index
     }
 
@@ -396,12 +403,16 @@ impl Srmmu {
         Ok(())
     }
 
-    fn refresh_tlb_diagnostic(&mut self) {
-        self.tlb_generation = self.tlb_generation.wrapping_add(1);
-        self.tlb_diagnostic = self.tlb.iter().enumerate().find_map(|(index, entry)| {
+    fn find_tlb_diagnostic(&self) -> Option<(u32, u32)> {
+        self.tlb.iter().enumerate().find_map(|(index, entry)| {
             (entry.upper & 8 != 0 && (entry.lower & 2 != 0 || entry.upper & 7 == 2))
                 .then_some((0x300 | (index as u32 * 4), entry.upper))
-        });
+        })
+    }
+
+    fn refresh_tlb_diagnostic(&mut self) {
+        self.tlb_generation = self.tlb_generation.wrapping_add(1);
+        self.tlb_diagnostic = self.find_tlb_diagnostic();
     }
 
     fn check_tlb_diagnostic(&self) -> Result<(), MemoryError> {
