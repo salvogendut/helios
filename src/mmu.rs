@@ -1096,20 +1096,21 @@ impl Srmmu {
             0x01c0_0010 => self.mxcc_data[2] = value,
             0x01c0_0018 => self.mxcc_data[3] = value,
             0x01c0_0100 => {
-                self.mxcc_regs[0] = value;
-                // The source register loads a 32-byte stream from the low
-                // 32-bit physical address. QEMU models the same four loads.
-                let source = value & 0xffff_ffff;
+                // Sun-4M B.III.5.4.1.1: RDY is read-only bit 63, C is bit
+                // 36, and PA[35:5] selects the 32-byte block.
+                self.mxcc_regs[0] = value & 0x0000_001f_ffff_ffe0;
+                let source = value & 0x0000_000f_ffff_ffe0;
                 for (index, word) in self.mxcc_data.iter_mut().enumerate() {
                     let pair = bus
                         .read_doubleword(source + 8 * index as u64)
                         .map_err(MemoryError::Bus)?;
                     *word = (u64::from(pair[0]) << 32) | u64::from(pair[1]);
                 }
+                self.mxcc_regs[0] |= 1 << 63;
             }
             0x01c0_0200 => {
-                self.mxcc_regs[1] = value;
-                let destination = value & 0xffff_ffff;
+                self.mxcc_regs[1] = value & 0x0000_001f_ffff_ffe0;
+                let destination = value & 0x0000_000f_ffff_ffe0;
                 for (index, word) in self.mxcc_data.iter().enumerate() {
                     bus.write_doubleword(
                         destination + 8 * index as u64,
@@ -1117,6 +1118,7 @@ impl Srmmu {
                     )
                     .map_err(MemoryError::Bus)?;
                 }
+                self.mxcc_regs[1] |= 1 << 63;
             }
             0x01c0_0a00 => self.mxcc_regs[3] = value,
             0x01c0_0c00 => self.mxcc_regs[5] = value,
@@ -1803,32 +1805,6 @@ impl Srmmu {
             asi: 3,
             write: false,
         };
-        if self.config.reference_mmu && kind == 1 {
-            let context_address = self.root();
-            if let Ok(context_word) = bus.read32(context_address) {
-                if context_word & 3 == 1 {
-                    let l1_base = self.next_table(context_word, access.address, 0);
-                    let entry_address = l1_base + u64::from(((access.address >> 18) & 0x3f) * 4);
-                    if let Ok(word) = bus.read32(entry_address) {
-                        if matches!(word & 3, 2 | 3) {
-                            let flags = self
-                                .tlb
-                                .iter()
-                                .filter(|entry| {
-                                    entry.matches(
-                                        access.address,
-                                        self.context,
-                                        true,
-                                        self.config.context_mask,
-                                    )
-                                })
-                                .fold(0, |flags, entry| flags | (entry.pte & 0x60));
-                            return Ok(word | flags);
-                        }
-                    }
-                }
-            }
-        }
         if kind == 4 {
             self.check_tlb_diagnostic()?;
             if let Some(entry) = self.tlb.iter().find(|entry| {

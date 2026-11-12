@@ -937,7 +937,8 @@ ok
 ```
 
 The serial `ok` path is usable, and SS-20's native CG14 console now opens with
-the 8 MiB VSIMM model. Solaris reaches its banner but still panics in
-`kmem_getpages`; the first panic needs reference-MMU/MXCC diagnosis. No complete
-SuperSPARC CPU/MBus, SX acceleration, DBRI or BPP claim is made; see
+the 8 MiB VSIMM model. Solaris reaches its banner; the reference segment-probe
+and MXCC completion fixes move it past `kmem_getpages` to a new alignment
+panic in `page_add()` (`pc=f0076508`). Full Solaris boot remains unresolved.
+No complete SuperSPARC CPU/MBus, SX acceleration, DBRI or BPP claim is made; see
 [machine profiles](machines.md).

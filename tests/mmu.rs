@@ -499,3 +499,76 @@ fn reference_mmu_contexts_are_not_aliased_to_eight_bits() {
     write_reg(&mut mmu, &mut bus, 2, 0x100);
     assert_eq!(mmu.load(&mut bus, 0, 11, Width::Word).unwrap(), 0x2222_2222);
 }
+
+#[test]
+fn reference_segment_probe_follows_descriptors_at_region_table_boundary() {
+    use helios::mmu::MmuConfig;
+    let mut bus = MemoryBus::default();
+    bus.map_ram(0, 0x6000).unwrap();
+    // VA f5940000: L1 index f5, L2 index 25, L3 index 00.
+    bus.write32(0x1000, 0x201).unwrap();
+    bus.write32(0x23d4, 0x301).unwrap();
+    bus.write32(0x3094, 0x401).unwrap();
+    bus.write32(0x4000, 0x007b_789e).unwrap();
+    // Past the end of the 1 KiB L1 table: not a descriptor in this walk.
+    bus.write32(0x2468, 0x02cd_02ce).unwrap();
+    let mut mmu = Srmmu::reset_with(MmuConfig::ss20());
+    write_reg(&mut mmu, &mut bus, 0, PCR_EN);
+    write_reg(&mut mmu, &mut bus, 1, 0x100);
+    assert_eq!(
+        mmu.load(&mut bus, 0xf594_0100, 3, Width::Word).unwrap(),
+        0x401
+    );
+    assert_eq!(
+        mmu.load(&mut bus, 0xf594_0000, 3, Width::Word).unwrap(),
+        0x007b_789e
+    );
+    assert_eq!(
+        mmu.load(&mut bus, 0xf594_0400, 3, Width::Word).unwrap(),
+        0x007b_78be
+    );
+    assert_eq!(
+        mmu.load(&mut bus, 0xf594_0100, 3, Width::Word).unwrap(),
+        0x401
+    );
+}
+
+#[test]
+fn mxcc_stream_completion_reports_ready_and_preserves_36_bit_block_address() {
+    use helios::mmu::MmuConfig;
+    let mut bus = MemoryBus::default();
+    bus.map_ram(0x1_0000_1000, 0x20).unwrap();
+    bus.map_ram(0x2_0000_2000, 0x20).unwrap();
+    for index in 0..8u64 {
+        bus.write32(0x1_0000_1000 + index * 4, 0x1122_3300 + index as u32)
+            .unwrap();
+    }
+    let mut mmu = Srmmu::reset_with(MmuConfig::ss20());
+    // Reserved bits and byte offset are ignored; C and PA are retained.
+    mmu.store_doubleword(&mut bus, 0x01c0_0100, 2, [0x7fff_fff1, 0x101f])
+        .unwrap();
+    assert_eq!(
+        mmu.load_doubleword(&mut bus, 0x01c0_0100, 2).unwrap(),
+        [0x8000_0011, 0x1000]
+    );
+    mmu.store_doubleword(&mut bus, 0x01c0_0200, 2, [0x12, 0x2000])
+        .unwrap();
+    assert_eq!(
+        mmu.load_doubleword(&mut bus, 0x01c0_0200, 2).unwrap(),
+        [0x8000_0012, 0x2000]
+    );
+    for index in 0..8u64 {
+        assert_eq!(
+            bus.read32(0x2_0000_2000 + index * 4).unwrap(),
+            0x1122_3300 + index as u32
+        );
+    }
+    // Software cannot manufacture completion by writing RDY on a failing transfer.
+    assert!(mmu
+        .store_doubleword(&mut bus, 0x01c0_0100, 2, [0x8000_0000, 0x5000])
+        .is_err());
+    assert_eq!(
+        mmu.load_doubleword(&mut bus, 0x01c0_0100, 2).unwrap()[0] & 0x8000_0000,
+        0
+    );
+}
