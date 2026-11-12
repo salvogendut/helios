@@ -29,6 +29,7 @@ pub struct MmuConfig {
     pub boot_mode_bit: u32,
     pub control_mask: u32,
     pub context_table_mask: u32,
+    pub context_mask: u32,
     pub fault_status_mask: u32,
     pub replacement_mask: u32,
     pub mmu_version: u32,
@@ -46,6 +47,7 @@ impl MmuConfig {
             boot_mode_bit: PCR_BM,
             control_mask: 0x003e_ff03,
             context_table_mask: 0x00ff_ffc0,
+            context_mask: 0x0000_00ff,
             fault_status_mask: 0x0001_6fff,
             replacement_mask: 0x01f1_ffff,
             mmu_version: PCR_VERSION,
@@ -64,6 +66,7 @@ impl MmuConfig {
             boot_mode_bit: 1 << 13,
             control_mask: 0x00ff_ffff,
             context_table_mask: 0xffff_ffc0,
+            context_mask: 0x0000_ffff,
             fault_status_mask: 0xffff_ffff,
             replacement_mask: 0xffff_ffff,
             mmu_version: 0x0800_0000,
@@ -205,12 +208,12 @@ struct Entry {
 }
 
 impl Entry {
-    fn matches(self, address: u32, context: u32, supervisor: bool) -> bool {
+    fn matches(self, address: u32, context: u32, supervisor: bool, mask: u32) -> bool {
         let global = self.lower & 8 != 0;
         self.upper & 0xc == 8
             && self.lower & 6 == 0
             && address & !self.offset_mask == self.virtual_base
-            && ((context & 0xff) == (self.context & 0xff) || (supervisor && global))
+            && ((context & mask) == (self.context & mask) || (supervisor && global))
     }
 
     fn retag(&mut self, upper: u32) {
@@ -943,7 +946,11 @@ impl Srmmu {
             return Ok(());
         }
         if asi == 2 {
-            self.mxcc_write(address, (u64::from(words[0]) << 32) | u64::from(words[1]));
+            self.mxcc_write(
+                bus,
+                address,
+                (u64::from(words[0]) << 32) | u64::from(words[1]),
+            )?;
             return Ok(());
         }
         self.memory_space(asi, MemoryOperation::StoreDoubleword)?;
@@ -1077,20 +1084,47 @@ impl Srmmu {
         }
     }
 
-    fn mxcc_write(&mut self, address: u32, value: u64) {
+    fn mxcc_write(
+        &mut self,
+        bus: &mut impl Bus,
+        address: u32,
+        value: u64,
+    ) -> Result<(), MemoryError> {
         match address {
             0x01c0_0000 => self.mxcc_data[0] = value,
             0x01c0_0008 => self.mxcc_data[1] = value,
             0x01c0_0010 => self.mxcc_data[2] = value,
             0x01c0_0018 => self.mxcc_data[3] = value,
-            0x01c0_0100 => self.mxcc_regs[0] = value,
-            0x01c0_0200 => self.mxcc_regs[1] = value,
+            0x01c0_0100 => {
+                self.mxcc_regs[0] = value;
+                // The source register loads a 32-byte stream from the low
+                // 32-bit physical address. QEMU models the same four loads.
+                let source = value & 0xffff_ffff;
+                for (index, word) in self.mxcc_data.iter_mut().enumerate() {
+                    let pair = bus
+                        .read_doubleword(source + 8 * index as u64)
+                        .map_err(MemoryError::Bus)?;
+                    *word = (u64::from(pair[0]) << 32) | u64::from(pair[1]);
+                }
+            }
+            0x01c0_0200 => {
+                self.mxcc_regs[1] = value;
+                let destination = value & 0xffff_ffff;
+                for (index, word) in self.mxcc_data.iter().enumerate() {
+                    bus.write_doubleword(
+                        destination + 8 * index as u64,
+                        [(word >> 32) as u32, *word as u32],
+                    )
+                    .map_err(MemoryError::Bus)?;
+                }
+            }
             0x01c0_0a00 => self.mxcc_regs[3] = value,
             0x01c0_0c00 => self.mxcc_regs[5] = value,
             0x01c0_0e00 => self.mxcc_regs[6] &= !value,
             0x01c0_0f00 => self.mxcc_regs[7] = value,
             _ => {}
         }
+        Ok(())
     }
 
     /// Diagnostic TLB writes install a real translation on the reference
@@ -1470,7 +1504,12 @@ impl Srmmu {
         };
         if let Some(index) = cached {
             let mut entry = self.tlb[index];
-            if entry.matches(access.address, context, supervisor) {
+            if entry.matches(
+                access.address,
+                context,
+                supervisor,
+                self.config.context_mask,
+            ) {
                 Self::permission(access, entry)?;
                 self.touch(bus, access, &mut entry)?;
                 self.tlb[index] = entry;
@@ -1483,7 +1522,14 @@ impl Srmmu {
             .tlb
             .iter()
             .enumerate()
-            .filter(|(_, entry)| entry.matches(access.address, context, supervisor))
+            .filter(|(_, entry)| {
+                entry.matches(
+                    access.address,
+                    context,
+                    supervisor,
+                    self.config.context_mask,
+                )
+            })
             .min_by_key(|(_, entry)| entry.offset_mask)
             .map(|(index, _)| index);
         let mut entry = if let Some(index) = hit {
@@ -1659,7 +1705,8 @@ impl Srmmu {
     }
 
     fn root(&self) -> u64 {
-        (u64::from(self.context_table) << 4) | (u64::from(self.context & 0xff) << 2)
+        (u64::from(self.context_table) << 4)
+            | (u64::from(self.context & self.config.context_mask) << 2)
     }
 
     fn table_error(access: Access, level: u8, error: BusError) -> MemoryError {
@@ -1767,7 +1814,14 @@ impl Srmmu {
                             let flags = self
                                 .tlb
                                 .iter()
-                                .filter(|entry| entry.matches(access.address, self.context, true))
+                                .filter(|entry| {
+                                    entry.matches(
+                                        access.address,
+                                        self.context,
+                                        true,
+                                        self.config.context_mask,
+                                    )
+                                })
                                 .fold(0, |flags, entry| flags | (entry.pte & 0x60));
                             return Ok(word | flags);
                         }
@@ -1777,12 +1831,10 @@ impl Srmmu {
         }
         if kind == 4 {
             self.check_tlb_diagnostic()?;
-            if let Some(entry) = self
-                .tlb
-                .iter()
-                .find(|entry| entry.matches(access.address, self.context, true))
-            {
-                return Ok((entry.pte & 0x07ff_ffdc) | 0x22);
+            if let Some(entry) = self.tlb.iter().find(|entry| {
+                entry.matches(access.address, self.context, true, self.config.context_mask)
+            }) {
+                return Ok((entry.pte & (self.config.pte_physical_mask | 0xdc)) | 0x22);
             }
         } else {
             // Conservative invalidation also removes any cached intermediate
@@ -1812,6 +1864,7 @@ impl Srmmu {
             }
             match et {
                 1 if level < 3 => physical = self.next_table(word, access.address, level),
+                2 if self.config.reference_mmu && kind < 4 && level > 0 => return Ok(word),
                 2 if kind == 4 => {
                     let mut entry = self.entry(access.address, level, physical, word);
                     match self.touch(bus, access, &mut entry) {
@@ -1825,7 +1878,7 @@ impl Srmmu {
                     if level != 0 {
                         self.insert(entry);
                     }
-                    return Ok(entry.pte & 0x07ff_ffff);
+                    return Ok(entry.pte & (self.config.pte_physical_mask | 0xff));
                 }
                 _ => return Ok(0),
             }

@@ -171,5 +171,8 @@ implementation, font, firmware or framebuffer screenshot is bundled.
 
 `helios-ui --machine ss20 local/firmware/ss10-20-v2.25r-rom --nvram local/ss20-ttya.nvram`
 uses the built-in SX framebuffer path instead of the SS-5 TurboGX card. The
-VIMM/SX model exposes registers, VRAM and CLUT pixels; the OBP cg14 console
-binding is not complete yet, so the ttya monitor remains the working console.
+VSIMM/SX model exposes an 8 MiB framebuffer mirrored through the aperture,
+SX registers/control and CLUT pixels. With monitor sense 4 and `00BBGGRR` CLUT
+decoding, original OBP opens `cg14` and draws a native 1152x900 `ok` console.
+The serial monitor remains available; SX acceleration instructions and the
+full raw/CBGR/component-plane decoder are not implemented.

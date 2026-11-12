@@ -1,7 +1,7 @@
 //! microSPARC-II floating-point state, arithmetic, comparisons and deferred exceptions.
 //! See docs/fpu.md for the serialized execution model and remaining limits.
 
-const FSR_VERSION: u32 = 4 << 17; // Meiko, microSPARC-II table 6
+const FSR_VERSION_MICROSPARC2: u32 = 4 << 17; // Meiko, microSPARC-II table 6
 const FSR_WRITABLE: u32 = 0xcf80_0fff; // RD, TEM, FCC, AEXC, CEXC; NS is zero
 const FSR_FTT: u32 = 7 << 14;
 const FSR_FCC: u32 = 3 << 10;
@@ -42,17 +42,39 @@ pub(crate) enum Action {
     Trap,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fpu {
     registers: [u32; 32],
     status: u32,
     state: FpuState,
+    version: u32,
     // One FPop resolves before another is issued in this interpreter. Hardware
     // has three pipeline entries; only the faulting entry can remain here.
     deferred: Option<DeferredEntry>,
 }
 
+impl Default for Fpu {
+    fn default() -> Self {
+        Self::with_version(FSR_VERSION_MICROSPARC2)
+    }
+}
+
 impl Fpu {
+    pub fn with_version(version: u32) -> Self {
+        Self {
+            registers: [0; 32],
+            status: 0,
+            state: FpuState::Execute,
+            version,
+            deferred: None,
+        }
+    }
+
+    /// Select the FPU identity used by FSR reads. The guest cannot change it.
+    pub fn set_version(&mut self, version: u32) {
+        self.version = version;
+    }
+
     /// Raw guest bits. All registers, including f0, are ordinary storage.
     pub fn read_reg(&self, index: u8) -> u32 {
         self.registers[usize::from(index)]
@@ -64,7 +86,7 @@ impl Fpu {
     }
 
     pub fn fsr(&self) -> u32 {
-        self.status | FSR_VERSION | (u32::from(self.deferred.is_some()) << 13)
+        self.status | self.version | (u32::from(self.deferred.is_some()) << 13)
     }
 
     pub fn state(&self) -> FpuState {
@@ -99,7 +121,9 @@ impl Fpu {
         self.state = FpuState::Execute;
     }
 
-    pub(crate) fn load_fsr(&mut self, value: u32) {
+    /// LDFSR semantics: only software-writable status bits change; FPU
+    /// implementation/version bits are read-only.
+    pub fn load_fsr(&mut self, value: u32) {
         // LDFSR cannot change FTT or QNE (the latter is derived from the queue).
         self.status = (self.status & !FSR_WRITABLE) | (value & FSR_WRITABLE);
     }

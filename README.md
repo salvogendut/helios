@@ -34,10 +34,10 @@ POST error before `ok`. OS boot, a SuperSPARC pipeline/cache model, multiprocess
 MBus and SX/VSIMM devices are not implemented. See
 [machine profiles](docs/machines.md).
 
-The optional **graphical console** now runs the original TurboGX FCode ROM and
-Sun Type 5 keyboard protocol. With 128 MiB RAM, OBP displays its banner and
-`ok` prompt; keyboard Stop-A interrupts network boot and `1 2 + .` returns `3`
-on screen. See [graphics and keyboard](docs/graphics.md) for the supported
+The optional **graphical console** runs the original TurboGX FCode ROM and
+Sun Type 5 keyboard protocol. SS-20 can also use its native SX/CG14 console.
+With 128 MiB RAM, OBP displays its banner and `ok` prompt; keyboard Stop-A
+interrupts network boot and `1 2 + .` returns `3` on screen. See [graphics and keyboard](docs/graphics.md) for the supported
 device subset and [the graphical checkpoint](docs/firmware.md#graphical-obp-console).
 
 **`probe-scsi-all` now lists attached disk and CD-ROM targets and returns to `ok`**

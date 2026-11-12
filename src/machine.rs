@@ -2,7 +2,7 @@
 //! Timers and interrupt delivery share a deterministic functional timebase.
 
 use crate::bus::{BusError, MapError};
-use crate::cpu::{Cpu, CpuFault, FaultKind, Step};
+use crate::cpu::{Cpu, CpuConfig, CpuFault, FaultKind, Step};
 use crate::devices::{cgsix::Cgsix, nvram::Nvram, sx::Sx};
 use crate::dram::Ss5Dram;
 use crate::mmu::MmuConfig;
@@ -52,6 +52,13 @@ impl MachineProfile {
         match self {
             Self::Ss5 => MmuConfig::ss5(),
             Self::Ss20 | Self::Axil320 => MmuConfig::ss20(),
+        }
+    }
+
+    pub const fn cpu_config(self) -> CpuConfig {
+        match self {
+            Self::Ss5 => CpuConfig::microsparc2(),
+            Self::Ss20 | Self::Axil320 => CpuConfig::supersparc2(),
         }
     }
 
@@ -180,6 +187,7 @@ impl Machine {
             cpu: Cpu::new(0),
             bus,
         };
+        machine.cpu.use_cpu_config(profile.cpu_config());
         machine.cpu.use_mmu_config(profile.mmu());
         machine.install_prom(prom, nvram)?;
         if profile.builtin_sx() {

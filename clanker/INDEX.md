@@ -39,3 +39,4 @@
 - [SPARCstation 20 and Axil 320](ss20-axil.md): high sun4m map, reference-MMU/IDPROM profiles, original-firmware `ok` bring-up and remaining POST diagnostics.
 - [x-windows.md](x-windows.md) — Solaris 2.6 X rendering: indexed FBC vertices, polygon coverage, trace replay and live desktop evidence.
 - [performance.md](performance.md) — MMU translation caches, device-time coalescing and frontend/SCSI throughput measurements.
+- [SS-20/Axil disk and CG14 review](ss20-axil-disk-cg14-review.md) — reproduced CPU identity boot blocker, native CG14 mapping failure and working prompt experiment, Heliacal selection, and remaining MMU/MXCC work.

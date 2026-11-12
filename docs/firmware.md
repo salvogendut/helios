@@ -901,8 +901,8 @@ The generated image is kept under ignored `local/ss20-ttya.nvram`. It boots to
   --machine ss20 --keyboard --nvram local/ss20-ttya.nvram --steps 300000000
 ```
 
-SX, DBRI and BPP placeholder windows prevent the previous `Data Access Error`
-during SBus enumeration. With a keyboard present and `diag-switch? false`, OBP
+The SX/VSIMM model, DBRI and BPP windows prevent the previous `Data Access
+Error` during SBus enumeration. With a keyboard present and `diag-switch? false`, OBP
 uses its abbreviated startup path and reaches serial `ok` without the full POST
 cache-tag error. A headless boot still runs full POST and reports the remaining
 MBus cache-tag diagnostic (`Address = 0x4000_0000`); this is not a full-POST
@@ -936,7 +936,8 @@ Target 3
 ok
 ```
 
-The remaining work is the `/obio/zs@0,0` device-tree/console path, a valid
-SS-20 NVRAM image with a serial console, and then the SuperSPARC-II I/D-cache
-tag diagnostic clear/half semantics; see [machine profiles](machines.md). No
-full SuperSPARC CPU/MBus, SX/VSIMM, DBRI or BPP claim is made.
+The serial `ok` path is usable, and SS-20's native CG14 console now opens with
+the 8 MiB VSIMM model. Solaris reaches its banner but still panics in
+`kmem_getpages`; the first panic needs reference-MMU/MXCC diagnosis. No complete
+SuperSPARC CPU/MBus, SX acceleration, DBRI or BPP claim is made; see
+[machine profiles](machines.md).

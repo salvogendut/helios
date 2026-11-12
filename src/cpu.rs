@@ -16,6 +16,7 @@ pub const PSR_EF: u32 = 1 << 12;
 pub const PSR_DE: u32 = 1 << 15;
 /// Fujitsu MB86904: implementation 0, version 4.
 pub const PSR_VERSION: u32 = 0x0400_0000;
+pub const SUPERSPARC_PSR_VERSION: u32 = 0x4000_0000;
 const PSR_CONTROL: u32 = PSR_ET | PSR_PS | PSR_S | PSR_PIL | PSR_EF | PSR_DE;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -185,6 +186,37 @@ struct Window {
     locals: [u32; 8],
 }
 
+/// Non-user-writable CPU identity exposed through PSR and FSR.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CpuConfig {
+    pub psr_version: u32,
+    pub fpu_version: u32,
+}
+
+impl CpuConfig {
+    /// Fujitsu MB86904 microSPARC-II: IU/FPU version 4, Meiko FPU.
+    pub const fn microsparc2() -> Self {
+        Self {
+            psr_version: PSR_VERSION,
+            fpu_version: 4 << 17,
+        }
+    }
+
+    /// TI SuperSPARC-II: IU version 3, FPU version 0.
+    pub const fn supersparc2() -> Self {
+        Self {
+            psr_version: SUPERSPARC_PSR_VERSION,
+            fpu_version: 0,
+        }
+    }
+}
+
+impl Default for CpuConfig {
+    fn default() -> Self {
+        Self::microsparc2()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cpu {
     globals: [u32; 8],
@@ -198,6 +230,7 @@ pub struct Cpu {
     tbr: u32,
     y: u32,
     error_state: Option<CpuFault>,
+    identity: CpuConfig,
     pub mmu: Srmmu,
     pub fpu: Fpu,
 }
@@ -218,6 +251,7 @@ impl Cpu {
             tbr: 0,
             y: 0,
             error_state: None,
+            identity: CpuConfig::default(),
             mmu: Srmmu::default(),
             fpu: Fpu::default(),
         }
@@ -227,14 +261,24 @@ impl Cpu {
     /// deterministically; the physical bus and its RAM/ROM remain owned by Machine.
     pub fn reset_sun4m(&mut self) {
         let config = self.mmu.config();
+        let identity = self.identity;
         *self = Self::new(0);
         self.wim = 1;
+        self.identity = identity;
         self.mmu = Srmmu::reset_with(config);
+        self.fpu.set_version(identity.fpu_version);
     }
 
     /// Select a profile's physical-address/boot-window behavior before reset.
     pub fn use_mmu_config(&mut self, config: MmuConfig) {
         self.mmu = Srmmu::reset_with(config);
+    }
+
+    /// Select the CPU model identity before power-on reset. MMU configuration
+    /// remains separate because several CPU models can share a reference MMU.
+    pub fn use_cpu_config(&mut self, config: CpuConfig) {
+        self.identity = config;
+        self.fpu.set_version(config.fpu_version);
     }
 
     /// Non-power-up reset retains integer registers, PS, CWP and TT
@@ -271,7 +315,7 @@ impl Cpu {
     }
 
     pub fn psr(&self) -> u32 {
-        PSR_VERSION
+        self.identity.psr_version
             | self.psr_control
             | self.cwp as u32
             | (u32::from(self.icc.n) << 23)

@@ -149,3 +149,40 @@ fn smc_ecc_registers_retain_configuration_and_identity() {
     assert_eq!(ecc.read(0x24).unwrap(), 0xdead_beef);
     assert_eq!(ecc.read(2).unwrap_err(), BusErrorKind::Misaligned);
 }
+
+#[test]
+fn cpu_identity_is_selected_by_profile_and_survives_reset() {
+    for profile in [
+        MachineProfile::Ss5,
+        MachineProfile::Ss20,
+        MachineProfile::Axil320,
+    ] {
+        let mut machine = Machine::with_profile(
+            profile,
+            16 * 1024 * 1024,
+            &0u32.to_be_bytes(),
+            profile.default_nvram(),
+        )
+        .unwrap();
+        let expected = profile.cpu_config();
+        assert_eq!(machine.cpu.psr() & 0xff00_0000, expected.psr_version);
+        assert_eq!(machine.cpu.fpu.fsr() & (7 << 17), expected.fpu_version);
+        machine.reset();
+        assert_eq!(machine.cpu.psr() & 0xff00_0000, expected.psr_version);
+        assert_eq!(machine.cpu.fpu.fsr() & (7 << 17), expected.fpu_version);
+    }
+}
+
+#[test]
+fn writable_psr_and_fsr_bits_do_not_change_cpu_identity() {
+    use helios::cpu::CpuConfig;
+    let mut machine = Machine::bare_metal(4096, 0).unwrap();
+    machine.cpu.use_cpu_config(CpuConfig::supersparc2());
+    machine
+        .load_image(0, &0x8180_0000u32.to_be_bytes())
+        .unwrap(); // wr %g0, %g0, %psr
+    machine.step().unwrap();
+    assert_eq!(machine.cpu.psr() & 0xff00_0000, 0x4000_0000);
+    machine.cpu.fpu.load_fsr(0xffff_ffff);
+    assert_eq!(machine.cpu.fpu.fsr() & (7 << 17), 0);
+}

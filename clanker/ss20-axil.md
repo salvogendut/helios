@@ -304,3 +304,25 @@ I/O PTE physical bits 26:8 were masked with the reference-MMU CPU `0xffff_ff00`
 mask, retaining the synthetic `0xe000_0000` type bits. `translate_io` now uses
 the IOPTE mask directly. An attached ID 3 disk is listed by Axil OBP
 `probe-scsi-all` as `HELIOS SCSI DISK 0001`.
+
+## CPU identity, CG14 console and next boot stage
+
+Production changes since the review:
+
+- `CpuConfig` selects the MB86904 microSPARC-II identity for SS-5 and the
+  SuperSPARC-II IU version 3/FPU version 0 identity for SS-20/Axil. Identity
+  survives reset and is not writable through PSR/FSR. The SuperSPARC identity
+  reaches the Solaris 5.6 banner on both profiles.
+- SX now models an 8 MiB VSIMM mirrored through the 64 MiB aperture, monitor
+  sense 4 for 1152x900, `00BBGGRR` CLUT words, and the ASI `0x28` alias as
+  `0x800000000 + target PA`. OBP opens `cg14` and draws the native `ok`
+  console; the screenshot matches `local/review-2026-11-12/native-cg14-ok.png`.
+- Reference-MMU probe masks preserve high physical bits, reference contexts are
+  16-bit, and MXCC source/destination stores copy four doublewords through the
+  bus. The MXCC experiment does not yet eliminate the Solaris
+  `kmem_getpages: pp is NULL or free` panic.
+- Heliacal exposes `Display: CG6` or `SX/CG14`; native SX does not require a
+  TurboGX ROM. SS-5/Axil remain CG6-only.
+
+The Solaris banner is not a successful OS-boot claim. The first panic still
+needs VA/PA/PFN tracing and further reference-MMU/MXCC work.

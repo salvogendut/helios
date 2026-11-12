@@ -4,10 +4,17 @@ use crate::bus::BusErrorKind;
 
 pub const WIDTH: usize = 1152;
 pub const HEIGHT: usize = 900;
-pub const VRAM_BYTES: usize = 64 * 1024 * 1024;
+/// Installed VSIMM storage. OBP derives the framebuffer size from this value;
+/// a 64 MiB backing store made it publish a false 16 MiB frame buffer.
+pub const VRAM_BYTES: usize = 8 * 1024 * 1024;
+/// Decoded VSIMM aperture. Storage is mirrored through this larger window.
+pub const VRAM_APERTURE_BYTES: u64 = 0x0400_0000;
 pub const SX_BASE: u64 = 0xf_8000_0000;
 pub const SX_SIZE: u64 = 0x2000;
+/// SX memory operations address `0x800000000 + target physical address`.
+/// The framebuffer target is at `VSIMM_VRAM_BASE`, not at the alias base.
 pub const SX_MEM_BASE: u64 = 0x8_0000_0000;
+pub const SX_VRAM_ALIAS_BASE: u64 = SX_MEM_BASE + VSIMM_VRAM_BASE;
 pub const VSIMM_CTL_BASE: u64 = 0x9c00_0000;
 pub const VSIMM_CTL_SIZE: u64 = 0x1_0000;
 pub const VSIMM_VRAM_BASE: u64 = 0xfc00_0000;
@@ -34,6 +41,8 @@ impl Sx {
     pub fn new() -> Self {
         let mut control = Box::new([0u8; VSIMM_CTL_SIZE as usize]);
         control[CG14_RSR] = 0x01;
+        // Monitor sense 4 selects the renderer's 1152x900 timing.
+        control[4] = 4 << 1;
         control[0x0d] = 0x01;
         for index in 0..256 {
             let value = match index {
@@ -51,6 +60,8 @@ impl Sx {
                 }
             };
             let off = CG14_CLUT1 + index * 4;
+            // CG14 CLUT words are 00BBGGRR, not 00RRGGBB.
+            let value = ((value & 0xff) << 16) | (value & 0x0000_ff00) | ((value >> 16) & 0xff);
             control[off..off + 4].copy_from_slice(&value.to_be_bytes());
         }
         let mut sx = Box::new([0u8; SX_SIZE as usize]);
@@ -84,17 +95,19 @@ impl Sx {
 
     pub fn contains(&self, address: u64) -> bool {
         let ctl = (VSIMM_CTL_BASE..VSIMM_CTL_BASE + VSIMM_CTL_SIZE).contains(&address);
-        let vram = (VSIMM_VRAM_BASE..VSIMM_VRAM_BASE + VRAM_BYTES as u64).contains(&address);
-        let alias = (SX_MEM_BASE..SX_MEM_BASE + VRAM_BYTES as u64).contains(&address);
+        let vram = (VSIMM_VRAM_BASE..VSIMM_VRAM_BASE + VRAM_APERTURE_BYTES).contains(&address);
+        let alias =
+            (SX_VRAM_ALIAS_BASE..SX_VRAM_ALIAS_BASE + VRAM_APERTURE_BYTES).contains(&address);
         let regs = (SX_BASE..SX_BASE + SX_SIZE).contains(&address);
         ctl || vram || alias || regs
     }
 
     fn vram_offset(&self, address: u64) -> Option<usize> {
-        if (VSIMM_VRAM_BASE..VSIMM_VRAM_BASE + VRAM_BYTES as u64).contains(&address) {
-            Some((address - VSIMM_VRAM_BASE) as usize)
-        } else if (SX_MEM_BASE..SX_MEM_BASE + VRAM_BYTES as u64).contains(&address) {
-            Some((address - SX_MEM_BASE) as usize)
+        if (VSIMM_VRAM_BASE..VSIMM_VRAM_BASE + VRAM_APERTURE_BYTES).contains(&address) {
+            Some(((address - VSIMM_VRAM_BASE) as usize) % VRAM_BYTES)
+        } else if (SX_VRAM_ALIAS_BASE..SX_VRAM_ALIAS_BASE + VRAM_APERTURE_BYTES).contains(&address)
+        {
+            Some(((address - SX_VRAM_ALIAS_BASE) as usize) % VRAM_BYTES)
         } else {
             None
         }
@@ -190,9 +203,9 @@ impl Sx {
             let color = usize::from(self.vram[index]);
             let off = CG14_CLUT1 + color * 4;
             let rgb = u32::from_be_bytes(self.control[off..off + 4].try_into().unwrap());
-            let r = (rgb >> 16) & 0xff;
+            let r = rgb & 0xff;
             let g = (rgb >> 8) & 0xff;
-            let b = rgb & 0xff;
+            let b = (rgb >> 16) & 0xff;
             *pixel = (r << 16) | (g << 8) | b;
         }
     }

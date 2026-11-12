@@ -74,15 +74,17 @@ LDFSR/STFSR ignore rd; no alternate-space FPU transfers are implemented for V8.
 
 ## Status register
 
-FSR reads combine the writable fields with the fixed Meiko version value 4 in
-bits 19:17. LDFSR accepts mask `0xcf800fff`:
+FSR reads combine the writable fields with the selected CPU model's fixed
+version in bits 19:17: 4 (Meiko) for microSPARC-II and 0 for SuperSPARC-II.
+The CPU model is selected by the machine profile before power-on reset.
+LDFSR accepts mask `0xcf800fff`:
 
 | Bits | Field | Behavior |
 | --- | --- | --- |
 | 31:30 | RD | Arithmetic: nearest/even, toward zero, +infinity, -infinity |
 | 27:23 | TEM | IEEE trap enables; implemented for comparisons/arithmetic |
 | 22 | NS | Always zero on microSPARC-II |
-| 19:17 | VER | Always 4 |
+| 19:17 | VER | Model-specific: 4 on microSPARC-II, 0 on SuperSPARC-II |
 | 16:14 | FTT | Retained across LDFSR/STFSR; 1 for IEEE exceptions, 4 for sequence errors |
 | 13 | QNE | One while a deferred entry awaits STDFQ |
 | 11:10 | FCC | E/L/G/U encoded as 0/1/2/3 |

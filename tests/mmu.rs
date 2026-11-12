@@ -450,3 +450,52 @@ fn register_masks_diagnostic_aliases_and_unimplemented_features() {
         Err(MemoryError::UnsupportedRootPte)
     );
 }
+
+#[test]
+fn mxcc_stream_registers_copy_four_doublewords() {
+    let mut bus = MemoryBus::default();
+    bus.map_ram(0, 0x4000).unwrap();
+    for (index, address) in (0x1000u64..0x1020).step_by(8).enumerate() {
+        bus.write_doubleword(
+            address,
+            [0x1000_0000 + index as u32, 0x2000_0000 + index as u32],
+        )
+        .unwrap();
+    }
+    let mut mmu = Srmmu::default();
+    mmu.store_doubleword(&mut bus, 0x01c0_0100, 2, [0, 0x1000])
+        .unwrap();
+    for (index, address) in (0x01c0_0000u32..0x01c0_0020).step_by(8).enumerate() {
+        assert_eq!(
+            mmu.load_doubleword(&mut bus, address, 2).unwrap(),
+            [0x1000_0000 + index as u32, 0x2000_0000 + index as u32]
+        );
+    }
+    mmu.store_doubleword(&mut bus, 0x01c0_0200, 2, [0, 0x1100])
+        .unwrap();
+    for index in 0..4u32 {
+        assert_eq!(
+            bus.read_doubleword(0x1100 + u64::from(index) * 8).unwrap(),
+            [0x1000_0000 + index, 0x2000_0000 + index]
+        );
+    }
+}
+
+#[test]
+fn reference_mmu_contexts_are_not_aliased_to_eight_bits() {
+    use helios::mmu::MmuConfig;
+    let mut bus = MemoryBus::default();
+    bus.map_ram(0, 0x300_0000).unwrap();
+    bus.write32(0x1000, 0x201).unwrap(); // context 0 -> L1 at 0x2000
+    bus.write32(0x1400, 0x501).unwrap(); // context 0x100 -> L1 at 0x5000
+    bus.write32(0x2000, 0x0010_008e).unwrap(); // 16 MiB leaf -> PA 0x01000000
+    bus.write32(0x5000, 0x0020_008e).unwrap(); // 16 MiB leaf -> PA 0x02000000
+    bus.write32(0x0100_0000, 0x1111_1111).unwrap();
+    bus.write32(0x0200_0000, 0x2222_2222).unwrap();
+    let mut mmu = Srmmu::reset_with(MmuConfig::ss20());
+    write_reg(&mut mmu, &mut bus, 0, PCR_EN);
+    write_reg(&mut mmu, &mut bus, 1, 0x100);
+    assert_eq!(mmu.load(&mut bus, 0, 11, Width::Word).unwrap(), 0x1111_1111);
+    write_reg(&mut mmu, &mut bus, 2, 0x100);
+    assert_eq!(mmu.load(&mut bus, 0, 11, Width::Word).unwrap(), 0x2222_2222);
+}

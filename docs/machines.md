@@ -41,8 +41,8 @@ modules, low slots first.
   for the reference profiles, matching OBP's low boot alias and its D-cache
   level-2 PTP POST writes.
 - The reference MMU supports a 36-bit PTE physical page number, the
-  SuperSPARC-II boot-bit position, wider context-table/replacement masks and
-  ASI `0x05`/`0x06` I/D-TLB diagnostic storage. MXCC, cache-tag, breakpoint,
+  SuperSPARC-II boot-bit position, 16-bit contexts, wider context-table/
+  replacement masks and ASI `0x05`/`0x06` I/D-TLB diagnostic storage. MXCC, cache-tag, breakpoint,
   cache-flush and TLB-diagnostic address spaces are accepted with functional
   storage or no-op behavior where the POST only checks access/readback.
 - The SMC ECC memory controller at `0xf00000000` reports implementation 2,
@@ -55,20 +55,25 @@ modules, low slots first.
   `0xf_f800_0000..0xf_f9c0_2000`, the SX placeholder at
   `0xf_8000_0000..0xf_8000_2000`, DBRI PROM/register placeholders at
   `0xe_e000_1000..0xe_e000_1030` and `0xe_e001_0000..0xe_e001_0100`, and the
-  BPP placeholder at `0xe_f480_0000..0xe_f480_0020` are decoded. The SX/VSIMM
-  framebuffer, DBRI audio and BPP are not modeled.
+  BPP placeholder at `0xe_f480_0000..0xe_f480_0020` are decoded. The SS-20
+  SX/VSIMM framebuffer is modeled separately; DBRI audio and BPP are not.
 - `--keyboard` attaches a Type 5 keyboard. With an SS-20 or Axil NVRAM image
   whose `diag-switch?` is false, OBP selects abbreviated startup and reaches
   serial `ok` without running the full POST cache-tag diagnostic. Without a
   keyboard, the headless SS-20 profile still runs full POST and reports that
   diagnostic.
-- The built-in SX/cg14 subset is installed only for the SS-20. It exposes the
-  SX register block, VSIMM control block, VRAM and the ASI `0x28` SX-memory
-  alias. `Machine::framebuffer_pixels` returns SX pixels when no CGsix is
-  installed. The Axil 320 shares the SS-20 CPU/memory map but has no VSIMM or
-  built-in SX device; its VSIMM/SX address windows remain unpopulated
-  placeholders. SX rendering instructions and the OBP graphical-console binding
-  remain unimplemented.
+- The built-in SX/cg14 subset is installed only for the SS-20. It models an
+  8 MiB VSIMM mirrored through the 64 MiB aperture, the SX register/control
+  blocks and the ASI `0x28` memory alias at `0x800000000 + target PA`.
+  `cg14` opens through OBP and draws the native 1152x900 console. The MXCC
+  stream source/destination registers copy four doublewords through the
+  regular bus; full MXCC error/control semantics remain incomplete.
+  Monitor sense 4 selects the 1152x900 timing used by the renderer, and CLUT
+  words are decoded as `00BBGGRR`. With these settings original OBP opens
+  `cg14` and draws a native `ok` console. The Axil 320 shares the SS-20
+  CPU/memory map but has no VSIMM or built-in SX device. SX acceleration
+  instructions, raw CBGR/component-plane aperture decoding and full scanout
+  timing remain incomplete.
 - The integrated ESP accepts the SS-20/Axil 32-bit register lane accesses and
   test-mode probe commands, while the SS-5 profile retains byte-only access and
   strict reserved-register behavior.
@@ -93,11 +98,13 @@ OBP searches the device tree for `/obio/zs@0,0`; the loop persists past five
 billion instructions. The Axil 320 ROM 2.19
 (`axil320-2-19.bin`, SHA-256
 `bc231c32d817d09e1d8192da0475a342f88b3ac2ed64e6fb67ab61e797e77425`) reaches
-the same NVRAM reset path. These are not clean-POST or OS-boot claims. The CPU
-remains the project's microSPARC-II-style V8 interpreter with a
-SuperSPARC-compatible MMU profile; there is no SuperSPARC pipeline, cache-fill,
-MBus multiprocessor, full PTP2 replacement policy, SX/VSIMM, DBRI audio, BPP or
-Axil custom-controller model. CG6/TurboGX cards can be attached through
+the same NVRAM reset path. These are not clean-POST or OS-boot claims. CPU
+identity is profile-specific: SS-5 reports the MB86904 microSPARC-II IU/FPU
+identity, while SS-20 and Axil report SuperSPARC-II IU version 3 and FPU
+version 0. The interpreter and reference MMU remain functional models; there is
+no SuperSPARC pipeline, cache-fill, MBus multiprocessor, full PTP2 replacement
+policy, complete SX acceleration, DBRI audio, BPP or Axil custom-controller
+model. CG6/TurboGX cards can be attached through
 `--cgsix-rom`; SS-20/Axil place them in SBus slot 2 at physical
 `0xe_2000_0000`, matching the Sun-4M slot map. The Axil 320 uses a CG6 as its
 usual framebuffer; Helios does not require the SS-5 AFX presence byte for it.
