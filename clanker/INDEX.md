@@ -42,4 +42,6 @@
 - [SS-20/Axil disk and CG14 review](ss20-axil-disk-cg14-review.md) — reproduced CPU identity boot blocker, native CG14 mapping failure and working prompt experiment, Heliacal selection, and remaining MMU/MXCC work.
 - [Solaris first-panic follow-up](ss20-solaris-panic.md) — confirmed wrong PFN from the segment-probe shortcut, MXCC completion wait, tested patches, and the next page-list alignment fault.
 - [Page-color MXCC alias](ss20-page-color-mxcc-alias.md) — physical MXCC control alias, shared ASI-2/physical state, userland checkpoint, and cloned-disk device migration.
+- [MXCC production review](ss20-mxcc-production-review.md) — recursive stream-transfer safety, read-only port identity, architected MBus alias, and disk persistence checks.
 - [SS-20/Axil page-color panic](ss20-page-color-mxcc-alias.md) — missing physical MXCC control alias hides cache parity from OBP, causing a zero Solaris cache size and out-of-bounds page-list access; tested alias proof reaches userland, then exposes the SS-5 disk's stale device paths.
+- [MXCC production follow-up](ss20-mxcc-production-review.md) — four isolated regressions expose recursive stream borrow panics, writable port identity and the missing architected MBus port address at 652d5df.

@@ -188,10 +188,14 @@ local data. None are included in the handoff patch.
 
 The physical module-control alias is now a bus-owned `MxccState` shared by the
 CPU's ASI-2 interface and `SystemBus`; physical addresses `0xff8c00a00`/
-`0xff8c00a04` and the port page at `0xff8c00f04` route to the same masks and
-state. MID 9 remains an absent-module zero window. Native CG14 and CGsix boots
-now reach userland with `mxcc_cachesize=0x00100000`, linesize `0x20`, and the
-page-color mask `0xff`.
+`0xff8c00a04`, the port page at `0xff8c00f04`, and the architected MBus port
+address `0xff8fffffc` route to the same state. Port identity is fixed at
+`0x08000104` (MID 8, device 1, revision 0, TI vendor 4), is read-only, and
+ignores reserved/byte-offset writes. MID 9 remains an absent-module zero
+window. Stream transfers targeting the module register window return an
+explicit unsupported error instead of nesting `RefCell` borrows and panicking.
+Native CG14 and CGsix boots now reach userland with
+`mxcc_cachesize=0x00100000`, linesize `0x20`, and page-color mask `0xff`.
 
 The `/usr` failure was resolved on a cloned disk with Solaris 2.6 single-user
 CD recovery: rebuild `/dev`/`/devices`, run `devlinks`, `disks`, `tapes` and
@@ -199,3 +203,10 @@ CD recovery: rebuild `/dev`/`/devices`, run `devlinks`, `disks`, `tapes` and
 `/a/dev/dsk/c0t3d0s6` points at the SS-20/Axil IOMMU/SBus device path. The
 migrated clone reaches `helios console login:`. Full details are in
 [scsi.md](../docs/scsi.md#moving-an-installed-solaris-26-disk-from-ss-5-to-ss-20axil).
+
+### Disk persistence check
+
+On the migrated Axil clone, a guest `echo HELIOS-DISK-TEST > /helios-disk-test`
+followed by `sync` and `halt` survived a clean reboot. After login the file
+read back as `HELIOS-DISK-TEST` and `cksum` reported
+`3034423527      17      /helios-disk-test`; a second `sync`/`halt` was clean.

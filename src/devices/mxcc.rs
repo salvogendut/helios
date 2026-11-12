@@ -1,10 +1,12 @@
 //! SuperSPARC MXCC register and stream-transfer subset.
 //! Register fields follow Sun-4M System Architecture B.III.5.4.
-use crate::bus::{Bus, BusError};
+use crate::bus::{Bus, BusError, BusErrorKind};
 
 /// Physical CPU-0 module-control alias for a populated SuperSPARC module.
 pub const MID8_PHYSICAL_BASE: u64 = 0x000f_f8c0_0000;
 pub const MODULE_REGISTER_SIZE: u64 = 0x1000;
+pub const MID8_PORT_ADDRESS: u64 = 0x000f_f8ff_fffc;
+pub const PORT_IDENTITY: u64 = 0x0800_0104;
 const CONTROL_MASK: u64 = 0x0000_0000_0000_023c; // RC, PF, MC, PE, CE
 const STREAM_ADDRESS_MASK: u64 = 0x0000_001f_ffff_ffe0;
 const STREAM_PA_MASK: u64 = 0x0000_000f_ffff_ffe0;
@@ -32,7 +34,7 @@ impl MxccState {
             0x01c0_0200 => self.registers[1],
             0x01c0_0a00 => self.registers[3],
             0x01c0_0c00 => self.registers[5],
-            0x01c0_0f00 => self.registers[7],
+            0x01c0_0f00 => PORT_IDENTITY,
             _ => 0,
         }
     }
@@ -64,6 +66,12 @@ impl MxccState {
             0x01c0_0100 => {
                 self.registers[0] = value & STREAM_ADDRESS_MASK;
                 let source = value & STREAM_PA_MASK;
+                if Self::is_register_window(source) {
+                    return Err(BusError {
+                        address: source,
+                        kind: BusErrorKind::Unsupported("MXCC stream into its own register window"),
+                    });
+                }
                 let words = self.read_stream(bus, source)?;
                 self.data = words;
                 self.registers[0] |= READY;
@@ -71,6 +79,12 @@ impl MxccState {
             0x01c0_0200 => {
                 self.registers[1] = value & STREAM_ADDRESS_MASK;
                 let destination = value & STREAM_PA_MASK;
+                if Self::is_register_window(destination) {
+                    return Err(BusError {
+                        address: destination,
+                        kind: BusErrorKind::Unsupported("MXCC stream into its own register window"),
+                    });
+                }
                 self.write_stream(bus, destination)?;
                 self.registers[1] |= READY;
             }
@@ -79,7 +93,7 @@ impl MxccState {
             }
             0x01c0_0c00 => self.registers[5] = value,
             0x01c0_0e00 => self.registers[6] &= !value,
-            0x01c0_0f00 => self.registers[7] = value & !0x1f,
+            0x01c0_0f00 => {} // MID/device/revision/vendor are read-only.
             _ => {}
         }
         Ok(())
@@ -105,10 +119,18 @@ impl MxccState {
 
     /// Decode a CPU-module physical register address for the populated MID 8.
     pub fn physical_register(address: u64) -> Option<u32> {
+        if address == MID8_PORT_ADDRESS {
+            return Some(0x01c0_0f04);
+        }
         if !(MID8_PHYSICAL_BASE..MID8_PHYSICAL_BASE + MODULE_REGISTER_SIZE).contains(&address) {
             return None;
         }
         Some(0x01c0_0000 | (address - MID8_PHYSICAL_BASE) as u32)
+    }
+
+    fn is_register_window(address: u64) -> bool {
+        address == MID8_PORT_ADDRESS
+            || (MID8_PHYSICAL_BASE..MID8_PHYSICAL_BASE + MODULE_REGISTER_SIZE).contains(&address)
     }
 
     fn read_stream(&self, bus: &mut impl Bus, address: u64) -> Result<[u64; 4], BusError> {

@@ -1100,10 +1100,10 @@ impl Bus for SystemBus {
             let shift = (3 - (register & 3)) * 8;
             let old = mxcc.borrow().read_word(register & !3);
             let merged = (old & !(0xff << shift)) | (u32::from(value) << shift);
-            return mxcc
-                .borrow_mut()
-                .write_word(self, register & !3, merged)
-                .map_err(|error| BusError { address, ..error });
+            let mut state = mxcc.borrow().clone();
+            let result = state.write_word(self, register & !3, merged);
+            *mxcc.borrow_mut() = state;
+            return result.map_err(|error| BusError { address, ..error });
         }
         if let Some(card) = self.sx_at(address) {
             return card
@@ -1275,10 +1275,10 @@ impl Bus for SystemBus {
             let shift = (2 - (register & 2)) * 8;
             let old = mxcc.borrow().read_word(register & !3);
             let merged = (old & !(0xffff << shift)) | (u32::from(value) << shift);
-            return mxcc
-                .borrow_mut()
-                .write_word(self, register & !3, merged)
-                .map_err(|error| BusError { address, ..error });
+            let mut state = mxcc.borrow().clone();
+            let result = state.write_word(self, register & !3, merged);
+            *mxcc.borrow_mut() = state;
+            return result.map_err(|error| BusError { address, ..error });
         }
         if let Some(card) = self.sx_at(address) {
             return card
@@ -1424,10 +1424,10 @@ impl Bus for SystemBus {
                 let old = mxcc.borrow().read_word(register);
                 (old & !mask) | (value & mask)
             };
-            return mxcc
-                .borrow_mut()
-                .write_word(self, register, merged)
-                .map_err(|error| BusError { address, ..error });
+            let mut state = mxcc.borrow().clone();
+            let result = state.write_word(self, register, merged);
+            *mxcc.borrow_mut() = state;
+            return result.map_err(|error| BusError { address, ..error });
         }
         if let Some(card) = self.sx_at(address) {
             return card
@@ -1627,10 +1627,10 @@ impl Bus for SystemBus {
             }
             let mxcc = self.mxcc.as_ref().unwrap().clone();
             let value = (u64::from(words[0]) << 32) | u64::from(words[1]);
-            return mxcc
-                .borrow_mut()
-                .write_u64(self, register, value)
-                .map_err(|error| BusError { address, ..error });
+            let mut state = mxcc.borrow().clone();
+            let result = state.write_u64(self, register, value);
+            *mxcc.borrow_mut() = state;
+            return result.map_err(|error| BusError { address, ..error });
         }
         if self.prom_writes_ignored(address) {
             return Ok(());

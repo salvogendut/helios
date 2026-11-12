@@ -226,12 +226,14 @@ fn mxcc_control_state_is_shared_by_asi2_and_the_physical_module_alias() {
     assert_eq!(machine.bus.read32(0xf_f8c0_0a04).unwrap(), 0x23c);
     assert_eq!(machine.bus.read32(0xf_f9c0_0a04).unwrap(), 0);
     // Doubleword physical access and the observed port-register page alias.
+    assert_eq!(machine.bus.read32(0xf_f8c0_0f04).unwrap(), 0x0800_0104);
     machine
         .cpu
         .mmu
         .store_doubleword(&mut machine.bus, 0x01c0_0f00, 2, [0, 0x1234])
         .unwrap();
-    assert_eq!(machine.bus.read32(0xf_f8c0_0f04).unwrap(), 0x1220);
+    assert_eq!(machine.bus.read32(0xf_f8c0_0f04).unwrap(), 0x0800_0104);
+    assert_eq!(machine.bus.read32(0xf_f8ff_fffc).unwrap(), 0x0800_0104);
     machine
         .bus
         .write_doubleword(0xf_f8c0_0a00, [0, 0x8])

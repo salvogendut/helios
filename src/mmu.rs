@@ -1076,10 +1076,12 @@ impl Srmmu {
         address: u32,
         value: u64,
     ) -> Result<(), MemoryError> {
-        self.mxcc
-            .borrow_mut()
-            .write_u64(bus, address, value)
-            .map_err(MemoryError::Bus)
+        // Do not hold the RefCell borrow while the bus may alias back into
+        // this register window. Copy, run bus transfers, then publish state.
+        let mut state = self.mxcc.borrow().clone();
+        let result = state.write_u64(bus, address, value);
+        *self.mxcc.borrow_mut() = state;
+        result.map_err(MemoryError::Bus)
     }
 
     /// Shared state for the CPU-module physical control window.
