@@ -4,8 +4,11 @@
 use crate::bus::{Bus, BusError, BusErrorKind, IoTlbFlush, MemoryRequest, MemoryRequestKind};
 use crate::cache::CacheDiagnostics;
 use crate::devices::io_control::IoMapping;
+use crate::devices::mxcc::MxccState;
 use crate::dma::{DmaError, DmaFault};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 pub const PCR_EN: u32 = 1;
 pub const PCR_NF: u32 = 2;
@@ -294,9 +297,8 @@ pub struct Srmmu {
     counter_control: u32,
     counter_status: u32,
     breakpoint_action: u32,
-    /// SuperSPARC SuperCache/MXCC register subset (ASI 0x02).
-    mxcc_data: [u64; 4],
-    mxcc_regs: [u64; 8],
+    /// SuperSPARC MXCC state shared with the physical module-control alias.
+    mxcc: Rc<RefCell<MxccState>>,
     /// SuperSPARC II I/D-TLB diagnostic storage (ASI 0x05/0x06), keyed by
     /// the full diagnostic address so entry/tag writes never alias.
     itlb_diag: HashMap<u32, u32>,
@@ -331,8 +333,7 @@ impl Default for Srmmu {
             counter_control: 0,
             counter_status: 0,
             breakpoint_action: 0,
-            mxcc_data: [0; 4],
-            mxcc_regs: [0; 8],
+            mxcc: Rc::new(RefCell::new(MxccState::default())),
             itlb_diag: HashMap::new(),
             dtlb_diag: HashMap::new(),
             itlb_ptp2: None,
@@ -722,11 +723,7 @@ impl Srmmu {
                 return Ok(self.reference_diagnostic_read(address, asi));
             }
             2 if width == Width::Word => {
-                return Ok(if address == 0x01c0_0a04 {
-                    self.mxcc_regs[3] as u32
-                } else {
-                    0
-                });
+                return Ok(self.mxcc.borrow().read_word(address));
             }
             8..=11 | 0x20 => {}
             0x21..=0x2f if self.config.reference_mmu => {}
@@ -816,10 +813,10 @@ impl Srmmu {
                 return Ok(());
             }
             2 if width == Width::Word => {
-                if address == 0x01c0_0a04 {
-                    self.mxcc_regs[3] =
-                        (self.mxcc_regs[3] & 0xffff_ffff_0000_0000) | u64::from(value);
-                }
+                self.mxcc
+                    .borrow_mut()
+                    .write_word(bus, address, value)
+                    .map_err(MemoryError::Bus)?;
                 return Ok(());
             }
             0x10..=0x14 if width == Width::Word => {
@@ -1070,18 +1067,7 @@ impl Srmmu {
     }
 
     fn mxcc_read(&self, address: u32) -> u64 {
-        match address {
-            0x01c0_0000 => self.mxcc_data[0],
-            0x01c0_0008 => self.mxcc_data[1],
-            0x01c0_0010 => self.mxcc_data[2],
-            0x01c0_0018 => self.mxcc_data[3],
-            0x01c0_0100 => self.mxcc_regs[0],
-            0x01c0_0200 => self.mxcc_regs[1],
-            0x01c0_0a00 => self.mxcc_regs[3],
-            0x01c0_0c00 => self.mxcc_regs[5],
-            0x01c0_0f00 => self.mxcc_regs[7],
-            _ => 0,
-        }
+        self.mxcc.borrow().read_u64(address)
     }
 
     fn mxcc_write(
@@ -1090,43 +1076,23 @@ impl Srmmu {
         address: u32,
         value: u64,
     ) -> Result<(), MemoryError> {
-        match address {
-            0x01c0_0000 => self.mxcc_data[0] = value,
-            0x01c0_0008 => self.mxcc_data[1] = value,
-            0x01c0_0010 => self.mxcc_data[2] = value,
-            0x01c0_0018 => self.mxcc_data[3] = value,
-            0x01c0_0100 => {
-                // Sun-4M B.III.5.4.1.1: RDY is read-only bit 63, C is bit
-                // 36, and PA[35:5] selects the 32-byte block.
-                self.mxcc_regs[0] = value & 0x0000_001f_ffff_ffe0;
-                let source = value & 0x0000_000f_ffff_ffe0;
-                for (index, word) in self.mxcc_data.iter_mut().enumerate() {
-                    let pair = bus
-                        .read_doubleword(source + 8 * index as u64)
-                        .map_err(MemoryError::Bus)?;
-                    *word = (u64::from(pair[0]) << 32) | u64::from(pair[1]);
-                }
-                self.mxcc_regs[0] |= 1 << 63;
-            }
-            0x01c0_0200 => {
-                self.mxcc_regs[1] = value & 0x0000_001f_ffff_ffe0;
-                let destination = value & 0x0000_000f_ffff_ffe0;
-                for (index, word) in self.mxcc_data.iter().enumerate() {
-                    bus.write_doubleword(
-                        destination + 8 * index as u64,
-                        [(word >> 32) as u32, *word as u32],
-                    )
-                    .map_err(MemoryError::Bus)?;
-                }
-                self.mxcc_regs[1] |= 1 << 63;
-            }
-            0x01c0_0a00 => self.mxcc_regs[3] = value,
-            0x01c0_0c00 => self.mxcc_regs[5] = value,
-            0x01c0_0e00 => self.mxcc_regs[6] &= !value,
-            0x01c0_0f00 => self.mxcc_regs[7] = value,
-            _ => {}
-        }
-        Ok(())
+        self.mxcc
+            .borrow_mut()
+            .write_u64(bus, address, value)
+            .map_err(MemoryError::Bus)
+    }
+
+    /// Shared state for the CPU-module physical control window.
+    pub fn mxcc_handle(&self) -> Rc<RefCell<MxccState>> {
+        self.mxcc.clone()
+    }
+
+    pub fn set_mxcc(&mut self, mxcc: Rc<RefCell<MxccState>>) {
+        self.mxcc = mxcc;
+    }
+
+    pub fn reset_mxcc(&mut self) {
+        self.mxcc.borrow_mut().reset();
     }
 
     /// Diagnostic TLB writes install a real translation on the reference

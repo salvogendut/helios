@@ -1,6 +1,7 @@
 //! Machine-owned physical decoding. Device bytes never pass through RAM's
 //! word-based narrow-access defaults or a speculative read-modify-write.
 use crate::bus::{Bus, BusError, BusErrorKind, IoTlbFlush, MapError, MemoryBus, MemoryRequest};
+use crate::devices::mxcc::MxccState;
 use crate::devices::{
     auxiliary::Auxiliary,
     cgsix::{Cgsix, VRAM_BYTES, VRAM_OFFSET},
@@ -23,6 +24,8 @@ use crate::devices::{
     timer::Timers,
 };
 use crate::dram::{Ss5Dram, APERTURE_BYTES};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 pub const IO_CONTROL_BASE: u64 = 0x1000_0000;
 pub const CGSIX_BASE: u64 = 0x3000_0000; // SS5 external SBus slot 1
@@ -411,6 +414,7 @@ pub struct SystemBus {
     prom_phase: u64,
     cgsix: Option<Cgsix>,
     sx: Option<Sx>,
+    mxcc: Option<Rc<RefCell<MxccState>>>,
     device_ns: u64,
 }
 
@@ -437,6 +441,7 @@ impl SystemBus {
             prom_phase: 0,
             cgsix: None,
             sx: None,
+            mxcc: None,
             device_ns: 0,
         }
     }
@@ -491,6 +496,14 @@ impl SystemBus {
     }
     pub fn sx(&self) -> Option<&Sx> {
         self.sx.as_ref()
+    }
+    /// Share the CPU's MXCC state with the physical module-control window.
+    pub fn install_mxcc(&mut self, mxcc: Rc<RefCell<MxccState>>) {
+        self.mxcc = Some(mxcc);
+    }
+    fn mxcc_register(&self, address: u64) -> Option<u32> {
+        self.mxcc.as_ref()?;
+        MxccState::physical_register(address)
     }
     fn sx_at(&mut self, address: u64) -> Option<&mut Sx> {
         if self.sx.as_ref().is_some_and(|card| card.contains(address)) {
@@ -718,6 +731,9 @@ impl SystemBus {
         }
         if let Some(card) = &mut self.sx {
             card.reset();
+        }
+        if let Some(mxcc) = &self.mxcc {
+            mxcc.borrow_mut().reset();
         }
         self.cpu_user = false;
         self.prom_cycles = None;
@@ -986,6 +1002,11 @@ impl Bus for SystemBus {
     }
 
     fn read8(&mut self, address: u64) -> Result<u8, BusError> {
+        if let Some(register) = self.mxcc_register(address) {
+            let mxcc = self.mxcc.as_ref().unwrap().clone();
+            let word = mxcc.borrow().read_word(register & !3);
+            return Ok((word >> ((3 - (register & 3)) * 8)) as u8);
+        }
         if let Some(card) = self.sx_at(address) {
             return card
                 .read(address, 1)
@@ -1074,6 +1095,16 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write8(&mut self, address: u64, value: u8) -> Result<(), BusError> {
+        if let Some(register) = self.mxcc_register(address) {
+            let mxcc = self.mxcc.as_ref().unwrap().clone();
+            let shift = (3 - (register & 3)) * 8;
+            let old = mxcc.borrow().read_word(register & !3);
+            let merged = (old & !(0xff << shift)) | (u32::from(value) << shift);
+            return mxcc
+                .borrow_mut()
+                .write_word(self, register & !3, merged)
+                .map_err(|error| BusError { address, ..error });
+        }
         if let Some(card) = self.sx_at(address) {
             return card
                 .write(address, u32::from(value), 0xff)
@@ -1170,6 +1201,17 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read16(&mut self, address: u64) -> Result<u16, BusError> {
+        if let Some(register) = self.mxcc_register(address) {
+            if address & 1 != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
+            let mxcc = self.mxcc.as_ref().unwrap().clone();
+            let word = mxcc.borrow().read_word(register & !3);
+            return Ok((word >> ((2 - (register & 2)) * 8)) as u16);
+        }
         if let Some(card) = self.sx_at(address) {
             return card
                 .read(address, 2)
@@ -1222,6 +1264,22 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write16(&mut self, address: u64, value: u16) -> Result<(), BusError> {
+        if let Some(register) = self.mxcc_register(address) {
+            if address & 1 != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
+            let mxcc = self.mxcc.as_ref().unwrap().clone();
+            let shift = (2 - (register & 2)) * 8;
+            let old = mxcc.borrow().read_word(register & !3);
+            let merged = (old & !(0xffff << shift)) | (u32::from(value) << shift);
+            return mxcc
+                .borrow_mut()
+                .write_word(self, register & !3, merged)
+                .map_err(|error| BusError { address, ..error });
+        }
         if let Some(card) = self.sx_at(address) {
             return card
                 .write(address, u32::from(value), 0xffff)
@@ -1280,6 +1338,15 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read32(&mut self, address: u64) -> Result<u32, BusError> {
+        if let Some(register) = self.mxcc_register(address) {
+            if address & 3 != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
+            return Ok(self.mxcc.as_ref().unwrap().borrow().read_word(register));
+        }
         if let Some(card) = self.sx_at(address) {
             return card
                 .read(address, 4)
@@ -1343,6 +1410,25 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError> {
+        if let Some(register) = self.mxcc_register(address) {
+            if address & 3 != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
+            let mxcc = self.mxcc.as_ref().unwrap().clone();
+            let merged = if mask == u32::MAX {
+                value
+            } else {
+                let old = mxcc.borrow().read_word(register);
+                (old & !mask) | (value & mask)
+            };
+            return mxcc
+                .borrow_mut()
+                .write_word(self, register, merged)
+                .map_err(|error| BusError { address, ..error });
+        }
         if let Some(card) = self.sx_at(address) {
             return card
                 .write(address, value, mask)
@@ -1457,6 +1543,16 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read_doubleword(&mut self, address: u64) -> Result<[u32; 2], BusError> {
+        if let Some(register) = self.mxcc_register(address) {
+            if address & 7 != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
+            let value = self.mxcc.as_ref().unwrap().borrow().read_u64(register);
+            return Ok([(value >> 32) as u32, value as u32]);
+        }
         if let Some(card) = self.sx_at(address) {
             if address & 7 != 0 {
                 return Err(BusError {
@@ -1522,6 +1618,20 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write_doubleword(&mut self, address: u64, words: [u32; 2]) -> Result<(), BusError> {
+        if let Some(register) = self.mxcc_register(address) {
+            if address & 7 != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
+            let mxcc = self.mxcc.as_ref().unwrap().clone();
+            let value = (u64::from(words[0]) << 32) | u64::from(words[1]);
+            return mxcc
+                .borrow_mut()
+                .write_u64(self, register, value)
+                .map_err(|error| BusError { address, ..error });
+        }
         if self.prom_writes_ignored(address) {
             return Ok(());
         }

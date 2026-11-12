@@ -183,3 +183,19 @@ in this review.
 
 Firmware, guest binaries, disk images and kernel memory dumps remain ignored
 local data. None are included in the handoff patch.
+
+## Applied production implementation and disk recovery
+
+The physical module-control alias is now a bus-owned `MxccState` shared by the
+CPU's ASI-2 interface and `SystemBus`; physical addresses `0xff8c00a00`/
+`0xff8c00a04` and the port page at `0xff8c00f04` route to the same masks and
+state. MID 9 remains an absent-module zero window. Native CG14 and CGsix boots
+now reach userland with `mxcc_cachesize=0x00100000`, linesize `0x20`, and the
+page-color mask `0xff`.
+
+The `/usr` failure was resolved on a cloned disk with Solaris 2.6 single-user
+CD recovery: rebuild `/dev`/`/devices`, run `devlinks`, `disks`, `tapes` and
+`ports` with `-r /a`, copy the new `path_to_inst`, and verify
+`/a/dev/dsk/c0t3d0s6` points at the SS-20/Axil IOMMU/SBus device path. The
+migrated clone reaches `helios console login:`. Full details are in
+[scsi.md](../docs/scsi.md#moving-an-installed-solaris-26-disk-from-ss-5-to-ss-20axil).

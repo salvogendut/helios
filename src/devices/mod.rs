@@ -11,6 +11,7 @@ pub mod interrupt;
 pub mod io_control;
 pub mod keyboard;
 pub mod mouse;
+pub mod mxcc;
 pub mod nvram;
 pub mod reset;
 pub mod scsi;

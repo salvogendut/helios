@@ -65,9 +65,11 @@ modules, low slots first.
 - The built-in SX/cg14 subset is installed only for the SS-20. It models an
   8 MiB VSIMM mirrored through the 64 MiB aperture, the SX register/control
   blocks and the ASI `0x28` memory alias at `0x800000000 + target PA`.
-  `cg14` opens through OBP and draws the native 1152x900 console. The MXCC
-  stream source/destination registers copy four doublewords through the
-  regular bus; full MXCC error/control semantics remain incomplete.
+  `cg14` opens through OBP and draws the native 1152x900 console. MXCC state
+  is shared by ASI 2 and the populated CPU-0 module-control alias at
+  `0xf_f8c0_0000`; absent MID 9 remains a zero window. Stream source/
+  destination registers copy four doublewords through the regular bus.
+  Full MXCC error/control semantics remain incomplete.
   Monitor sense 4 selects the 1152x900 timing used by the renderer, and CLUT
   words are decoded as `00BBGGRR`. With these settings original OBP opens
   `cg14` and draws a native `ok` console. The Axil 320 shares the SS-20

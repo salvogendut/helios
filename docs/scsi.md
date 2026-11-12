@@ -207,3 +207,42 @@ chaining/terminal-count interrupts, arbitration denial and mapping-fault recover
 Image-content comparisons verify that testing does not modify source media.
 Primary NCR and SCSI-2 sources and pinned emulator comparisons are listed in
 [references.md](references.md).
+
+## Moving an installed Solaris 2.6 disk from SS-5 to SS-20/Axil
+
+An installed SS-5 disk keeps SS-5 physical paths in `/etc/vfstab`,
+`/etc/path_to_inst`, `/dev/dsk` and `/dev/rdsk`. A normal `boot disk -r` is not
+enough because `/usr` is mounted through the old path before reconfiguration
+can repair the installation. Work on a disposable clone, not the source image.
+Boot the Solaris 2.6 CD in single-user mode on the target machine and run the
+Solaris 2.6 device tools against the cloned root:
+
+```text
+ok boot cdrom -s
+# mount /dev/dsk/c0t3d0s0 /a
+# rm -rf /a/dev /a/devices
+# mkdir /a/dev /a/devices
+# (cd /devices && find . -print | cpio -pvdum /a/devices)
+# devlinks -r /a
+# disks -r /a
+# tapes -r /a
+# ports -r /a
+# cp /etc/path_to_inst /a/etc/path_to_inst
+```
+
+Verify that the logical slice still used by `/etc/vfstab` resolves to the new
+controller path:
+
+```text
+# ls -l /a/dev/dsk/c0t3d0s6
+... -> ../../devices/iommu@f,e0000000/sbus@f,e0001000/espdma@f,400000/esp@f,800000/sd@3,0:g
+```
+
+Then boot the cloned disk read/write. The SS-5 logical disk name
+`c0t3d0s6` remains valid, but its `/dev` links now point at the SS-20/Axil
+IOMMU/SBus path. A tested clone reaches `helios console login:`; booting it
+read-only is not a valid test because Solaris writes during filesystem checks.
+`drvconfig` is the Solaris 2.6 physical-node generator; the `devlinks`, `disks`,
+`tapes` and `ports` link generators are the corresponding logical-device
+rebuild steps. Do not use Solaris 10+ `devfsadm` workflow assumptions for a
+2.6 installation.

@@ -262,16 +262,22 @@ impl Cpu {
     pub fn reset_sun4m(&mut self) {
         let config = self.mmu.config();
         let identity = self.identity;
+        let mxcc = self.mmu.mxcc_handle();
         *self = Self::new(0);
         self.wim = 1;
         self.identity = identity;
         self.mmu = Srmmu::reset_with(config);
+        self.mmu.set_mxcc(mxcc);
+        self.mmu.reset_mxcc();
         self.fpu.set_version(identity.fpu_version);
     }
 
     /// Select a profile's physical-address/boot-window behavior before reset.
     pub fn use_mmu_config(&mut self, config: MmuConfig) {
+        let mxcc = self.mmu.mxcc_handle();
         self.mmu = Srmmu::reset_with(config);
+        self.mmu.set_mxcc(mxcc);
+        self.mmu.reset_mxcc();
     }
 
     /// Select the CPU model identity before power-on reset. MMU configuration

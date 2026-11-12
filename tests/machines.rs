@@ -186,3 +186,114 @@ fn writable_psr_and_fsr_bits_do_not_change_cpu_identity() {
     machine.cpu.fpu.load_fsr(0xffff_ffff);
     assert_eq!(machine.cpu.fpu.fsr() & (7 << 17), 0);
 }
+
+#[test]
+fn mxcc_control_state_is_shared_by_asi2_and_the_physical_module_alias() {
+    let profile = MachineProfile::Ss20;
+    let mut machine = Machine::with_profile(
+        profile,
+        16 * 1024 * 1024,
+        &0u32.to_be_bytes(),
+        profile.default_nvram(),
+    )
+    .unwrap();
+    // Processor-side ASI 2 establishes PF|MC|PE.
+    machine
+        .cpu
+        .mmu
+        .store_doubleword(&mut machine.bus, 0x01c0_0a00, 2, [0, 0x38])
+        .unwrap();
+    assert_eq!(machine.bus.read32(0xf_f8c0_0a04).unwrap(), 0x38);
+    // Physical CPU-module control space enables CE; ASI 2 must see it.
+    machine.bus.write32(0xf_f8c0_0a04, 0x3c).unwrap();
+    assert_eq!(
+        machine
+            .cpu
+            .mmu
+            .load_doubleword(&mut machine.bus, 0x01c0_0a00, 2)
+            .unwrap(),
+        [0, 0x3c]
+    );
+    // Clearing PE through ASI 2 is visible through the physical alias.
+    machine
+        .cpu
+        .mmu
+        .store(&mut machine.bus, 0x01c0_0a04, 2, Width::Word, 0x34)
+        .unwrap();
+    assert_eq!(machine.bus.read32(0xf_f8c0_0a04).unwrap(), 0x34);
+    // Reserved bits ignore writes; absent MID 9 is not aliased to CPU 0.
+    machine.bus.write32(0xf_f8c0_0a04, 0xffff_ffff).unwrap();
+    assert_eq!(machine.bus.read32(0xf_f8c0_0a04).unwrap(), 0x23c);
+    assert_eq!(machine.bus.read32(0xf_f9c0_0a04).unwrap(), 0);
+    // Doubleword physical access and the observed port-register page alias.
+    machine
+        .cpu
+        .mmu
+        .store_doubleword(&mut machine.bus, 0x01c0_0f00, 2, [0, 0x1234])
+        .unwrap();
+    assert_eq!(machine.bus.read32(0xf_f8c0_0f04).unwrap(), 0x1220);
+    machine
+        .bus
+        .write_doubleword(0xf_f8c0_0a00, [0, 0x8])
+        .unwrap();
+    assert_eq!(
+        machine.bus.read_doubleword(0xf_f8c0_0a00).unwrap(),
+        [0, 0x8]
+    );
+    // Power-on reset clears the shared state on both paths.
+    machine.reset();
+    assert_eq!(machine.bus.read32(0xf_f8c0_0a04).unwrap(), 0);
+    assert_eq!(
+        machine
+            .cpu
+            .mmu
+            .load_doubleword(&mut machine.bus, 0x01c0_0a00, 2)
+            .unwrap(),
+        [0, 0]
+    );
+}
+
+#[test]
+fn mxcc_physical_alias_works_through_bypass_and_translated_accesses() {
+    let profile = MachineProfile::Ss20;
+    let mut machine = Machine::with_profile(
+        profile,
+        16 * 1024 * 1024,
+        &0u32.to_be_bytes(),
+        profile.default_nvram(),
+    )
+    .unwrap();
+    machine
+        .cpu
+        .mmu
+        .store_doubleword(&mut machine.bus, 0x01c0_0a00, 2, [0, 0x20])
+        .unwrap();
+    // ASI 0x2f bypass: physical ff8c00a04.
+    assert_eq!(
+        machine
+            .cpu
+            .mmu
+            .load(&mut machine.bus, 0xf8c0_0a04, 0x2f, Width::Word)
+            .unwrap(),
+        0x20
+    );
+    // A normal translated access through a 16 MiB leaf at PA ff8c00000.
+    let va = 0x4000_0000u32;
+    // L1 index 0x40 -> L1 table at 0x1000; L2 index 0 -> L2 at 0x2000;
+    // L3 index 0 -> PTE at 0x3000 mapping VA 0x40000000 to ff8c00000.
+    machine.bus.write32(0x1000, 0x401).unwrap();
+    machine.bus.write32(0x4100, 0x501).unwrap();
+    machine.bus.write32(0x5000, 0x601).unwrap();
+    machine.bus.write32(0x6000, 0xff8c_008e).unwrap();
+    let mut mmu = helios::mmu::Srmmu::reset_with(profile.mmu());
+    mmu.store(&mut machine.bus, 0x200, 4, Width::Word, 0)
+        .unwrap();
+    mmu.store(&mut machine.bus, 0x100, 4, Width::Word, 0x100)
+        .unwrap();
+    mmu.store(&mut machine.bus, 0, 4, Width::Word, 1).unwrap();
+    assert_eq!(
+        mmu.load(&mut machine.bus, va + 0xa04, 11, Width::Word)
+            .unwrap(),
+        0x20
+    );
+}

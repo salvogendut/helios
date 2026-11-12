@@ -189,6 +189,9 @@ impl Machine {
         };
         machine.cpu.use_cpu_config(profile.cpu_config());
         machine.cpu.use_mmu_config(profile.mmu());
+        if profile.mmu().reference_mmu {
+            machine.bus.install_mxcc(machine.cpu.mmu.mxcc_handle());
+        }
         machine.install_prom(prom, nvram)?;
         if profile.builtin_sx() {
             machine
