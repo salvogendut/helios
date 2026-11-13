@@ -17,6 +17,11 @@ The final core suite has 499 passing tests. Formatting, Clippy with
 `-D warnings`, and all four built-in demos pass. Network tests require local
 loopback sockets outside this environment's restricted sandbox.
 
+The Rust 1.74 CI pass flagged the old lazy aperture-offset closure. The
+lookup now uses checked subtraction before the upper-bound test, preserving
+rejection below the aperture without eagerly evaluating a subtraction that
+could underflow. This also satisfies the older Clippy version.
+
 The separate `helios-ui` CI target revealed a compile failure: the new shared
 MXCC `Rc<RefCell<_>>` makes `Machine` thread-local. Constructing the machine
 inside the worker fixes the transfer without adding synchronization to the

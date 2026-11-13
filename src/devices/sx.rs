@@ -227,9 +227,8 @@ impl Sx {
     }
 
     fn aperture_offset(&self, address: u64) -> Option<usize> {
-        (VSIMM_VRAM_BASE..VSIMM_VRAM_BASE + VRAM_APERTURE_BYTES)
-            .contains(&address)
-            .then(|| (address - VSIMM_VRAM_BASE) as usize)
+        let offset = address.checked_sub(VSIMM_VRAM_BASE)?;
+        (offset < VRAM_APERTURE_BYTES).then_some(offset as usize)
     }
 
     fn vram_offsets(offset: usize, bytes: u64) -> Option<([usize; 4], bool)> {
