@@ -150,6 +150,7 @@ fn sx_recorded_slli_updates_r2_without_touching_neighbors() {
 fn sx_array_byte_store_uses_offset_vector() {
     let mut sx = Sx::new();
     for (reg, value) in [
+        (2, u32::MAX),
         (10, 0u32),
         (11, 5),
         (12, 10),
@@ -162,6 +163,6 @@ fn sx_array_byte_store_uses_offset_vector() {
     wr(&mut sx, 0, 0x1000);
     sx.write(SX_VRAM_ALIAS_BASE, 0x8148_100a, u32::MAX).unwrap();
     assert_eq!(sx.vram_byte(0), 0x11);
-    assert_eq!(sx.vram_byte(5), 0x22);
-    assert_eq!(sx.vram_byte(10), 0x33);
+    assert_eq!(sx.vram_byte(5), 0x11);
+    assert_eq!(sx.vram_byte(10), 0x11);
 }

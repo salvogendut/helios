@@ -181,6 +181,9 @@ scalar-OR and masked store-select/long/byte commands. The CG14 scanout decodes
 8-, 16- and 32-bit pixels through the raw, BGR, X16/C16 and X32/B32/G32/R32
 apertures. The observed SX shift (`SLLI`), PLOT/Bresenham generation, logic, masked
 store, mixed store-select and the captured indexed byte-store path execute
-with register/range atomicity. Unsupported SX instructions and command data
+with register/range atomicity. CG14 vertical retrace drives the video
+interrupt at source bit 20/PIL 8; XLUT and CLUT shadow updates stream through
+the `0xf000` autoincrement port, and scanout routes the X selector through
+XLUT to the selected color table and B/G/R component. Unsupported SX instructions and command data
 types still return an explicit unsupported-bus error instead of being stored
 as pixel data; indexed-store mode remains inferred from the captured traffic.

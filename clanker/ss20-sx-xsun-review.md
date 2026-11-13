@@ -423,3 +423,274 @@ is inferred from the captured source-R32 form and Sun's array-store
 description; it still needs independent hardware confirmation. No graphical
 login, terminal scrolling, window interaction, or Heliacal UI validation is
 claimed.
+
+## Flat-display follow-up: retrace, color tables and scanout
+
+The follow-up reviewed `sx-fast8` against SX source hash
+`8925151483a35e21a9ed4f84a7fbc661d37016ec2f53cf5eebca86e3304ca7dc`.
+The two previous PLOT review tests and all eleven current production SX tests
+pass. Six new independent display/execution checks fail. No production code
+was changed, no guest boot was run, and no source disk was opened for writes.
+New artifacts live under ignored `local/review-2026-11-13-sx-scanout/`.
+
+The next milestone needs the CG14 display pipeline as well as SX execution:
+**vertical retrace -> guest interrupt handler -> color-table programming ->
+pixel routing**. Continuing opcode coverage alone cannot make this run display
+correctly.
+
+### Solaris is waiting for the missing retrace path to update its tables
+
+Original Sun sources make the dependency explicit:
+
+- [Solaris 2.6 cgfourteen.c](https://github.com/Arquivotheca/Solaris-2.6/blob/2.6/os_net/src_ws/usr/src/uts/sun/io/cgfourteen.c):
+  `MDI_SET_XLUT`/`MDI_SET_CLUT` update shadow tables and enable vertical
+  interrupts. `mdi_poll()` requires `MDI_MSR_INTPEND`, and `mdi_intr()` pushes
+  the pending XLUT/CLUT/gamma/cursor changes when `MDI_MSR_VINT` is set.
+  See downloaded source lines 1422, 3690, 3730, 4896 and 4925.
+- [Sun cg14reg.h](https://github.com/Arquivotheca/Solaris-2.6/blob/2.6/os_net/src_ws/usr/src/uts/sun/sys/cg14reg.h):
+  MCR bit `0x80` enables interrupts; MSR at control offset 4 reports
+  `INTPEND=0x20` and `VINT=0x10`.
+- `mdi_intr()` at downloaded source line 5104 explains the acknowledgement:
+  a write to MSR clears vertical pending; MSR is read-only status, not a byte
+  of arbitrary guest-writable storage.
+- [NetBSD intreg.h](https://github.com/NetBSD/src/blob/trunk/sys/arch/sparc/sparc/intreg.h)
+  defines `SINTR_VI=0x00100000`, and the
+  [pinned QEMU interrupt controller](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/intc/slavio_intctl.c)
+  maps source bit 20 to PIL 8. This is the onboard video input, distinct from
+  the CGsix SBus interrupt route.
+
+Current `Sx` has no retrace clock or IRQ state. `SystemBus::advance_devices_ns`,
+`advance_seconds` and `interrupt_levels` service CGsix but never SX/CG14;
+`Source` and `hardware_levels()` omit video bit 20. MSR is ordinary storage.
+The latest trace ends with MCR `0xf0`, yet there is no modeled source that can
+perform the requested retrace service. Implement timing from emulated device
+time, independently of rendering/frontend calls, with pending, mask, enable,
+acknowledge and reset behavior tested at the bus level.
+
+### The handler uses the common autoincrement port
+
+Adding the interrupt alone will expose another missing path. In `mdi_intr()`:
+
+| Operation | Select starting table/index | Stream data |
+| --- | --- | --- |
+| XLUT | byte write at `0x3800 + index` | repeated byte writes at `0xf000` |
+| CLUT1 | word write at `0x4800 + 4*index` | repeated word writes at `0xf000` |
+| CLUT2 | word write at `0x5800 + 4*index` | repeated word writes at `0xf000` |
+
+These are offsets within CG14 control space. Preserve the table selection and
+increment its index with each stream item; expose the resulting entries through
+normal XLUT/CLUT reads. CLUT words are `AABBGGRR`, including the alpha byte.
+The current device writes unrelated bytes in its `control` array instead.
+The XLUT and CLUT2 stream regressions both leave the intended entries zero.
+Extend MMIO logging to include the selection apertures, all CLUTs and `0xf000`;
+the current trace filter excludes these writes.
+
+### X is a pixel-routing selector, not always the visible color index
+
+[Sun cg14io.h](https://github.com/Arquivotheca/Solaris-2.6/blob/2.6/os_net/src_ws/usr/src/uts/sun/sys/cg14io.h)
+defines the XLUT source/table choices. For example, `0x44` selects left CLUT1
+with its index from B; `0x84` selects left CLUT2 from B. The X byte selects an
+XLUT entry; that entry determines the source components, color tables and blend
+paths. The right path supplies blend alpha. The current `pixels()` special case
+for XLUT value `0x40` uses CLUT1[X], with all other values treated as direct RGB.
+That does not implement the documented routing.
+
+A two-pixel fixture uses the same X=`0xfa`, different B indices 1 and 2, XLUT
+`0x44`, and deliberately unrelated G/R bytes. Expected colors come from CLUT1
+entries 1 and 2. Current scanout instead emits the unrelated raw BGR data.
+Implement the configured routing; do not force the B plane globally or replace
+the guest's table values to make one screenshot appear.
+
+The offline replay of `/tmp/sx-fast8.err` accepts all **45,580 logged writes**:
+
+```text
+X plane: 0xfa at all 1,036,800 visible pixels
+B plane: 0 at 1,036,469 pixels; 1 at 331 pixels
+G/R planes: zero at every visible pixel
+```
+
+The B-plane diagnostic image contains a small terminal glyph/cursor shape near
+the requested `(100,100)` location. The unchanged X plane explains why the
+current X-indexed output hides these writes. The supplied framebuffer dump has
+1,036,740 magenta pixels and 60 black cursor pixels. This replay is evidence
+about logged drawing operations, **not a full machine snapshot**: the trace
+omits most direct VRAM writes and CLUT/other control writes. Its diagnostic
+palette is the replay's default CLUT, not the guest's complete color state.
+Capture raw VRAM plus XLUT/CLUT state in the next guest run to confirm the
+complete result.
+
+### Two indexed-store problems remain
+
+1. `array = width == 1 && source >= 32` also misclassifies legal direct stores.
+   NetBSD `cg14_bitblt` uses ordinary `SX_STB` with R32. A fixture for
+   `SX_STB(32, 2, 5)` (`0x81001005`) should place three source bytes at offsets
+   5, 6 and 7. It instead repeatedly writes offset zero and leaves only `0x33`.
+   This disproves the broad source-register heuristic; the exact array format
+   still needs decoding independently.
+2. The array branch bypasses store-select and consumes R32, R33, R34, ... .
+   The actual constant-color line routine initializes only R32/R33 using
+   `0xb1e01009`. Combining the captured PLOT fixture with `0x8248100a` now
+   writes **`[1, 1, 0, 0, 0]`**, where all five points should have color 1.
+   The synthetic array test with three independently initialized colors does
+   not validate the actual constant-color command. Decode addressing and data
+   selection separately. The combined fixture is inferred from the original
+   driver, not measured on hardware.
+
+### Reproduction and next run
+
+```sh
+cargo test --locked --offline \
+  --manifest-path local/review-2026-11-13-sx-scanout/Cargo.toml --test display
+cargo run --locked --offline \
+  --manifest-path local/review-2026-11-13-sx-scanout/Cargo.toml -- \
+  /tmp/sx-fast8.err local/review-2026-11-13-sx-scanout
+```
+
+The six failures are retrace status/IRQ, XLUT stream, CLUT stream, XLUT B-source
+scanout, direct R32 store, and PLOT followed by constant-color store. Sources,
+hashes, tests, replayed VRAM/control and per-plane diagnostic images are saved
+locally. The new tests do not establish full PLOT timing/ISA or blend rounding.
+
+Implement retrace/interrupt delivery and table streaming together, then validate
+XLUT/CLUT routing. Keep the two store regressions in the same acceptance set.
+Trace the guest's handler updating the tables and acknowledging MSR, compare
+raw planes to rendered pixels, then repeat xterm and Heliacal interaction.
+Fix the harness process check too: this Solaris `/usr/bin/grep` rejects `-E`,
+as the transcript reports. Use `ps -ef | egrep '[X]sun|[x]term'`. No window
+manager is started by this harness, so title bars are a later, separate check.
+
+## Retrace, tables and routing applied
+
+The CG14 now advances a vertical retrace clock from emulated device time,
+latches MSR INTPEND/VINT while MCR interrupt enable is set, clears pending on
+an MSR write, and wires source bit 20 to PIL 8. XLUT/CLUT selection and the
+common `0xf000` autoincrement stream are implemented, including CLUT alpha
+bytes. Scanout uses the X XLUT entry to choose the left color table and B/G/R
+index, so the captured X=`0xfa`, B-indexed pixels now render through CLUT1.
+
+Direct `SX_STB` with R32 is no longer classified as indexed; indexed byte
+stores are limited to the captured select-store form and use the R10 offset
+vector with R2 whole-element color selection. All six scanout regressions,
+the earlier SX/PLOT regressions, and the production SX tests pass.
+
+The manual Xsun/xterm repeat now shows a white terminal rectangle and cursor
+instead of a uniform magenta field. That is the first visible client
+milestone, not an accepted desktop: text, scrolling, wrapping, interaction,
+window-manager decorations and Heliacal validation remain unverified.
+
+## Visible-client follow-up: selector order and polarity hide the prompt
+
+The six previous display regressions pass against the new display-update
+implementation. `/tmp/sx-fast9.png` shows the terminal rectangle and root
+stipple, but its prompt is a solid black block. The latest trace supplies the
+selector bit order and polarity that the earlier uniform/alternating-mask
+tests intentionally left open.
+
+### Exact text failure and an isolated replay
+
+`/tmp/sx-fast9.err:46579` initializes R8=`0` and R9=`0x01010101`, then draws
+the two-character `# ` prompt through the B32 aperture using `0x85c80407`
+(12 selected, masked byte stores from the R8/R9 pair, displacement 7).
+The 13 row masks include `0x50000000` and `0xf8000000`; their significant bits
+are at the **most-significant** end of R2. The glyph is:
+
+```text
+............
+............
+............
+.#.#........
+.#.#........
+#####.......
+.#.#........
+#####.......
+.#.#........
+.#.#........
+............
+............
+............
+```
+
+[NetBSD cg14_putchar](https://github.com/NetBSD/src/blob/trunk/sys/arch/sparc/dev/cgfourteen.c)
+independently establishes the convention: R8 is background, R9 foreground;
+8-bit glyph rows are shifted left by 24 (16-bit rows by 16), and `SX_STBS`
+starts from R8. The inspected local revision is 1.102, 2026-10-13.
+
+The current implementation reads R2 from bit 0 upward and picks the second
+color when that bit is zero. Thus these high-bit masks all produce a solid
+foreground block. For the observed selected stores the corrected choice is:
+
+```rust
+let selector = ((self.regs[2] >> (31 - index)) & 1) as usize;
+let selected = self.regs[(source + selector) & 127];
+```
+
+Apply the convention consistently to selected direct and indexed stores.
+The register pair used for the constant-color PLOT fixture contains identical
+colors, so it could not expose this error. Distinguish element selection from
+plane masking as before.
+
+An isolated copy of `Sx` changes only these two selector expressions in each
+branch. Replaying the same 46,673 logged writes with it makes the `#` prompt
+and outlined terminal cursor visible. The unmodified replay matches the guest
+dump **exactly within the terminal interior** `(101,101)..(585,417)`; the
+selector experiment changes 180 pixels within the 18x13 prompt region.
+The full replay does not reproduce all root-window pixels because the trace
+omits direct VRAM writes after the first 80. This is a focused replay result,
+not a fresh guest boot or complete desktop validation.
+
+Local artifacts under `local/review-2026-11-13-sx-text/` include:
+
+- `glyph-comparison.svg`: enlarged diagnostic chart of the prompt before/after.
+- `baseline/` and `selector-corrected/`: raw replayed VRAM/control and scanout.
+- `src/sx-experiment.rs` and `selector-experiment.diff`: isolated selector change.
+- `tests/text.rs`: independent byte-glyph and long-element selector expectations,
+  plus the two remaining display-update edge cases below.
+- `sha256.txt`, `trace-excerpts.txt`, and test/replay logs.
+
+### Two display-update edge cases also fail
+
+1. **CLUT start selection stops after index 63.** Each CLUT autoincrement
+   selector has 256 **word** entries, so its range is 0x400 bytes. The current
+   `base..base+0x100` recognizes only 64 entries. CLUT1 starts must cover
+   `0x4800..0x4bff`, CLUT2 `0x5800..0x5bff`. A fixture checking indices 63,
+   64 and 255 fails at 64. Initial full-table streams from zero pass, which
+   explains why the existing test and current screenshot did not detect it.
+   The original Sun `mdi_clut_address` defines `c_clut_inc[256]` as words.
+2. **MCR interrupt disable does not gate an already-pending IRQ.** After a
+   retrace, changing MCR from `0xf0` to `0x70` leaves PIL 8 asserted because
+   `irq()` returns `retrace_pending` unconditionally. Gate delivery with MCR
+   interrupt enable while preserving the separately defined pending/ack state.
+   Sun's driver temporarily disables this interrupt while updating its shadow
+   tables. The regression checks that delivery drops; it does not prescribe
+   unverified latch behavior on disable or re-enable.
+
+The six earlier display tests remain green. All four new tests fail against
+production; the isolated selector experiment makes the two selector tests
+pass while the CLUT-range and IRQ-gating tests continue to fail. Production
+source remains untouched by this review.
+
+```sh
+cargo test --locked --offline \
+  --manifest-path local/review-2026-11-13-sx-text/Cargo.toml --test text
+# Isolated experiment, not the production core: two pass, two fail.
+cargo test --locked --offline \
+  --manifest-path local/review-2026-11-13-sx-text/Cargo.toml \
+  --features selector-corrected --test text
+```
+
+### Acceptance sequence after these corrections
+
+Promote the display/text fixtures from ignored `local/` into the tracked
+device regression suite before committing the milestone. Then run a terminal
+that automatically prints a deterministic character grid, followed by numbered
+lines long enough to trigger wrapping and scrolling. This separates rendering
+from keyboard delivery and provides expected output for comparison. Capture
+the next unsupported instruction or first incorrect copy when it occurs.
+
+After text and scrolling work, start a window manager explicitly and validate
+move/resize/expose redraw. The current manual harness starts only Xsun and
+xterm; missing title bars are expected in that setup. Rebuild Heliacal against
+the corrected core and test focus, keyboard input, cursor movement and redraw
+there. The `sx-fast9` transcript still contains the old rejected `grep -E`
+command although the harness source now says `egrep`; ensure the harness
+binary is rebuilt as well.

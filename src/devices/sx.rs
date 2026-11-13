@@ -43,6 +43,13 @@ const SX_USER_PAGE: usize = 0x1000;
 
 const SX_GO: u32 = 0x1000;
 const SX_MT: u32 = 0x4000;
+const RETRACE_PERIOD_NS: u64 = 1_000_000_000 / 76;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TableStream {
+    Xlut,
+    Clut(usize),
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sx {
@@ -59,6 +66,10 @@ pub struct Sx {
     go: bool,
     vram: Vec<u8>,
     generation: u64,
+    table_stream: Option<TableStream>,
+    table_index: usize,
+    retrace_phase_ns: u64,
+    retrace_pending: bool,
     trace: bool,
     fb_trace: u32,
 }
@@ -111,6 +122,10 @@ impl Sx {
             go: false,
             vram: vec![0; VRAM_BYTES],
             generation: 0,
+            table_stream: None,
+            table_index: 0,
+            retrace_phase_ns: 0,
+            retrace_pending: false,
             trace: false,
             fb_trace: 0,
         }
@@ -127,6 +142,59 @@ impl Sx {
     }
     pub fn set_trace(&mut self, trace: bool) {
         self.trace = trace;
+    }
+
+    pub fn advance_ns(&mut self, ns: u64) {
+        self.retrace_phase_ns = self.retrace_phase_ns.saturating_add(ns);
+        while self.retrace_phase_ns >= RETRACE_PERIOD_NS {
+            self.retrace_phase_ns -= RETRACE_PERIOD_NS;
+            if self.control[0] & 0x80 != 0 {
+                self.retrace_pending = true;
+            }
+        }
+    }
+
+    pub fn irq(&self) -> bool {
+        self.retrace_pending
+    }
+
+    fn msr(&self) -> u8 {
+        (self.control[4] & !0x30) | if self.retrace_pending { 0x30 } else { 0 }
+    }
+
+    fn table_stream(&mut self, offset: usize, value: u32, mask: u32) -> bool {
+        if (0x3800..0x3900).contains(&offset) {
+            self.table_stream = Some(TableStream::Xlut);
+            self.table_index = offset - 0x3800;
+            return true;
+        }
+        for (base, table) in [(0x4800, 0), (0x5800, 1), (0x6800, 2)] {
+            if (base..base + 0x100).contains(&offset) {
+                self.table_stream = Some(TableStream::Clut(table));
+                self.table_index = (offset - base) / 4;
+                return true;
+            }
+        }
+        if offset != 0xf000 {
+            return false;
+        }
+        match self.table_stream {
+            Some(TableStream::Xlut) => {
+                if self.table_index < 256 {
+                    self.control[0x3000 + self.table_index] = value as u8;
+                    self.table_index += 1;
+                }
+            }
+            Some(TableStream::Clut(table)) => {
+                if self.table_index < 256 {
+                    let base = 0x4000 + table * 0x1000 + self.table_index * 4;
+                    Self::write_bytes(&mut self.control[..], base, value, mask);
+                    self.table_index += 1;
+                }
+            }
+            None => {}
+        }
+        true
     }
     pub fn control_byte(&self, offset: usize) -> u8 {
         self.control[offset]
@@ -490,7 +558,7 @@ impl Sx {
         if !matches!(op & 0xf, 0 | 1 | 8 | 9) {
             return Err(BusErrorKind::Unsupported("SX memory command"));
         }
-        let array = width == 1 && source >= 32;
+        let array = width == 1 && select && source >= 32;
         let target = ((address - SX_MEM_BASE) & !7) + displacement;
         let mut offsets = [0usize; 32];
         if count > offsets.len() {
@@ -522,7 +590,8 @@ impl Sx {
         };
         for (index, offset) in offsets.iter().take(count).enumerate() {
             let selected = if array {
-                self.regs[(source + index) & 127]
+                let selector = (self.regs[2] >> (index & 31)) & 1;
+                self.regs[(source + usize::from(selector == 0)) & 127]
             } else if select {
                 let selector = (self.regs[2] >> (index & 31)) & 1;
                 self.regs[(source + usize::from(selector == 0)) & 127]
@@ -551,6 +620,9 @@ impl Sx {
         }
         if (VSIMM_CTL_BASE..VSIMM_CTL_BASE + VSIMM_CTL_SIZE).contains(&address) {
             let offset = (address - VSIMM_CTL_BASE) as usize;
+            if offset == 4 {
+                return self.read_bytes(&[self.msr()], 0, bytes);
+            }
             if offset == CG14_RSR {
                 return Ok(0x01u32);
             }
@@ -589,6 +661,18 @@ impl Sx {
         }
         if (VSIMM_CTL_BASE..VSIMM_CTL_BASE + VSIMM_CTL_SIZE).contains(&address) {
             let offset = (address - VSIMM_CTL_BASE) as usize;
+            if offset == 4 {
+                self.retrace_pending = false;
+                self.generation = self.generation.wrapping_add(1);
+                return Ok(());
+            }
+            if self.table_stream(offset, value, mask) {
+                if self.trace {
+                    eprintln!("CG14 STREAM {offset:#06x} <- {value:#010x} mask {mask:#010x}");
+                }
+                self.generation = self.generation.wrapping_add(1);
+                return Ok(());
+            }
             Self::write_bytes(&mut self.control[..], offset, value, mask);
             if self.trace
                 && (offset < 0x100
@@ -653,13 +737,13 @@ impl Sx {
         let mode = (self.control[0] >> 4) & 3;
         for (index, pixel) in output.iter_mut().enumerate() {
             let rgb = match mode {
-                0 => self.clut_rgb(usize::from(self.vram[index])),
+                0 => self.clut_rgb(0, usize::from(self.vram[index])),
                 2 => {
                     let raw = index * 2;
                     let x = usize::from(self.vram[raw]);
                     let c = u32::from(self.vram[raw + 1]);
                     if self.control[0x3000 + x] == 0x40 {
-                        self.clut_rgb(x)
+                        self.clut_rgb(0, x)
                     } else {
                         (u32::try_from(x).unwrap() << 8) | c
                     }
@@ -670,11 +754,7 @@ impl Sx {
                     let b = u32::from(self.vram[raw + 1]);
                     let g = u32::from(self.vram[raw + 2]);
                     let r = u32::from(self.vram[raw + 3]);
-                    if self.control[0x3000 + x] == 0x40 {
-                        self.clut_rgb(x)
-                    } else {
-                        (r << 16) | (g << 8) | b
-                    }
+                    self.routed_rgb(x, b, g, r)
                 }
             };
             *pixel = rgb;
@@ -684,10 +764,31 @@ impl Sx {
         }
     }
 
-    fn clut_rgb(&self, color: usize) -> u32 {
-        let off = CG14_CLUT1 + color * 4;
+    fn clut_rgb(&self, table: usize, color: usize) -> u32 {
+        let off = CG14_CLUT1 + table * 0x1000 + color * 4;
         let rgb = u32::from_be_bytes(self.control[off..off + 4].try_into().unwrap());
         ((rgb & 0xff) << 16) | (rgb & 0x0000_ff00) | ((rgb >> 16) & 0xff)
+    }
+
+    fn routed_rgb(&self, x: usize, b: u32, g: u32, r: u32) -> u32 {
+        let xlut = self.control[0x3000 + x];
+        let table = match xlut & 0xc0 {
+            0x40 => Some(0),
+            0x80 => Some(1),
+            0xc0 => Some(2),
+            _ => None,
+        };
+        let index = match xlut & 0x0c {
+            0x04 => b as usize,
+            0x08 => g as usize,
+            0x0c => r as usize,
+            _ => x,
+        };
+        if let Some(table) = table {
+            self.clut_rgb(table, index)
+        } else {
+            (r << 16) | (g << 8) | b
+        }
     }
 
     fn cursor_pixel(&self, x: usize, y: usize) -> Option<u32> {

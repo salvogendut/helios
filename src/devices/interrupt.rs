@@ -23,6 +23,7 @@ pub enum Source {
     Ethernet = 16,
     Scsi = 18,
     SystemTimer = 19,
+    Video = 20,
     Floppy = 22,
 }
 
@@ -78,6 +79,7 @@ impl InterruptController {
             (16, 6),
             (18, 4),
             (19, 10),
+            (20, 8),
             (22, 11),
             (30, 15),
         ] {

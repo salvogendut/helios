@@ -517,6 +517,11 @@ impl SystemBus {
             devices.interrupts.set_source(Source::SBus5, card.irq());
         }
     }
+    fn sync_sx_irq(&mut self) {
+        if let (Some(devices), Some(card)) = (&mut self.devices, &self.sx) {
+            devices.interrupts.set_source(Source::Video, card.irq());
+        }
+    }
     fn cgsix_at(&mut self, address: u64) -> Option<&mut Cgsix> {
         if (self.layout.cgsix..self.layout.cgsix + CGSIX_SIZE).contains(&address) {
             self.cgsix.as_mut()
@@ -777,10 +782,14 @@ impl SystemBus {
         if let Some(card) = &mut self.cgsix {
             card.advance_ns(ns);
         }
+        if let Some(card) = &mut self.sx {
+            card.advance_ns(ns);
+        }
         if let Some(devices) = &mut self.devices {
             devices.advance_ns(ns);
         }
         self.sync_cgsix_irq();
+        self.sync_sx_irq();
     }
 
     fn flush_device_time(&mut self) {
@@ -795,6 +804,9 @@ impl SystemBus {
             self.advance_devices_ns(pending);
         }
         if let Some(card) = &mut self.cgsix {
+            card.advance_ns(seconds.saturating_mul(1_000_000_000));
+        }
+        if let Some(card) = &mut self.sx {
             card.advance_ns(seconds.saturating_mul(1_000_000_000));
         }
         if let Some(devices) = &mut self.devices {
@@ -818,9 +830,11 @@ impl SystemBus {
             devices.sync_interrupts();
         }
         self.sync_cgsix_irq();
+        self.sync_sx_irq();
     }
     pub fn interrupt_levels(&mut self) -> u16 {
         self.sync_cgsix_irq();
+        self.sync_sx_irq();
         self.devices
             .as_ref()
             .map_or(0, |devices| devices.interrupts.levels())
@@ -1106,9 +1120,11 @@ impl Bus for SystemBus {
             return result.map_err(|error| BusError { address, ..error });
         }
         if let Some(card) = self.sx_at(address) {
-            return card
+            let result = card
                 .write(address, u32::from(value), 0xff)
                 .map_err(|kind| BusError { address, kind });
+            self.sync_sx_irq();
+            return result;
         }
 
         if self.prom_writes_ignored(address) {
@@ -1281,9 +1297,11 @@ impl Bus for SystemBus {
             return result.map_err(|error| BusError { address, ..error });
         }
         if let Some(card) = self.sx_at(address) {
-            return card
+            let result = card
                 .write(address, u32::from(value), 0xffff)
                 .map_err(|kind| BusError { address, kind });
+            self.sync_sx_irq();
+            return result;
         }
 
         if self.prom_writes_ignored(address) {
@@ -1430,9 +1448,11 @@ impl Bus for SystemBus {
             return result.map_err(|error| BusError { address, ..error });
         }
         if let Some(card) = self.sx_at(address) {
-            return card
+            let result = card
                 .write(address, value, mask)
                 .map_err(|kind| BusError { address, kind });
+            self.sync_sx_irq();
+            return result;
         }
 
         if self.prom_writes_ignored(address) {
