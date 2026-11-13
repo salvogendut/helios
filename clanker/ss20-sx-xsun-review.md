@@ -694,3 +694,271 @@ the corrected core and test focus, keyboard input, cursor movement and redraw
 there. The `sx-fast9` transcript still contains the old rejected `grep -E`
 command although the harness source now says `egrep`; ensure the harness
 binary is rebuilt as well.
+
+## Selector order, full CLUT ranges and IRQ gating applied
+
+Selected direct and indexed stores now take R2 from bit 31 downward: a clear
+bit selects Rsource and a set bit selects Rsource+1. CLUT autoincrement
+selectors cover all 256 word entries (`0x400` bytes, indices 0–255), and video
+IRQ delivery is gated by MCR interrupt enable while pending/MSR acknowledgement
+state remains separate. The four text/display regressions are now tracked in
+`tests/sx.rs`; all four pass, along with the prior review suites.
+
+A deterministic manual Xsun run with `olwm` and an automatically wrapping
+xterm was attempted after rebuilding the harness. It reaches the next
+unsupported SX form, `0x82afc501` (type `SX_PACKED`, operation 5), while
+drawing terminal content. The visible white terminal rectangle test remains
+the last accepted screen milestone; deterministic text, scrolling and window
+manager interaction are still open. The replayed selector comparison is under
+`local/review-2026-11-13-sx-text/glyph-comparison.svg`.
+
+## Packed conditional glyph-store review
+
+The three corrections above are present and all 15 tracked `tests/sx.rs`
+tests pass independently. The latest `/tmp/sx-fast10.ppm` also shows readable
+`LINE-...` and `WRAP-...` terminal text, an outlined terminal cursor, and a
+partly drawn olwm frame. This advances the visual evidence beyond a white
+rectangle; scrolling and interactive redraw remain unverified.
+
+### The stop is a transparent glyph, before the scroll-copy test
+
+The fault PC `0xee65d264` corresponds to ELF address `0x1d264` in the original
+Solaris `ddxSUNWcg14.so.1`, inside `sl_rect_glyph_8`. Its SPARC instruction is
+`st %o0, [%o5]`; the SX command delivered by that store is `0x82afc501`.
+The effective destination is in the title-bar region of the screenshot.
+This identifies a glyph-rendering failure; the trace does not yet demonstrate
+a scrolling failure.
+
+| Field | Captured value | Meaning |
+| --- | --- | --- |
+| Count, bits 27:23 | 5 | **Six bytes/pixels**, not six words |
+| Operation, bits 22:19 | 5 | Conditional store (`4`) plus plane mask (`1`) |
+| Data format, bits 18:14 | 31 | `SX_PACKED`, four byte pixels per source register |
+| Source, bits 13:7 | 10 | Source begins at R10 |
+| Displacement, bits 6:0 | 1 | Add one byte to the aligned target |
+| R2 | `0x7c000000` | First six enables: `0,1,1,1,1,1` |
+| Plane mask | `0xffffffff` | All destination bits enabled |
+| Target PA in trace | `0xff41ebe0` | Effective address `0xff41ebe1`, B32 aperture |
+
+The preceding `0xb8e00509` prepares source registers using color
+`0x01010101`. For this six-byte case the relevant R10/R11 packed bytes are
+all `0x01`. Replaying the 50,708 preceding logged writes confirms R10/R11
+and R2 at the stop; `register-replay.txt` records the register dump. The
+target maps to screen `(353,109)`. Preserve that first pixel;
+write B byte `0x01` at `(354..358,109)`, preserving X/G/R and neighboring
+pixels. Conditional enable and store-select are different operations: a
+clear enable leaves the old destination intact; it does not select a
+background source. Do not compress the source byte sequence around skipped
+elements.
+
+This decode has independent support:
+
+- NetBSD `sxreg.h` revision 1.22 defines `SX_STORE_COND`, `SX_STORE_MASK`,
+  `SX_STORE_SELECT` and `SX_PACKED` separately. The local checkout is under
+  `../NetBSD-xiri/sys/arch/sparc/dev/`; see the
+  [pinned source](https://cvsweb.netbsd.org/bsdweb.cgi/src/sys/arch/sparc/dev/sxreg.h?rev=1.22&content-type=text/x-cvsweb-markup).
+- Sun's [Pixel Processing in a Memory Controller](https://www.sunhelp.org/history/pdf/smc.pdf),
+  tables 2/3 and section 4.2.2, distinguishes conditional element enables,
+  plane masks and packed storage, with four byte pixels per register.
+- The original Solaris glyph routine constructs the count from **glyph width
+  minus one**. Its wide-glyph loop emits `0x8fafc500` plus displacement,
+  advances the destination by **32 bytes**, and advances the glyph-mask
+  pointer by four bytes. This independently establishes that the packed
+  count measures bytes. Relevant ELF addresses are `0x1d1e0..0x1d200` and
+  `0x1d354..0x1d414`. The binary and disassembly remain ignored under
+  `local/review-2026-11-13-sx-plot/`.
+
+### Regressions and remaining alignment uncertainty
+
+Three fixtures are in `local/review-2026-11-13-sx-packed/tests/packed.rs`:
+
+1. The captured unaligned B32 glyph command, with distinct existing X/B/G/R
+   bytes, checks the five enabled pixels and preservation of all other VRAM.
+2. An **aligned** six-byte packed store uses R10=`0x11223344`,
+   R11=`0x55667788`, destination bytes `0xaa`, and plane mask
+   `0x0f0f0f0f`. All-enabled output is `a1 a2 a3 a4 a5 a6`; mixed enables
+   `0xa8000000` produce `a1 aa a3 aa a5 aa`. This detects word-sized counts,
+   repeated low-byte extraction, source compression, and omitted masking.
+3. R2 zero preserves every destination byte even with nonzero sources.
+
+All three currently stop at `Unsupported("SX memory command type")` as
+expected. Their expected output is derived from the sources above, not from
+an experimental handler. Promote them into the tracked suite when adding
+packed conditional stores, and retain prevalidation before any VRAM mutation.
+The review made no production changes and did not boot another guest.
+
+```sh
+cargo test --locked --offline \
+  --manifest-path local/review-2026-11-13-sx-packed/Cargo.toml --test packed
+```
+
+The **unaligned nonuniform packed source-lane rule remains unresolved**.
+Repeated color bytes in the captured glyph do not distinguish restarting at
+the register MSB from aligning source lanes to the destination word. The
+driver preloads nine registers for up to 32 glyph bytes, and its copy routines
+adjust for source/destination alignment; these are reasons to investigate the
+general rule before declaring packed copies supported. The nonuniform fixture
+above deliberately uses an aligned target. Do not present an unaligned
+implementation guess as hardware-confirmed or silently accept unresolved forms.
+
+The same ignored directory contains `guest-stop.png`, the final trace excerpt,
+the failing test log, a register-state replay program and its output, and
+hashes of production SX, the trace, framebuffer, harness source and original
+Solaris library used for this review.
+
+### Make the next rendering run an actual wrap/scroll test
+
+The harness starts an 80-column, 24-row xterm, but its `LINE-...` and
+`WRAP-...` strings are only 42 characters long. Neither wraps. It prints two
+rows per second and then requests `sleep 8`; that wait alone does not promise
+a full screen of output, and the run currently faults earlier. The infinite
+loop also repeats identical rows, making scroll correctness harder to judge.
+
+After implementing the packed glyph path, use a bounded producer with at
+least 40 numbered rows and a known line longer than 80 columns, then leave the
+terminal open for a capture. First run without olwm to isolate terminal text,
+wrapping and scrolling. Then start olwm and validate title text, move, resize
+and expose redraw. Capture the next actual unsupported command or incorrect
+copy with its inputs; a packed glyph success does not validate packed loads
+or overlapping copies. Finish with the rebuilt Heliacal keyboard, pointer
+and redraw checks after those core rendering cases pass.
+
+## Conditional packed glyph store applied
+
+`SX_PACKED` conditional stores now consume four byte pixels per source
+register, count bytes rather than words, apply the R2 enable bits from bit 31
+downward, honor displacement, preserve disabled/unselected destination bytes,
+and merge the plane mask into the existing destination byte. The captured
+six-byte B32 glyph, aligned nonuniform source, mixed enables, zero enables,
+and masked-channel fixtures pass and are promoted into `tests/sx.rs`.
+
+The corrected deterministic xterm run prints its 40-row producer and long
+WRAP line, then stops at the next unsupported form: `0x80500507`, an SX load
+(operation 10, byte type, source R10, displacement 7). Text and scrolling are
+therefore still not accepted; this is a read/copy path, not a store bug.
+
+## First-scroll load review
+
+The 18 tracked `tests/sx.rs` cases pass independently after the packed-store
+addition. `/tmp/sx-fast12.png` shows **24 readable numbered terminal rows**,
+`ROW-1` through `ROW-24`, in the 80x24 xterm. The harness now supplies a
+40-row producer and a genuinely long WRAP line, without olwm. The capture
+demonstrates the first screen of text; it does not show all 40 rows or the
+WRAP line having been rendered.
+
+### Captured load and the following copy path
+
+The stop at PC `0xee657de4` maps to ELF `0x17de4`, inside the original
+Solaris `ddxSUNWcg14.so.1` routine `sl_rect_copy_8`. The SPARC instruction is
+`st %o4, [%o5]`, delivering SX command `0x80500507` to alias PA
+`0x8ff420a60`.
+
+| Field | Value | Meaning |
+| --- | --- | --- |
+| Count, bits 27:23 | 0 | One element |
+| Operation, bits 22:19 | `0xa` | Load |
+| Format, bits 18:14 | 0 | `SX_UBYTE_0`, unsigned byte, no shift |
+| Register, bits 13:7 | 10 | **Destination R10**, not a source register |
+| Displacement, bits 6:0 | 7 | Effective physical source `0xff420a67` |
+
+The source is B32 pixel `(103,116)`, backing VRAM byte `0x8299d`. The load
+must zero-extend that byte into R10, leave neighboring registers unchanged,
+and preserve VRAM. R2 and the plane mask do not control this read.
+
+The source lies one 13-pixel text row below the first terminal row. The
+routine handles the unaligned destination with a byte prefix, then switches
+to aligned word vectors. Together with the 24-row screenshot, this places
+the stop at the start of the first vertical scroll. Original-driver evidence
+is at ELF `0x17d64..0x17e48`; aligned bulk loads/stores and the tail follow
+in the same routine through `0x185cc`.
+
+Implement **direct unsigned-byte and long loads together** for the next
+slice. The following bulk form is `0x8fd6c500`: 32 long elements into
+R10..R41, reading 128 adjacent B32 pixels. A matching `0x8f8ec500` masked
+long store is already in the implemented subset. The aligned word read
+through B32 returns four consecutive B-channel pixel bytes in big-endian
+order; it does not read one raw XBGR pixel.
+
+The instruction definitions are independently recorded in NetBSD `sxreg.h`
+revision 1.22: `SX_LOAD`, `SX_UBYTE_0`, `SX_LONG`, `SX_LDB` and `SX_LD`.
+The Sun paper's data-format table distinguishes one byte per register for
+ordinary byte loads from four bytes per register for packed data. Sources
+and local original-driver artifacts are linked in the preceding review.
+
+### Separate load dispatch from store controls
+
+Operation `0xa` includes bit 3. The current expression `select = op & 8 != 0`
+is a store control, so letting loads fall through that code would incorrectly
+activate store-select and, for byte destinations R32 or above, the inferred
+indexed-store path. Dispatch the full load operation before interpreting
+store flags.
+
+For the two verified direct formats:
+
+1. Resolve the effective source through the existing CG14 aperture mapping.
+2. Read and stage the complete vector before changing any SX register. If a
+   later target is unsupported, preserve all register and VRAM state.
+3. Commit one zero-extended byte or one full word to each successive
+   destination register. Ignore R2, plane mask and ROP controls on loads.
+4. Leave other formats explicit errors until their signedness, shifts,
+   channel strides or packing rules are established. The current store width
+   table alone is not a sufficient description of every load format.
+
+### Five regressions and an isolated implementation proof
+
+`local/review-2026-11-13-sx-loads/tests/loads.rs` contains:
+
+- The exact byte-load command with a distinguishable B32 source `0x81`,
+  neighboring register sentinels, zero store masks and unchanged VRAM.
+- A four-byte load into R32..R35 crossing an eight-byte boundary, checking
+  unsigned extension and preventing accidental indexed/store-select dispatch.
+- A 32-word B32 load followed by the existing masked long store, checking
+  all 128 destination pixels, register neighbors and other pixel channels.
+- A synthetic 480x299 pixel rectangle copy upward by 13 scanlines, using
+  byte prefixes/tails and aligned long vectors. Expected output comes from
+  the original VRAM snapshot, so the fixture checks overlapping-source
+  preservation and surrounding pixels independently of the copy loop.
+- A vector that starts within the aperture but ends outside it, requiring
+  an error without partial register or VRAM updates.
+
+Against production, four tests stop at `Unsupported("SX memory command")`;
+the failed-load state-preservation case already passes because the entire
+operation is rejected. An isolated copy of `Sx`, with a separate staged
+load path for formats 0 and `0x1b`, passes **all five**. Its patch is
+`local/review-2026-11-13-sx-loads/load-proof.diff`; feature `load-proof` selects
+the isolated implementation. This is a device-level proof, not another
+guest boot or acceptance of general SX load/copy behavior. Production source
+was not modified by this review.
+
+```sh
+# Production: four unsupported-load failures, one rejection-state pass.
+cargo test --locked --offline \
+  --manifest-path local/review-2026-11-13-sx-loads/Cargo.toml --test loads
+# Isolated implementation: all five pass.
+cargo test --locked --offline \
+  --manifest-path local/review-2026-11-13-sx-loads/Cargo.toml \
+  --features load-proof --test loads
+```
+
+The same directory holds the captured screen, trace excerpt, source/trace
+hashes and both test logs. Integrate the tested load slice and promote the
+fixtures, then repeat the guest run. Accept scrolling only after the capture
+shows the end of the numbered sequence and the correctly wrapped long line.
+Then resume olwm title/move/resize/expose and Heliacal input validation.
+The earlier unaligned packed-copy uncertainty remains separate; these loads
+and the synthetic scroll use ordinary byte and aligned long formats.
+
+## Direct byte and long loads applied
+
+SX load dispatch now runs before the store-control interpretation. Unsigned
+byte and long loads resolve their effective CG14 aperture source, stage the
+whole vector, and only then commit destination registers; R2, plane masks and
+ROP controls are ignored. Source/target failures leave registers and VRAM
+unchanged. The captured byte load and 32-word B32 load are implemented, and
+the five load-review fixtures are promoted into tracked `tests/sx_loads.rs`.
+
+The no-window-manager deterministic run now completes without an SX fault.
+The capture shows ROW-20 through ROW-40 after scrolling and the long WRAP line
+wrapped across two terminal rows. This establishes text and basic vertical
+scrolling at the device level, not yet interactive redraw, olwm, or Heliacal
+input validation.

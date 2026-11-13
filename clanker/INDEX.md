@@ -45,4 +45,4 @@
 - [MXCC production review](ss20-mxcc-production-review.md) — recursive stream-transfer safety, read-only port identity, architected MBus alias, and disk persistence checks.
 - [SS-20/Axil page-color panic](ss20-page-color-mxcc-alias.md) — missing physical MXCC control alias hides cache parity from OBP, causing a zero Solaris cache size and out-of-bounds page-list access; tested alias proof reaches userland, then exposes the SS-5 disk's stale device paths.
 - [MXCC production follow-up](ss20-mxcc-production-review.md) — four isolated regressions expose recursive stream borrow panics, writable port identity and the missing architected MBus port address at 652d5df.
-- [Native CG14/Xsun review](ss20-sx-xsun-review.md) — SX/PLOT and display regressions, harness performance, CG14 retrace/table routing, and a prompt-rendering replay identifying selector bit order/polarity plus CLUT-range and IRQ-gating gaps.
+- [Native CG14/Xsun review](ss20-sx-xsun-review.md) — SX/PLOT and display regressions, harness performance, selector/CLUT/IRQ and packed-glyph corrections, plus the first-scroll byte/word load decode, five fixtures and isolated implementation proof.

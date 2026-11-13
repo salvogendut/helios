@@ -155,7 +155,7 @@ impl Sx {
     }
 
     pub fn irq(&self) -> bool {
-        self.retrace_pending
+        self.retrace_pending && self.control[0] & 0x80 != 0
     }
 
     fn msr(&self) -> u8 {
@@ -169,7 +169,7 @@ impl Sx {
             return true;
         }
         for (base, table) in [(0x4800, 0), (0x5800, 1), (0x6800, 2)] {
-            if (base..base + 0x100).contains(&offset) {
+            if (base..base + 0x400).contains(&offset) {
                 self.table_stream = Some(TableStream::Clut(table));
                 self.table_index = (offset - base) / 4;
                 return true;
@@ -547,8 +547,59 @@ impl Sx {
         let source = ((instruction >> 7) & 0x7f) as usize;
         let count = usize::from(((instruction >> 23) & 0x1f) as u8) + 1;
         let displacement = (instruction & 0x7f) as u64;
+        if op == 0xa {
+            let width = match data_type {
+                0 => 1,
+                0x1b => 4,
+                _ => return Err(BusErrorKind::Unsupported("SX load format")),
+            };
+            if count > 32 || source + count > self.regs.len() {
+                return Err(BusErrorKind::Unsupported("SX load register range"));
+            }
+            let target = ((address - SX_MEM_BASE) & !7) + displacement;
+            let mut values = [0u32; 32];
+            for (index, value) in values.iter_mut().take(count).enumerate() {
+                let offset = self
+                    .aperture_offset(target + (index * width) as u64)
+                    .ok_or(BusErrorKind::Unsupported("SX command target"))?;
+                if offset as u64 + width as u64 > VRAM_APERTURE_BYTES {
+                    return Err(BusErrorKind::Unsupported("SX command target width"));
+                }
+                *value = self.read_vram(offset, width as u64)?;
+            }
+            self.regs[source..source + count].copy_from_slice(&values[..count]);
+            return Ok(());
+        }
         let select = op & 8 != 0;
         let masked = op & 1 != 0;
+        if data_type == 0x1f {
+            if op != 5 {
+                return Err(BusErrorKind::Unsupported("SX packed memory command"));
+            }
+            let target = ((address - SX_MEM_BASE) & !7) + displacement;
+            let mut offsets = [0usize; 32];
+            if count > offsets.len() {
+                return Err(BusErrorKind::Unsupported("SX packed memory count"));
+            }
+            for (index, offset) in offsets.iter_mut().take(count).enumerate() {
+                *offset = self
+                    .aperture_offset(target + index as u64)
+                    .ok_or(BusErrorKind::Unsupported("SX command target"))?;
+            }
+            for (index, offset) in offsets.iter().take(count).enumerate() {
+                if (self.regs[2] >> (31 - (index & 31))) & 1 == 0 {
+                    continue;
+                }
+                let source_word = self.regs[(source + index / 4) & 127];
+                let value = (source_word >> ((3 - (index & 3)) * 8)) & 0xff;
+                let mask = (self.plane_mask >> ((index & 3) * 8)) & 0xff;
+                let old = self.read_vram(*offset, 1)?;
+                let value = (old & !mask) | (value & mask);
+                self.write_vram(*offset, value, 0xff)?;
+            }
+            self.generation = self.generation.wrapping_add(1);
+            return Ok(());
+        }
         let width = match data_type {
             0..=0x07 | 0x10..=0x17 => 1,
             0x18..=0x1a => 2,
@@ -589,12 +640,9 @@ impl Sx {
             width_mask
         };
         for (index, offset) in offsets.iter().take(count).enumerate() {
-            let selected = if array {
-                let selector = (self.regs[2] >> (index & 31)) & 1;
-                self.regs[(source + usize::from(selector == 0)) & 127]
-            } else if select {
-                let selector = (self.regs[2] >> (index & 31)) & 1;
-                self.regs[(source + usize::from(selector == 0)) & 127]
+            let selected = if array || select {
+                let selector = ((self.regs[2] >> (31 - (index & 31))) & 1) as usize;
+                self.regs[(source + selector) & 127]
             } else {
                 self.regs[(source + index) & 127]
             };
