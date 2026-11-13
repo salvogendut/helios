@@ -962,3 +962,63 @@ The capture shows ROW-20 through ROW-40 after scrolling and the long WRAP line
 wrapped across two terminal rows. This establishes text and basic vertical
 scrolling at the device level, not yet interactive redraw, olwm, or Heliacal
 input validation.
+
+## Scrolling checkpoint independently verified
+
+Reviewed `/tmp/sx-fast13.png`, `/tmp/sx-fast13.err` and the matching serial
+transcript after the production load change. The screen contains ROW-20
+through ROW-40, the long WRAP line across two rows, and the final cursor row.
+The trace contains no `CMDERR`, `FAULT` or `Unsupported` entries. The serial
+script returns to its prompt after checking the running Xsun/xterm processes
+and their empty logs. The 18 tracked SX tests and five tracked load tests pass
+independently. This accepts **this Solaris Xsun text, wrap and vertical-scroll
+case**; it does not establish interactive window redraw or frontend input.
+
+The reviewed screenshot and hashes are preserved under
+`local/review-2026-11-13-sx-scroll/`. Production code was not changed by this
+review. General indexed addressing and unaligned packed-copy uncertainties
+from the earlier sections remain open.
+
+### Next acceptance run: olwm, then Heliacal interaction
+
+Keep one Xsun session running while adding the following checks. Replace
+the producer's final `sleep 30` with an interactive shell, or open a separate
+normal xterm for keyboard tests. The current producer exits after the sleep;
+it is not a useful interactive-shell test during that wait.
+
+1. Start olwm explicitly and open two terminals with distinguishable titles
+   and contents. Check complete title text, borders and resize corners.
+2. Move windows left/right/up/down, including horizontal changes of one,
+   two and three pixels. The accepted vertical scroll keeps horizontal
+   alignment fixed; these moves exercise different source/destination lanes
+   and copy directions. Capture after releasing the drag.
+3. Overlap the windows, raise/lower them, uncover text, resize smaller and
+   larger, and iconify/restore. Require intact text and cleared old window
+   areas. Compare stable terminal interiors before/after expose, accounting
+   for focus and cursor changes separately.
+4. With rebuilt Heliacal using `--machine ss20 --display sx`, capture input,
+   focus an interactive terminal and check typed text, Shift/Ctrl combinations,
+   Enter/Backspace and the three mouse buttons. Exercise capture release with
+   Ctrl+Enter and host focus loss while a key or mouse button is held; no
+   modifier or drag should remain stuck after recapture. These controls and
+   release paths were checked in `../heliacal/src/main.rs` and
+   `../heliacal/src/emulator.rs`; their behavior in Solaris remains to be tested.
+5. Save native-resolution captures with F4 at each accepted stage. If an
+   action fails, retain its before/after screen, the first failed SX command
+   and the associated source/register state. For corruption without an
+   explicit fault, retain the command sequence for that action as a replay
+   fixture. A successful startup screenshot alone does not accept these cases.
+
+## Interactive shell and olwm checkpoint
+
+The producer now ends with `exec /bin/sh`, keeping TERM-A interactive after the
+40 rows. A second shell was opened as TERM-B under olwm. The before capture
+shows both decorated, overlapping terminals with readable `TERM-A`/`TERM-B`
+titles and the producer text/shell prompt in TERM-A.
+
+Attempts to drag TERM-A by one, two and three pixels produced identical
+before/after captures; no SX fault was reported. The core-side synthetic mouse
+events were therefore not accepted by Solaris/Xsun, or the title-bar hit point
+was wrong. This is an input-path issue, not a rendering fault. The before and
+after PPMs are local evidence only; olwm move/resize/uncover/iconify and
+Heliacal input capture remain unaccepted.

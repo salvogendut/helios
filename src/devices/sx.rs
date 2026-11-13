@@ -573,7 +573,7 @@ impl Sx {
         let select = op & 8 != 0;
         let masked = op & 1 != 0;
         if data_type == 0x1f {
-            if op != 5 {
+            if !matches!(op, 5 | 9) {
                 return Err(BusErrorKind::Unsupported("SX packed memory command"));
             }
             let target = ((address - SX_MEM_BASE) & !7) + displacement;
@@ -587,10 +587,16 @@ impl Sx {
                     .ok_or(BusErrorKind::Unsupported("SX command target"))?;
             }
             for (index, offset) in offsets.iter().take(count).enumerate() {
-                if (self.regs[2] >> (31 - (index & 31))) & 1 == 0 {
+                let enable = (self.regs[2] >> (31 - (index & 31))) & 1 != 0;
+                if op == 5 && !enable {
                     continue;
                 }
-                let source_word = self.regs[(source + index / 4) & 127];
+                let source_register = if op == 9 {
+                    source + usize::from(enable)
+                } else {
+                    source + index / 4
+                };
+                let source_word = self.regs[source_register & 127];
                 let value = (source_word >> ((3 - (index & 3)) * 8)) & 0xff;
                 let mask = (self.plane_mask >> ((index & 3) * 8)) & 0xff;
                 let old = self.read_vram(*offset, 1)?;
