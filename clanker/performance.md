@@ -1,5 +1,9 @@
 # Performance branch
 
+This is the historical optimization record; those changes are now merged.
+See [the 2026-11-13 investigation and handoff](performance-plan.md) for current
+profiles, idle CPU findings and the next implementation plan.
+
 Branch `performance` starts from `main` commit `619c80a` (the SS20 work remains
 on `ss20-axil320`). `STEP_NS` is unchanged.
 

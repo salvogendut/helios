@@ -39,6 +39,7 @@
 - [SPARCstation 20 and Axil 320](ss20-axil.md): high sun4m map, reference-MMU/IDPROM profiles, original-firmware `ok` bring-up and remaining POST diagnostics.
 - [x-windows.md](x-windows.md) — Solaris 2.6 X rendering: indexed FBC vertices, polygon coverage, trace replay and live desktop evidence.
 - [performance.md](performance.md) — MMU translation caches, device-time coalescing and frontend/SCSI throughput measurements.
+- [Performance investigation and handoff](performance-plan.md) — measured idle execution, redundant CGsix/CG14 scanout, frontend redraw and MMU/IRQ/DMA costs; ordered optimization plan, correctness gates and artifact cleanup.
 - [SS-20/Axil disk and CG14 review](ss20-axil-disk-cg14-review.md) — reproduced CPU identity boot blocker, native CG14 mapping failure and working prompt experiment, Heliacal selection, and remaining MMU/MXCC work.
 - [Solaris first-panic follow-up](ss20-solaris-panic.md) — confirmed wrong PFN from the segment-probe shortcut, MXCC completion wait, tested patches, and the next page-list alignment fault.
 - [Page-color MXCC alias](ss20-page-color-mxcc-alias.md) — physical MXCC control alias, shared ASI-2/physical state, userland checkpoint, and cloned-disk device migration.
