@@ -22,22 +22,31 @@ completing device enumeration and its 128 MiB RAM test. The processor timer
 and Ethernet internal-loopback diagnostics now pass. Network boot transmits
 RARP requests through a headless packet endpoint; serial BREAK returns to the
 monitor, where `1 2 + .` returns `3`. The remaining POST fault is an unimplemented
-parallel-port DMA register. Installed-system boot remains unverified. See the
+parallel-port DMA register. Installed Solaris boot checkpoints are described
+below. See the
 [latest firmware checkpoint](docs/firmware.md#timer-and-ethernet-bring-up).
 
 Single-processor **SPARCstation 20** and **Axil 320** profiles boot their original
 firmware to the serial `ok` prompt. They reuse the SS-5 device models on the
 high sun4m address map with 36-bit reference-MMU behavior, SMC ECC register
 access and IDPROM machine type `0x72`; the Axil profile uses its own MAC and
-host ID. The tested ROMs still print an I-TLB diagnostic and an SX data-access
-POST error before `ok`. OS boot, a SuperSPARC pipeline/cache model, multiprocessor
-MBus and SX/VSIMM devices are not implemented. See
+host ID. Both profiles have booted installed Solaris 2.6 disks to a console
+login after migrating the disk's device paths to the high sun4m map. SS-20's
+native SX/CG14 subset also runs Xsun with olwm and xterm; window movement,
+Full Size/Normal Size, uncover and iconify/restore have been exercised through
+the headless core. Heliacal also boots the graphical Solaris console and runs
+Xsun/olwm/xterm with verified typing, mouse dragging and input capture/release.
+Fresh SS-5 and Axil disk clones reach login and shut down cleanly. Full
+POST/cache accuracy, a SuperSPARC pipeline model and multiprocessor MBus
+remain incomplete. See
 [machine profiles](docs/machines.md).
 
 The optional **graphical console** runs the original TurboGX FCode ROM and
 Sun Type 5 keyboard protocol. SS-20 can also use its native SX/CG14 console.
 With 128 MiB RAM, OBP displays its banner and `ok` prompt; keyboard Stop-A
-interrupts network boot and `1 2 + .` returns `3` on screen. See [graphics and keyboard](docs/graphics.md) for the supported
+interrupts network boot and `1 2 + .` returns `3` on screen. The native SX
+implementation covers the observed Solaris drawing paths, not the entire
+instruction set. See [graphics and keyboard](docs/graphics.md) for the supported
 device subset and [the graphical checkpoint](docs/firmware.md#graphical-obp-console).
 
 **`probe-scsi-all` now lists attached disk and CD-ROM targets and returns to `ok`**
@@ -58,7 +67,8 @@ The implemented foundation includes:
 
 - A dependency-free Rust library and headless CLI.
 - An optional native framebuffer window, CGsix indexed VRAM/palette/cursor,
-  console drawing operations and a Sun keyboard on the second SCC.
+  SS-20 SX/CG14 scanout and an SX instruction subset, console drawing operations
+  and a Sun keyboard/mouse on the second SCC.
 - Eight overlapping register windows, `%g0`, PC/nPC, and integer condition codes.
 - An integer instruction subset: SETHI/NOP, ADD/SUB/ADDX/SUBX and their `cc`
   variants; AND/OR/XOR/ANDN/ORN/XNOR and their `cc` variants; SLL/SRL/SRA;

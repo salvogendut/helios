@@ -171,18 +171,31 @@ implementation, font, firmware or framebuffer screenshot is bundled.
 
 `helios-ui --machine ss20 local/firmware/ss10-20-v2.25r-rom --nvram local/ss20-ttya.nvram`
 uses the built-in SX framebuffer path instead of the SS-5 TurboGX card. The
-VSIMM/SX model exposes an 8 MiB framebuffer mirrored through the aperture,
-SX registers/control and CLUT pixels. With monitor sense 4 and `00BBGGRR` CLUT
+VSIMM/SX model exposes an 8 MiB VSIMM 2 framebuffer mirrored through the aperture,
+SX registers/control and CLUT pixels. MDI revision/implementation `0x11` and
+VBC configuration `0x2400` at control offset `0x20c` are read-only: VBC version
+1 and the 8 MiB strap match the selected board. Video power (MCR bit 0) and
+active-low blanking (bit 6) control presentation without erasing VRAM; powered-off
+video generates no new retrace interrupt. The VBC current-row counter and
+programmable raster timing are not modeled. With monitor sense 4 and `00BBGGRR` CLUT
 decoding, original OBP opens `cg14` and draws a native 1152x900 `ok` console.
 The serial monitor remains available. SX supervisor and user register pages
 share the 128-register execution bank, including queued writes, GO/sync and
 the plane mask. SX memory operations at `0x800000000 + PA` execute the observed
 scalar-OR and masked store-select/long/byte commands. The CG14 scanout decodes
 8-, 16- and 32-bit pixels through the raw, BGR, X16/C16 and X32/B32/G32/R32
-apertures. The observed SX shift (`SLLI`), PLOT/Bresenham generation, logic, masked
+apertures. The observed SX shifts (including scalar/immediate funnel-left
+across adjacent source registers), PLOT/Bresenham generation, logic, masked
 store, mixed store-select, indexed byte stores, conditional packed byte
-stores, and direct unsigned byte/long loads execute with register/range
-atomicity. Loads stage their source vector before updating registers. CG14 vertical retrace drives the video
+stores, packed loads, ROP_M, packed masked stores, and direct unsigned
+byte/long loads execute with register/range atomicity. Unaligned packed loads
+and stores select their byte lanes from the effective address, with a 32-byte
+unaligned load spanning up to nine registers. Loads stage their source vector
+before updating registers; stores validate every destination's complete byte
+span before changing VRAM. A doubleword write to the instruction queue executes
+both instructions in order through the same port, with rollback if either
+instruction is unsupported. The adjacent reserved word is not a separate queue
+alias. CG14 vertical retrace drives the video
 interrupt at source bit 20/PIL 8; XLUT and CLUT shadow updates stream through
 the `0xf000` autoincrement port, all 256 CLUT word selectors are covered, and
 scanout routes the X selector through XLUT to the selected color table and
@@ -190,3 +203,13 @@ B/G/R component. Selected stores read R2 from bit 31 downward. Unsupported SX
 instructions and command data
 types still return an explicit unsupported-bus error instead of being stored
 as pixel data; indexed-store mode remains inferred from the captured traffic.
+
+Solaris 2.6 Xsun with olwm and two xterms has been exercised through the
+headless core. Tests verify 20/1/2/3-pixel moves with preserved translated
+text, uncovering a terminal by iconifying the covering window, Full Size and
+Normal Size transitions with preserved text, and iconify/restore with an
+identical client image. Heliacal's Linux/X11 frontend also boots the graphical
+Solaris console and runs Xsun/olwm/xterm. Actual SDL input validates typing,
+click-to-focus, a 20-pixel title-bar drag with zero changed client pixels, and
+keyboard/mouse capture and release. These checkpoints establish the observed
+desktop workload; they do not establish complete SX instruction coverage.

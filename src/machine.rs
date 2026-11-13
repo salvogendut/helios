@@ -21,8 +21,8 @@ pub const STEP_NS: u64 = 100;
 
 /// Initial full-system profiles. All three run the same device models; the
 /// SS-20/Axil profiles use the high sun4m physical map, a 36-bit reference MMU
-/// and their own IDPROM identity. The CPU model remains the tested
-/// microSPARC-II interpreter; single-processor SS-20 only for now.
+/// and their own IDPROM identity. They select SuperSPARC-II identity in the
+/// shared functional SPARC V8 interpreter; single-processor SS-20 only for now.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MachineProfile {
     #[default]

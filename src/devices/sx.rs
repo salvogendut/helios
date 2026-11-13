@@ -22,6 +22,12 @@ pub const VSIMM_VRAM_BASE: u64 = 0xfc00_0000;
 
 const CG14_CLUT1: usize = 0x4000;
 const CG14_RSR: usize = 6;
+// VSIMM 2: MDI revision 1, double-buffered/three-CLUT implementation 1.
+// Sun cg14reg.h: VBC VCA at +0x20c, HIRES bit 13 (8 MiB), version bits
+// 11:10. Keep these board straps consistent with the installed VRAM.
+const CG14_REVISION: u8 = 0x11;
+const VBC_VCA: usize = 0x20c;
+const VBC_STRAPS: u32 = (1 << 13) | (1 << 10);
 const SX_CONTROL_STATUS: usize = 0x00;
 const SX_ERROR: usize = 0x04;
 const SX_PAGE_BOUND_LOWER: usize = 0x08;
@@ -83,8 +89,9 @@ impl Default for Sx {
 impl Sx {
     pub fn new() -> Self {
         let mut control = Box::new([0u8; VSIMM_CTL_SIZE as usize]);
-        control[0] = 0x40;
-        control[CG14_RSR] = 0x01;
+        control[0] = 0x41; // VSIMM 2 video power and active-low blanking.
+        control[CG14_RSR] = CG14_REVISION;
+        control[VBC_VCA..VBC_VCA + 4].copy_from_slice(&VBC_STRAPS.to_be_bytes());
         // Monitor sense 4 selects the renderer's 1152x900 timing.
         control[4] = 4 << 1;
         control[0x0d] = 0x01;
@@ -148,7 +155,7 @@ impl Sx {
         self.retrace_phase_ns = self.retrace_phase_ns.saturating_add(ns);
         while self.retrace_phase_ns >= RETRACE_PERIOD_NS {
             self.retrace_phase_ns -= RETRACE_PERIOD_NS;
-            if self.control[0] & 0x80 != 0 {
+            if self.control[0] & 0x81 == 0x81 {
                 self.retrace_pending = true;
             }
         }
@@ -179,20 +186,16 @@ impl Sx {
             return false;
         }
         match self.table_stream {
-            Some(TableStream::Xlut) => {
-                if self.table_index < 256 {
-                    self.control[0x3000 + self.table_index] = value as u8;
-                    self.table_index += 1;
-                }
+            Some(TableStream::Xlut) if self.table_index < 256 => {
+                self.control[0x3000 + self.table_index] = value as u8;
+                self.table_index += 1;
             }
-            Some(TableStream::Clut(table)) => {
-                if self.table_index < 256 {
-                    let base = 0x4000 + table * 0x1000 + self.table_index * 4;
-                    Self::write_bytes(&mut self.control[..], base, value, mask);
-                    self.table_index += 1;
-                }
+            Some(TableStream::Clut(table)) if self.table_index < 256 => {
+                let base = 0x4000 + table * 0x1000 + self.table_index * 4;
+                Self::write_bytes(&mut self.control[..], base, value, mask);
+                self.table_index += 1;
             }
-            None => {}
+            Some(TableStream::Xlut) | Some(TableStream::Clut(_)) | None => {}
         }
         true
     }
@@ -268,8 +271,15 @@ impl Sx {
         if bytes != 4 && bytes != 2 && bytes != 1 {
             return Err(BusErrorKind::Unsupported("SX access width"));
         }
-        if offset % bytes as usize != 0 {
+        if offset as u64 + bytes > VRAM_APERTURE_BYTES {
             return Err(BusErrorKind::Unmapped);
+        }
+        if offset % bytes as usize != 0 {
+            let mut value = 0u32;
+            for index in 0..bytes {
+                value = (value << 8) | self.read_vram(offset + index as usize, 1)?;
+            }
+            return Ok(value);
         }
         if offset < 0x0200_0000 {
             return self.read_bytes(&self.vram, offset % VRAM_BYTES, bytes);
@@ -287,6 +297,22 @@ impl Sx {
         let bytes = mask.count_ones().div_ceil(8) as usize;
         if bytes == 0 || bytes > 4 {
             return Err(BusErrorKind::Unsupported("SX write width"));
+        }
+        if offset as u64 + bytes as u64 > VRAM_APERTURE_BYTES {
+            return Err(BusErrorKind::Unmapped);
+        }
+        if offset % bytes != 0 {
+            for index in 0..bytes {
+                let shift = (bytes - 1 - index) * 8;
+                let byte_mask = (mask >> shift) & 0xff;
+                if byte_mask == 0 {
+                    continue;
+                }
+                let old = self.read_vram(offset + index, 1)?;
+                let value = (old & !byte_mask) | (((value >> shift) & 0xff) & byte_mask);
+                self.write_vram(offset + index, value, byte_mask)?;
+            }
+            return Ok(());
         }
         if offset < 0x0100_0000 {
             Self::write_bytes(&mut self.vram, offset % VRAM_BYTES, value, mask);
@@ -428,6 +454,38 @@ impl Sx {
         Ok(())
     }
 
+    pub fn write_doubleword(&mut self, address: u64, words: [u32; 2]) -> Result<(), BusErrorKind> {
+        if (SX_BASE..SX_BASE + SX_SIZE).contains(&address) {
+            let offset = (address - SX_BASE) as usize;
+            if offset == SX_INSTRUCTIONS || offset == SX_USER_PAGE + SX_INSTRUCTIONS {
+                if address & 7 != 0 {
+                    return Err(BusErrorKind::Unmapped);
+                }
+                if !self.go {
+                    return Ok(());
+                }
+                let saved_regs = self.regs;
+                let saved_error = self.error;
+                let saved_status = self.status;
+                let saved_rop = self.rop_control;
+                let result = self
+                    .execute_instruction(words[0])
+                    .and_then(|()| self.execute_instruction(words[1]));
+                if result.is_err() {
+                    self.regs = saved_regs;
+                    self.error = saved_error;
+                    self.status = saved_status;
+                    self.rop_control = saved_rop;
+                } else {
+                    self.generation = self.generation.wrapping_add(1);
+                }
+                return result;
+            }
+        }
+        self.write(address, words[0], u32::MAX)?;
+        self.write(address + 4, words[1], u32::MAX)
+    }
+
     fn execute_instruction(&mut self, instruction: u32) -> Result<(), BusErrorKind> {
         let top = instruction & 0xf000_0000;
         if top == 0x9000_0000 {
@@ -436,6 +494,30 @@ impl Sx {
             let a = ((instruction >> 14) & 0x7f) as usize;
             let b = (instruction & 0x7f) as usize;
             let d = ((instruction >> 7) & 0x7f) as usize;
+            if op == 1 {
+                if count > 16 || a + count > 128 || b + count > 128 || d + count > 128 {
+                    return Err(BusErrorKind::Unsupported("SX ROP register range"));
+                }
+                let rop = self.rop_control & 0xff;
+                let mut values = [0u32; 16];
+                for (index, value) in values.iter_mut().take(count).enumerate() {
+                    let lhs = self.regs[a + index];
+                    let rhs = self.regs[b + index];
+                    let mut result = 0u32;
+                    for bit in 0..32 {
+                        let select = (((lhs >> bit) & 1) << 1) | ((rhs >> bit) & 1);
+                        let table = if (self.regs[2] >> bit) & 1 != 0 {
+                            (rop >> 4) & 0xf
+                        } else {
+                            rop & 0xf
+                        };
+                        result |= ((table >> select) & 1) << bit;
+                    }
+                    *value = result;
+                }
+                self.regs[d..d + count].copy_from_slice(&values[..count]);
+                return Ok(());
+            }
             match op {
                 6 => {
                     for index in 0..count {
@@ -459,11 +541,10 @@ impl Sx {
             let b = (instruction & 0x7f) as usize;
             let d = ((instruction >> 7) & 0x7f) as usize;
             for index in 0..count {
-                let src = self.regs[(a + index) & 127];
-                let rhs = match op {
-                    0 | 3 | 6 => self.regs[(b + index) & 127],
-                    1 | 4 | 7 => self.regs[b],
-                    2 | 5 => b as u32,
+                let (src, rhs) = match op {
+                    0 | 3 | 6 => (self.regs[(a + index) & 127], self.regs[(b + index) & 127]),
+                    1 | 4 | 7 => (self.regs[a], self.regs[(b + index) & 127]),
+                    2 | 5 => (self.regs[(a + index) & 127], b as u32),
                     _ => return Err(BusErrorKind::Unsupported("SX logic instruction")),
                 };
                 self.regs[(d + index) & 127] = match op {
@@ -514,8 +595,26 @@ impl Sx {
             let a = ((instruction >> 14) & 0x7f) as usize;
             let b = (instruction & 0x7f) as usize;
             let d = ((instruction >> 7) & 0x7f) as usize;
-            if op > 5 {
-                return Err(BusErrorKind::Unsupported("SX shift instruction"));
+            if op >= 6 {
+                if count > 16 || a + count + 1 > 128 || d + count > 128 {
+                    return Err(BusErrorKind::Unsupported("SX funnel register range"));
+                }
+                let shift = if op == 6 { self.regs[b] } else { b as u32 };
+                if shift >= 32 {
+                    return Err(BusErrorKind::Unsupported("SX funnel shift count"));
+                }
+                let mut source = [0u32; 17];
+                source[..=count].copy_from_slice(&self.regs[a..=a + count]);
+                let mut outputs = [0u32; 16];
+                for (index, output) in outputs.iter_mut().take(count).enumerate() {
+                    *output = if shift == 0 {
+                        source[index]
+                    } else {
+                        (source[index] << shift) | (source[index + 1] >> (32 - shift))
+                    };
+                }
+                self.regs[d..d + count].copy_from_slice(&outputs[..count]);
+                return Ok(());
             }
             for index in 0..count {
                 let source = self.regs[(a + index) & 127];
@@ -548,6 +647,28 @@ impl Sx {
         let count = usize::from(((instruction >> 23) & 0x1f) as u8) + 1;
         let displacement = (instruction & 0x7f) as u64;
         if op == 0xa {
+            let target = ((address - SX_MEM_BASE) & !7) + displacement;
+            if data_type == 0x1f {
+                let start_lane = (target & 3) as usize;
+                let registers = (start_lane + count).div_ceil(4);
+                if count > 32 || source + registers > self.regs.len() {
+                    return Err(BusErrorKind::Unsupported("SX packed load register range"));
+                }
+                let mut values = [0u32; 9];
+                for index in 0..count {
+                    let offset = self
+                        .aperture_offset(target + index as u64)
+                        .ok_or(BusErrorKind::Unsupported("SX command target"))?;
+                    if offset as u64 + 1 > VRAM_APERTURE_BYTES {
+                        return Err(BusErrorKind::Unsupported("SX command target width"));
+                    }
+                    let position = start_lane + index;
+                    let word = &mut values[position / 4];
+                    *word |= self.read_vram(offset, 1)? << (24 - (position % 4) * 8);
+                }
+                self.regs[source..source + registers].copy_from_slice(&values[..registers]);
+                return Ok(());
+            }
             let width = match data_type {
                 0 => 1,
                 0x1b => 4,
@@ -556,7 +677,6 @@ impl Sx {
             if count > 32 || source + count > self.regs.len() {
                 return Err(BusErrorKind::Unsupported("SX load register range"));
             }
-            let target = ((address - SX_MEM_BASE) & !7) + displacement;
             let mut values = [0u32; 32];
             for (index, value) in values.iter_mut().take(count).enumerate() {
                 let offset = self
@@ -573,7 +693,7 @@ impl Sx {
         let select = op & 8 != 0;
         let masked = op & 1 != 0;
         if data_type == 0x1f {
-            if !matches!(op, 5 | 9) {
+            if !matches!(op, 1 | 5 | 9) {
                 return Err(BusErrorKind::Unsupported("SX packed memory command"));
             }
             let target = ((address - SX_MEM_BASE) & !7) + displacement;
@@ -586,19 +706,26 @@ impl Sx {
                     .aperture_offset(target + index as u64)
                     .ok_or(BusErrorKind::Unsupported("SX command target"))?;
             }
+            let source_lane = if op == 1 { (target & 3) as usize } else { 0 };
+            if op == 1 && source + (source_lane + count - 1) / 4 >= 128 {
+                return Err(BusErrorKind::Unsupported("SX packed store register range"));
+            }
             for (index, offset) in offsets.iter().take(count).enumerate() {
                 let enable = (self.regs[2] >> (31 - (index & 31))) & 1 != 0;
                 if op == 5 && !enable {
                     continue;
                 }
+                let source_index = source_lane + index;
                 let source_register = if op == 9 {
                     source + usize::from(enable)
+                } else if op == 1 {
+                    source + source_index / 4
                 } else {
                     source + index / 4
                 };
                 let source_word = self.regs[source_register & 127];
-                let value = (source_word >> ((3 - (index & 3)) * 8)) & 0xff;
-                let mask = (self.plane_mask >> ((index & 3) * 8)) & 0xff;
+                let value = (source_word >> ((3 - (source_index & 3)) * 8)) & 0xff;
+                let mask = (self.plane_mask >> (((source_lane + index) & 3) * 8)) & 0xff;
                 let old = self.read_vram(*offset, 1)?;
                 let value = (old & !mask) | (value & mask);
                 self.write_vram(*offset, value, 0xff)?;
@@ -615,7 +742,7 @@ impl Sx {
         if !matches!(op & 0xf, 0 | 1 | 8 | 9) {
             return Err(BusErrorKind::Unsupported("SX memory command"));
         }
-        let array = width == 1 && select && source >= 32;
+        let array = width == 1 && select && source >= 32 && count > 1;
         let target = ((address - SX_MEM_BASE) & !7) + displacement;
         let mut offsets = [0usize; 32];
         if count > offsets.len() {
@@ -634,6 +761,9 @@ impl Sx {
             *offset = self
                 .aperture_offset(physical)
                 .ok_or(BusErrorKind::Unsupported("SX command target"))?;
+            if *offset as u64 + width as u64 > VRAM_APERTURE_BYTES {
+                return Err(BusErrorKind::Unsupported("SX command target width"));
+            }
         }
         let width_mask = if width == 4 {
             u32::MAX
@@ -674,13 +804,12 @@ impl Sx {
         }
         if (VSIMM_CTL_BASE..VSIMM_CTL_BASE + VSIMM_CTL_SIZE).contains(&address) {
             let offset = (address - VSIMM_CTL_BASE) as usize;
-            if offset == 4 {
-                return self.read_bytes(&[self.msr()], 0, bytes);
+            let mut value = self.read_bytes(&self.control[..], offset, bytes)?;
+            if offset <= 4 && offset + bytes as usize > 4 {
+                let shift = (offset + bytes as usize - 5) * 8;
+                value = (value & !(0xff << shift)) | (u32::from(self.msr()) << shift);
             }
-            if offset == CG14_RSR {
-                return Ok(0x01u32);
-            }
-            return self.read_bytes(&self.control[..], offset, bytes);
+            return Ok(value);
         }
         Err(BusErrorKind::Unmapped)
     }
@@ -728,6 +857,10 @@ impl Sx {
                 return Ok(());
             }
             Self::write_bytes(&mut self.control[..], offset, value, mask);
+            // Revision and VBC configuration/current-row status are read-only.
+            // The functional model does not yet advance the VBC row counter.
+            self.control[CG14_RSR] = CG14_REVISION;
+            self.control[VBC_VCA..VBC_VCA + 4].copy_from_slice(&VBC_STRAPS.to_be_bytes());
             if self.trace
                 && (offset < 0x100
                     || (0x1000..0x1120).contains(&offset)
@@ -788,6 +921,10 @@ impl Sx {
 
     pub fn pixels(&self, output: &mut [u32]) {
         assert_eq!(output.len(), WIDTH * HEIGHT);
+        if self.control[0] & 0x41 != 0x41 {
+            output.fill(0);
+            return;
+        }
         let mode = (self.control[0] >> 4) & 3;
         for (index, pixel) in output.iter_mut().enumerate() {
             let rgb = match mode {

@@ -37,7 +37,8 @@ impl Mouse {
         }
     }
 
-    /// Relative host motion; positive X is right and positive Y is down.
+    /// Relative motion in wire coordinates: positive X is right and positive
+    /// Y is upward. Heliacal converts host Y with `-yrel`.
     pub fn motion(&mut self, dx: i32, dy: i32) {
         if dx == 0 && dy == 0 {
             return;
@@ -53,7 +54,7 @@ impl Mouse {
 
     pub(crate) fn advance_ns(&mut self, ns: u64, serial: &mut Serial) {
         self.schedule();
-        let phase = u128::from(self.phase) + u128::from(ns) * 1_000_000_000;
+        let phase = u128::from(self.phase) + u128::from(ns);
         let mut bytes = phase / u128::from(BYTE_NS);
         self.phase = (phase % u128::from(BYTE_NS)) as u64;
         while bytes != 0 {
@@ -74,8 +75,8 @@ impl Mouse {
 
     fn schedule(&mut self) {
         while self.queue.len() + 5 <= 32 && (self.dx != 0 || self.dy != 0 || self.changed) {
-            let dx = self.dx.clamp(-128, 127);
-            let dy = self.dy.clamp(-128, 127);
+            let dx = self.dx.clamp(-120, 127);
+            let dy = self.dy.clamp(-120, 127);
             self.dx -= dx;
             self.dy -= dy;
             self.changed = false;

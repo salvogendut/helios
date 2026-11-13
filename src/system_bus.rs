@@ -1662,14 +1662,11 @@ impl Bus for SystemBus {
                     kind: BusErrorKind::Misaligned,
                 });
             }
-            card.write(address, words[0], u32::MAX)
-                .map_err(|kind| BusError { address, kind })?;
-            return card
-                .write(address + 4, words[1], u32::MAX)
-                .map_err(|kind| BusError {
-                    address: address + 4,
-                    kind,
-                });
+            let result = card
+                .write_doubleword(address, words)
+                .map_err(|kind| BusError { address, kind });
+            self.sync_sx_irq();
+            return result;
         }
         let cgsix_base = self.layout.cgsix;
         if let Some(card) = self.cgsix_at(address) {

@@ -270,7 +270,15 @@ encoding; its configurable host geometry does not define Helios's raw target.
   and [SX register map](https://github.com/NetBSD/src/blob/trunk/sys/arch/sparc/dev/sxreg.h):
   mainbus `SUNW,sx` registers at `0xf8000000`, page-bound defaults
   `0xfc000000`/`0xffffffff`, instruction and register pages, and ASI `0x28`
-  rendering accesses above 4 GiB. These define the built-in SX placeholder.
+  rendering accesses above 4 GiB. These provide register/aperture definitions
+  for the built-in SX model; they do not establish complete SX execution.
+- Sun's [Solaris 2.6 CG14 register definitions](https://github.com/Arquivotheca/Solaris-2.6/blob/2.6/os_net/src_ws/usr/src/uts/sun/sys/cg14reg.h)
+  and [cgfourteen driver, revision 1.112](https://github.com/Arquivotheca/Solaris-2.6/blob/2.6/os_net/src_ws/usr/src/uts/sun/io/cgfourteen.c):
+  VSIMM-1/2 MCR layouts, read-only MDI revision/implementation, VBC VCA
+  version/HIRES fields at `+0x20c`, and the mode-switch/console-remapping path.
+  Helios selects an 8 MiB VSIMM 2 with MDI revision 1/implementation 1 and VBC
+  version 1. NetBSD `cgfourteen.c` 1.102 and `cgfourteenreg.h` 1.9 corroborate
+  the revision-dependent video power bit and 8/16/32-bit mode controls.
 - [QEMU sun4m SS-20 hwdef](https://github.com/qemu/qemu/blob/master/hw/sparc/sun4m.c):
   the comparison maps `sx_base=0xf80000000`, VSIMM register/Vram bases
   `0x9c000000`/`0xfc000000`, `0x90000000`/`0xf0000000`, `0x94000000` and

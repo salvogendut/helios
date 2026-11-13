@@ -190,3 +190,23 @@ fn rejected_load_does_not_partially_update_registers_or_vram() {
     );
     assert_eq!(sx.vram_bytes().len(), VRAM_BYTES);
 }
+
+#[test]
+fn captured_unaligned_long_load_reads_the_requested_byte_lanes() {
+    let mut sx = Sx::new();
+    start(&mut sx);
+    for index in 0..64 {
+        sx.write(VSIMM_VRAM_BASE + index, (0x30 + index as u32) & 0xff, 0xff)
+            .unwrap();
+    }
+    sx.write(SX_MEM_BASE + 0xfd00_0000, 0x87d6_d80a, u32::MAX)
+        .expect("captured long load at displacement 10");
+    for index in 0..16 {
+        let mut expected = 0u32;
+        for lane in 0..4 {
+            let offset = (0xa + index * 4 + lane) % VRAM_BYTES;
+            expected = (expected << 8) | u32::from(sx.vram_byte(offset));
+        }
+        assert_eq!(read_reg(&sx, 48 + index), expected, "register {index}");
+    }
+}

@@ -31,7 +31,7 @@ fn sx_scanout_uses_32bit_bgr_pixels() {
     let rom = 0u32.to_be_bytes();
     let mut machine =
         Machine::with_profile(profile, 16 * 1024 * 1024, &rom, profile.default_nvram()).unwrap();
-    machine.bus.write8(VSIMM_CTL_BASE, 0x30).unwrap();
+    machine.bus.write8(VSIMM_CTL_BASE, 0x71).unwrap();
     machine
         .bus
         .write32(VSIMM_VRAM_BASE + 0x0100_0000, 0x0011_2233)
@@ -55,7 +55,7 @@ fn sx_bgr_window_blocks_x_byte_writes() {
 #[test]
 fn sx_scanout_uses_16bit_x_c_pixels() {
     let mut sx = Sx::new();
-    sx.write(VSIMM_CTL_BASE, 0x20, 0xff).unwrap();
+    sx.write(VSIMM_CTL_BASE, 0x61, 0xff).unwrap();
     sx.write(VSIMM_VRAM_BASE, 0x0040_0080, u32::MAX).unwrap();
     let mut pixels = vec![0u32; WIDTH * HEIGHT];
     sx.pixels(&mut pixels);
@@ -254,10 +254,10 @@ fn sx_mcr_disable_deasserts_pending_video_irq() {
         .bus
         .write32(0xf_f141_0008, (1 << 31) | (1 << 20))
         .unwrap();
-    machine.bus.write8(VSIMM_CTL_BASE, 0xf0).unwrap();
+    machine.bus.write8(VSIMM_CTL_BASE, 0xf1).unwrap();
     machine.bus.advance_seconds(1);
     assert_eq!(machine.bus.interrupt_levels() & (1 << 8), 1 << 8);
-    machine.bus.write8(VSIMM_CTL_BASE, 0x70).unwrap();
+    machine.bus.write8(VSIMM_CTL_BASE, 0x71).unwrap();
     assert_eq!(machine.bus.interrupt_levels() & (1 << 8), 0);
 }
 
@@ -337,4 +337,39 @@ fn sx_packed_store_with_zero_enables_preserves_vram() {
     for (offset, value) in expected.into_iter().enumerate() {
         assert_eq!(sx.vram_byte(offset), value, "VRAM byte {offset:#x}");
     }
+}
+
+#[test]
+fn sx_captured_packed_selected_fill_writes_b_plane_pixels() {
+    let mut sx = Sx::new();
+    for (reg, value) in [(10, 0x0505_0505), (11, 0x0505_0505), (2, 0xa800_0000)] {
+        wr(&mut sx, 0x100 + reg * 4, value);
+    }
+    for pixel in 0x7a5e3..0x7a5ea {
+        sx.write(VSIMM_VRAM_BASE + pixel * 4, 0xaa11_ccdd, u32::MAX)
+            .unwrap();
+    }
+    let mut expected = packed_snapshot(&sx);
+    for pixel in 0x7a5e4..0x7a5e9 {
+        expected[pixel * 4 + 1] = 5;
+    }
+    wr(&mut sx, 0, 0x1000);
+    sx.write(SX_MEM_BASE + 0xff47_a5e0, 0x824f_c504, u32::MAX)
+        .unwrap();
+    for (offset, value) in expected.into_iter().enumerate() {
+        assert_eq!(sx.vram_byte(offset), value, "VRAM byte {offset:#x}");
+    }
+}
+
+#[test]
+fn single_selected_byte_store_is_direct_not_an_offset_array() {
+    let mut sx = Sx::new();
+    for (reg, value) in [(2, 0), (32, 0x5a), (33, 0xa5)] {
+        wr(&mut sx, 0x100 + reg * 4, value);
+    }
+    wr(&mut sx, 0, 0x1000);
+    sx.write(SX_VRAM_ALIAS_BASE, 0x8048_1002, u32::MAX)
+        .expect("captured one-byte selected store");
+    assert_eq!(sx.vram_byte(2), 0x5a);
+    assert_eq!(sx.vram_byte(0), 0);
 }

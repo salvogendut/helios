@@ -1022,3 +1022,335 @@ events were therefore not accepted by Solaris/Xsun, or the title-bar hit point
 was wrong. This is an input-path issue, not a rendering fault. The before and
 after PPMs are local evidence only; olwm move/resize/uncover/iconify and
 Heliacal input capture remain unaccepted.
+
+## Mouse delivery works after Solaris's startup hold
+
+Two checked headless probes on separate clones of `/tmp/solaris26-sx2.raw`
+reproduced the stationary pointer and then established the cause. Production
+source was unchanged. The SCC B receiver is enabled and drains its input;
+the probe's `pump` calls complete successfully. With only a few movement
+events, the before/after captures remain byte-identical.
+
+The original Solaris 2.6 mouse STREAMS module explains the missing events.
+[`ms.c` 1.84](https://github.com/Arquivotheca/Solaris-2.6/blob/2.6/os_net/src_ws/usr/src/uts/sun/io/ms.c)
+opens at B9600, sets `msd_rcnt_baud_chng`, and initializes
+`MS_HOLD_BAUD_STUP` to 48. `msrserv()` withholds buffered movement events
+until that count is reached, discards those initial events, and then starts
+delivery. The observed SCC B WR12=`14`, WR13=`0` agrees with this initial
+baud setting; keyboard channel A has WR12=`126` instead. The functional SCC
+currently accepts decoded bytes independently of configured baud/framing.
+
+Sending 64 alternating +1/-1 X movements, each followed by 1,000,000 guest
+steps, crosses this startup hold. Stationary packets are insufficient because
+`msinput()` discards events that change neither position nor buttons.
+
+| Probe stage | CG14 cursor X | CG14 cursor Y |
+| --- | ---: | ---: |
+| Before movement | 575 | 449 |
+| After event 47 | 575 | 449 |
+| After event 48 | 575 | 449 |
+| After event 49 (+1 X) | 576 | 449 |
+| After event 50 (-1 X) | 575 | 449 |
+| After event 64 | 575 | 449 |
+| Then +20 X | 615 | 449 |
+| Then +20 wire Y | 615 | 409 |
+
+These are the high/low halfwords of CG14 cursor register `0x1104`. Captures
+change after the subsequent motions, with no CPU/SX fault. The second probe
+syncs its clone and reaches OBP `ok` after `/usr/sbin/halt`. This proves mouse
+motion reaches Xsun; window dragging, button actions and keyboard interaction
+are still separate acceptance work.
+
+The experiment also establishes two positioning issues in the old harness:
+pointer acceleration doubles the tested 20-count motions, and **positive wire
+Y moves upward**. `Mouse::motion` currently documents positive Y as down, but
+passes it unchanged; Heliacal compensates by calling `mouse_motion(xrel,
+-yrel)`. Sun `msinput()` explicitly subtracts wire Y. The headless
+`mouse_motion(-450,-340)` therefore cannot be treated as a precise move to
+the title bar even after the startup hold.
+
+### Two independent mouse-device regressions
+
+`local/review-2026-11-13-sx-mouse/tests/mouse.rs` exposes two additional defects
+through the real Machine/SCC path:
+
+1. **Nanosecond scaling:** `Mouse::advance_ns` multiplies an already-nanosecond
+   interval by 1,000,000,000 before dividing by a nanosecond byte duration.
+   The receiver obtains bytes after just **one nanosecond**, and long bursts
+   are limited by FIFO backpressure rather than the configured mouse rate.
+   Use a consistent nanosecond/rational accumulator, as the keyboard does.
+2. **Reserved payload values:** splitting at -128 emits `0x80..0x87` as
+   movement bytes. The captured large negative move begins
+   `87 80 80 00 00`. NetBSD's
+   [Sun mouse manual](https://man.netbsd.org/NetBSD-9.4/sparc/ms.4)
+   reserves that range for headers, and
+   [pinned MAME `extract_delta_byte`](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/bus/sunmouse/hlemouse.cpp)
+   splits deltas into -120..127 while preserving the remainder. The fixture
+   checks header-safe payloads and preservation of the complete motion.
+
+Both fixtures fail against production. These are separate defects from the
+48-event startup hold. In particular, Solaris 2.6's parser accepts signed
+payload bytes while in a data state, and this review demonstrates working
+motion with the current production endpoint after the hold is satisfied.
+The existing mouse timing test does not assert arrival boundaries and reads
+zero-valued packet tails without first checking receive-ready status.
+
+### Packed op 9 review and the next experiment
+
+The new packed op 9 was triggered by `0x824fc504` at PC `0xee670860`, ELF
+`0x30860` in `sl_span_fill_8`. It fills five B32 pixels at effective address
+`0xff47a5e4`; R10 and R11 both contain repeated color `0x05050505`.
+`tests/packed_select.rs` in this review directory reproduces that fill with
+distinct surrounding pixel channels and passes. This evidence covers the
+observed identical-color fill, while generic mixed-source packed selection,
+unaligned source lanes and nonuniform plane-mask lanes remain unconfirmed.
+The 23 tracked SX/load tests also pass independently.
+
+Continue the acceptance harness in this order:
+
+1. Check every `pump` result. The old drag blocks use `let _ = pump(...)`,
+   which hides CPU/SX failures; a matching screenshot cannot establish an
+   input failure by itself.
+2. Perform paced startup motion and wait for observed cursor movement before
+   doing hit tests. Keep this startup sequence in the experiment harness;
+   preserve the guest driver's behavior.
+3. Disable acceleration for pixel measurements with
+   `DISPLAY=:0 /usr/openwin/bin/xset m 1/1 0`, then position the pointer using
+   the measured coordinates and correct wire-Y sign. Use small deltas while
+   the negative-range fix is outstanding.
+4. First demonstrate a clear larger title-bar drag and release. Then exercise
+   final window offsets of one, two and three pixels, measuring the resulting
+   frame position. This avoids treating a tiny attempted gesture as proof
+   that a drag began. Resume resize/expose/iconify and Heliacal input checks.
+5. Integrate the timing/range fixes with the two independent mouse regressions
+   and promote the observed packed-fill fixture before claiming these paths
+   covered by the tracked suite.
+
+Artifacts under `local/review-2026-11-13-sx-mouse/` include the checked harness,
+two cloned disks, before/after PPMs, `cursor-evidence.txt`, probe/serial logs,
+source and capture hashes, the failing mouse regressions and the passing
+packed-fill fixture. Downloaded original Sun sources remain ignored there.
+
+## Mouse timing/range fixes and current acceptance state
+
+`Mouse::advance_ns` now accumulates nanoseconds without the extra 1e9 factor,
+so a 1200-baud byte requires the configured byte interval. Negative deltas are
+split into the header-safe `-120..=127` payload range while preserving the
+remainder. The two independent mouse regressions are promoted to tracked
+`tests/mouse.rs`, and the captured packed-op-9 fill is tracked in `tests/sx.rs`.
+
+The local `/tmp/probe_sx_olwm2.rs` harness sends 64 paced alternating one-pixel
+startup movements and checks the mouse-stage pump results. Its comment says
+acceleration is disabled, but it contains no `xset` command. Inspection of
+`/tmp/sx-olwm4.err` shows the larger attempted drag ends at cursor image origin
+`(38,248)`, outside TERM-A's title bar. The following attempts end at `(39,248)`,
+`(41,248)` and `(44,248)`. Each capture differs from the before image by 100
+pixels representing the old/new cursor; the windows remain fixed. Equal `nz`
+counts in the dump log do not mean equal images. The two-terminal capture
+still shows complete titles/borders and overlap; actual dragging, resize,
+uncover, iconify and Heliacal input capture remain open.
+
+## Calibrated olwm drag reaches a packed outline operation
+
+Independent review of the timing/range fixes passes all 26 tracked tests in
+`mouse`, `sx` and `sx_loads`. Production source was unchanged throughout this
+review, checked against hashes of `mouse.rs`, `serial.rs` and `sx.rs`.
+
+The corrected probe boots a fresh clone of the previously cleanly halted
+review disk, starts Xsun, olwm and the two persistent terminals, then runs:
+
+```sh
+DISPLAY=:0 /usr/openwin/bin/xset m 1/1 0
+DISPLAY=:0 /usr/openwin/bin/xset q
+```
+
+The serial transcript confirms `acceleration: 1/1` and `threshold: 0`. After
+64 paced startup movements, the probe reads CG14 register `0x1104` after each
+small movement and reaches cursor image origin `(350,112)`. Cursor shapes and
+hotspots change when crossing windows, so measuring again is necessary even
+with acceleration disabled. `xwininfo -root -tree` independently places
+TERM-A's frame at `494x346+100+100`; the saved positioned capture visibly puts
+the pointer in its title bar.
+
+Left-button press followed by +20 X motion reaches a new **SX error**, proving
+that the mouse gesture now reaches the window manager's drawing path:
+
+```text
+SX REG 0x1014 <- 0x00000055
+SX REG 0x1010 <- 0xffffffff
+SX REG 0x1324 <- 0x00000000
+SX REG 0x1020 <- 0xb8e00509
+SX CMD PA 0xff01c260 <- 0x8fd7d504
+PC=0xee66fc34, SPARC instruction=0xd6224000
+Unsupported("SX load format"), bus address=0x8ff01c260
+```
+
+This is the first observed fault. The original `ddxSUNWcg14.so.1` disassembly
+maps that PC to ELF offset `0x2fc34`, in `sl_rect_fill_8_rop`. Its continuation
+identifies a useful complete implementation slice:
+
+| Status | SX word | Operation |
+| --- | --- | --- |
+| Captured fault | `0x8fd7d504` | Packed load, operation `0xa`, format `0x1f`, 32 bytes, R42, displacement 4. |
+| Derived next instruction | `0x9822952a` | ROP_M, A=R10, B=R42, D=R42, nine registers, ROP control `0x55`. |
+| Derived following store | `0x8f8fd504` | Packed store with plane mask, operation `1`, 32 bytes from R42, displacement 4. |
+
+The memory address is **X32**, effective PA `0xff01c264`, corresponding to
+the X bytes of pixels `(100,100)` through `(131,100)`. This is the outline
+operation encountered when the drag begins; the run has not yet completed a
+window move or reached the one/two/three-pixel release checkpoints.
+
+Implement this load/ROP/store sequence together:
+
+- A packed load places four bytes in each register. The captured aligned
+  32-byte transfer fills R42..R49, rather than 32 separate registers. Validate
+  the packed register span, resolve every source through its CG14 aperture,
+  stage reads, and commit only after all targets are valid. The fixtures also
+  require a 32-byte transfer into R120..R127 to succeed.
+- The ROP_M instruction is a raster operation using the ROP control register;
+  it is not one of the SELECT opcodes. With the captured `0x55` control it
+  complements source B. R10..R18 were cleared by the preceding ORS command.
+  Preserve overlapping-source semantics and neighboring registers.
+- The following packed store has a plane mask but **no conditional R2
+  enable**. R2 is zero in the captured state. Reusing the conditional op-5
+  path without separating its enable test would silently suppress the
+  outline. Preserve the other B/G/R channels and surrounding pixels.
+
+Independent references are the [NetBSD SX encodings, revision 1.22](https://cvsweb.netbsd.org/bsdweb.cgi/src/sys/arch/sparc/dev/sxreg.h?rev=1.22&content-type=text/x-cvsweb-markup),
+Sun's [Pixel Processing in a Memory Controller](https://www.sunhelp.org/history/pdf/smc.pdf)
+table 3 and sections 4.1.7/4.1.10, and the original DDX instruction stream.
+NetBSD `cgfourteen.c`'s `0x3c` ROP comment (`~src a / src a`) independently
+establishes the nibble truth-table ordering used for the `0x55` fixture.
+The two later commands above are derived from disassembly, not claimed as
+executed guest commands. Partial packed tails and unaligned lane placement
+remain separate questions; the new fixtures use complete aligned words.
+
+### Reproduction and fixtures
+
+`local/review-2026-11-13-sx-hit-test/` contains the corrected harness, source
+hashes, original failing harness/trace, pointer-position evidence, before and
+positioned PPM/PNG captures, checked serial/trace logs, the fault capture and
+DDX excerpt. Both guest reruns used private clones; the faulted clone was not
+cleanly halted and is diagnostic evidence, not the baseline for the next run.
+
+The six independent fixtures in `tests/packed_outline.rs` use a synthetic
+nonuniform X-plane pattern and the captured/derived command words. Five fail
+against production at the corresponding unsupported load, ROP and store;
+the invalid-target atomicity fixture passes. These are intentionally isolated
+under ignored `local/`, ready to promote once the implementation passes:
+
+```sh
+cargo test --locked --offline \
+  --manifest-path local/review-2026-11-13-sx-hit-test/Cargo.toml \
+  --test packed_outline
+```
+
+Run the harness with explicit paths to a fresh private disk clone and output
+prefix. It checks all gesture pumps, stops setup on a failed command, records
+serial progress, and marks the expected response before transmitting each
+command. The source additionally saves raw VRAM on future fault captures;
+the existing checked run saved register state and the rendered image, not
+raw VRAM.
+
+An initial review attempt put `xset` before any persistent client: `xset m`
+returned, then `xset q` stalled and the cursor was disabled. That attempt
+did not validate any gesture. A last-client server reset is a plausible
+explanation, consistent with the [X server reset documentation](https://www.x.org/archive/X11R7.5/doc/man/man1/Xserver.1.html);
+its precise stall was not diagnosed. Starting olwm and the terminals before
+the setting/query avoids this in the successful fault-reproduction run.
+
+Next: implement and promote the outline regressions, rerun the calibrated
+drag through release, then test small final offsets, resize/uncover/iconify
+and Heliacal capture/release. Do not infer acceptance from unchanged windows
+or equal nonzero-pixel counts. Also correct `Mouse::motion`'s misleading Y
+documentation: the implemented core API uses positive wire Y upward, while
+Heliacal already supplies `-yrel`.
+
+## Packed outline load/ROP/store applied
+
+The fault capture's complete outline slice is now implemented: packed loads
+gather four X-plane bytes per destination register (including R120..R127),
+ROP_M applies the 4-bit truth table from the ROP control register with source
+snapshots for overlap, and packed masked stores accept operation 1 without
+requiring R2 enables. The six outline fixtures are promoted into tracked
+`tests/packed_outline.rs` and pass, along with all prior SX/load/mouse tests.
+The calibrated harness's window move still needs a fresh guest run after this
+change; no move is yet accepted.
+
+## Outline operations applied and calibrated drag result
+
+Packed loads into R42..R49 and R120..R127, ROP_M with the captured `0x55`
+control, and packed masked stores with operation 1/nonzero source registers
+are implemented. The five failing outline fixtures plus the invalid-target
+atomicity fixture are promoted into tracked `tests/packed_outline.rs`; all
+pass. The calibrated harness runs the outline commands and submits the larger
+drag gesture; before/positioned/large-drag captures are saved under
+`local/review-2026-11-13-sx-outline/`.
+
+Independent inspection of the complete serial log finds an earlier SX bus
+fault at `0xee66f104` and Solaris panic, before the `ESP stacked interrupt`
+during panic dumping. Held and released images are identical and TERM-A has
+not moved. The `STD` to the SX instruction queue is incorrectly split across
+offsets `0x20` and `0x24`; the second word causes a user `ReadOnly` bus fault.
+The harness missed `Ok(Step::TrapTaken { .. })` by checking only `Err`.
+See [paired SX instructions and the first panic](ss20-sx-std-panic.md) for the
+exact CPU/MMU reproduction, doubleword/atomicity regressions, two additional
+outline gaps and a harness that captures the first graphics bus trap. Move,
+resize/uncover, iconify and Heliacal input checks remain unaccepted.
+
+## Paired-IQ fixes reviewed; funnel and copy alignment next
+
+The paired-IQ, packed-tail and mask-selected ROP regressions now pass; the
+independent focused run passes all 41 SX/load/outline/queue/mouse tests.
+The larger gesture's held/released captures differ, but its final frame
+geometry is still `494x346+100+100`; only the pointer differs from the initial
+released image. This does not yet accept a window move.
+
+The following small gesture stops on release at PC `0xee65a44c`, in
+`sl_rect_copyrl_8`, submitting `0xc8e28518`: funnel-left immediate 24,
+R10..R19 to R10..R18. The driver sequence also exposes a packed-byte alignment
+constraint for its following unaligned store. See the
+[funnel and move acceptance review](ss20-sx-funnel-review.md) for eight
+isolated fixtures, captured versus inferred operands, harness diagnostic
+gaps, and the remaining merge gate. Production was not changed by the review.
+
+## Real moves verified; unaligned packed loads corrupt rendering
+
+The funnel/store follow-up passes its eight promoted fixtures, and the new
+guest capture proves successive 20/1/2/3-pixel geometry changes. Independent
+image comparison finds text corruption after move2 and repeating title-bar
+stripes after move3. Captured unaligned X-plane load/ROP/store commands fail
+both inversion and draw/erase restoration because loads still begin at lane
+zero and omit the ninth register. See the
+[unaligned-load review](ss20-sx-unaligned-load-review.md) for the reproduction,
+six isolated regressions and remaining acceptance work. All 483 tracked core
+tests and required static/demo checks pass; visual correctness remains a
+merge blocker. Production was not changed by this review.
+
+## Packed-load fix independently accepted for window moves
+
+Accepted-run4 confirms all four geometry deltas with zero translated-text
+differences. Independent comparison also preserves more than 60,000 visible
+TERM-A pixels per move, including borders and title bar outside the pointer;
+TERM-B is unchanged and vacated strips return to the desktop background.
+The six load regressions and all 489 core tests pass, as do formatting,
+Clippy and demos. See the latest section of the
+[unaligned-load review](ss20-sx-unaligned-load-review.md) for exclusions,
+metrics and the remaining resize/uncover/iconify, Heliacal input and SS-5/Axil
+boot checks before merge. The observed movement/rendering defect is resolved;
+production was not changed by this independent review.
+
+## Run 21 resize/uncover/iconify reviewed
+
+Independent pixel checks accept the recorded moves, uncover, Full Size/Normal
+Size and iconify/restore. The entire normal-sized client returns identically;
+the shrink report's 1,392 non-desktop pixels are exactly its surviving bottom
+border, and all pixels below that border are desktop. All 491 core tests,
+formatting and demos pass; a redundant cast in the new load test was removed
+to make Clippy pass too. Stale human documentation has been reconciled.
+
+The new unaligned store path still partially mutates VRAM when a later byte
+or vector element crosses the aperture boundary. See the
+[resize and final-store review](ss20-sx-resize-review.md) for two isolated
+failure reproductions, two passing controls and the complete-span prevalidation
+needed before merge. Heliacal rebuild/input and SS-5/Axil boot checks remain.

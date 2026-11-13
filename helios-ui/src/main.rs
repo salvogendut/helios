@@ -184,7 +184,7 @@ fn run() -> Result<(), String> {
     } else {
         (MachineProfile::Ss5, first, Some(args.next().ok_or(usage)?))
     };
-    let mut nvram = Nvram::default();
+    let mut nvram = profile.default_nvram();
     let mut nvram_out = None;
     let mut disk = None;
     let mut disk_writable = false;
@@ -223,34 +223,38 @@ fn run() -> Result<(), String> {
             _ => return Err(usage.into()),
         }
     }
-    let mut machine = Machine::with_profile(
-        profile,
-        DEFAULT_RAM_BYTES,
-        &std::fs::read(prom).map_err(|e| e.to_string())?,
-        nvram,
-    )
-    .map_err(|e| e.to_string())?;
-    for (id, kind, path) in [(3, MediaKind::Disk, disk), (6, MediaKind::Cdrom, cdrom)] {
-        if let Some(path) = path {
-            let scsi = &mut machine.bus.devices_mut().unwrap().scsi;
-            let result = if kind == MediaKind::Disk && disk_writable {
-                scsi.attach_disk_rw(id, &path)
-            } else {
-                scsi.attach(id, kind, &path)
-            };
-            result.map_err(|error| format!("SCSI ID {id}, {}: {error}", path.display()))?;
+    // Construct shared CPU/bus device state on the thread that owns it.
+    let build_machine = move || -> Result<Machine, String> {
+        let mut machine = Machine::with_profile(
+            profile,
+            DEFAULT_RAM_BYTES,
+            &std::fs::read(prom).map_err(|e| e.to_string())?,
+            nvram,
+        )
+        .map_err(|e| e.to_string())?;
+        for (id, kind, path) in [(3, MediaKind::Disk, disk), (6, MediaKind::Cdrom, cdrom)] {
+            if let Some(path) = path {
+                let scsi = &mut machine.bus.devices_mut().unwrap().scsi;
+                let result = if kind == MediaKind::Disk && disk_writable {
+                    scsi.attach_disk_rw(id, &path)
+                } else {
+                    scsi.attach(id, kind, &path)
+                };
+                result.map_err(|error| format!("SCSI ID {id}, {}: {error}", path.display()))?;
+            }
         }
-    }
-    if let Some(rom) = turbo_rom {
-        machine
-            .bus
-            .install_cgsix(
-                Cgsix::new(&std::fs::read(rom).map_err(|e| e.to_string())?)
-                    .map_err(|e| format!("{e:?}"))?,
-            )
-            .map_err(|e| e.to_string())?;
-    }
-    machine.bus.devices_mut().unwrap().keyboard = Some(Keyboard::default());
+        if let Some(rom) = turbo_rom {
+            machine
+                .bus
+                .install_cgsix(
+                    Cgsix::new(&std::fs::read(rom).map_err(|e| e.to_string())?)
+                        .map_err(|e| format!("{e:?}"))?,
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        machine.bus.devices_mut().unwrap().keyboard = Some(Keyboard::default());
+        Ok(machine)
+    };
     let title = format!("HELIOS — {} — {TITLE_SUFFIX}", profile.target());
     let mut window = Window::new(
         &title,
@@ -269,7 +273,9 @@ fn run() -> Result<(), String> {
     }));
     window.set_input_callback(Box::new(Input(input.clone())));
     eprint!("{}", include_str!("../../sun_ascii.txt"));
-    eprintln!("{title}\n128 MiB RAM, 1152×900 framebuffer. Firmware startup may take a few minutes.");
+    eprintln!(
+        "{title}\n128 MiB RAM, 1152×900 framebuffer. Firmware startup may take a few minutes."
+    );
     let display = Arc::new(Mutex::new(Display {
         pixels: vec![0; WIDTH * HEIGHT],
         stop_title: None,
@@ -277,7 +283,27 @@ fn run() -> Result<(), String> {
     let (input_tx, input_rx) = mpsc::sync_channel(256);
     let (quit_tx, quit_rx) = mpsc::channel();
     let shared = display.clone();
-    let handle = std::thread::spawn(move || worker(machine, input_rx, quit_rx, shared, nvram_out));
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let handle = std::thread::spawn(move || {
+        let machine = match build_machine() {
+            Ok(machine) => machine,
+            Err(error) => {
+                let _ = ready_tx.send(Err(error.clone()));
+                return Err(error);
+            }
+        };
+        if ready_tx.send(Ok(())).is_err() {
+            return Ok(());
+        }
+        worker(machine, input_rx, quit_rx, shared, nvram_out)
+    });
+    if let Err(error) = ready_rx
+        .recv()
+        .unwrap_or_else(|_| Err("Machine worker stopped during startup".into()))
+    {
+        let _ = handle.join();
+        return Err(error);
+    }
     let mut pixels = vec![0; WIDTH * HEIGHT];
     let mut window_error = None;
     while window.is_open() {

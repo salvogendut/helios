@@ -50,10 +50,10 @@ modules, low slots first.
   parity generation, injected errors and the correctable-error interrupt are not
   modeled.
 - Empty CPU timer/interrupt slots and unpopulated VSIMM probe windows return
-  zero and discard writes, matching an unpopulated machine. The low VSIMM
-  `0x8000_0000..0x9c00_2000` windows, their legacy high aliases
-  `0xf_f800_0000..0xf_f9c0_2000`, the SX placeholder at
-  `0xf_8000_0000..0xf_8000_2000`, DBRI PROM/register placeholders at
+  zero and discard writes, matching an unpopulated machine. The populated
+  SS-20 SX/VSIMM windows route to the device before these empty-slot defaults.
+  Low VSIMM probe windows `0x8000_0000..0x9c00_2000`, their legacy high aliases
+  `0xf_f800_0000..0xf_f9c0_2000`, DBRI PROM/register placeholders at
   `0xe_e000_1000..0xe_e000_1030` and `0xe_e001_0000..0xe_e001_0100`, and the
   BPP placeholder at `0xe_f480_0000..0xe_f480_0020` are decoded. The SS-20
   SX/VSIMM framebuffer is modeled separately; DBRI audio and BPP are not.
@@ -63,7 +63,7 @@ modules, low slots first.
   keyboard, the headless SS-20 profile still runs full POST and reports that
   diagnostic.
 - The built-in SX/cg14 subset is installed only for the SS-20. It models an
-  8 MiB VSIMM mirrored through the 64 MiB aperture, the SX register/control
+  8 MiB VSIMM 2 mirrored through the 64 MiB aperture, the SX register/control
   blocks and the ASI `0x28` memory alias at `0x800000000 + target PA`.
   `cg14` opens through OBP and draws the native 1152x900 console. MXCC state
   is shared by ASI 2 and the populated CPU-0 module-control alias at
@@ -75,9 +75,12 @@ modules, low slots first.
   Monitor sense 4 selects the 1152x900 timing used by the renderer, and CLUT
   words are decoded as `00BBGGRR`. With these settings original OBP opens
   `cg14` and draws a native `ok` console. The Axil 320 shares the SS-20
-  CPU/memory map but has no VSIMM or built-in SX device. SX acceleration
-  instructions, raw CBGR/component-plane aperture decoding and full scanout
-  timing remain incomplete.
+  CPU/memory map but has no VSIMM or built-in SX device. The SX subset handles
+  the observed Xsun fill, glyph, copy, outline and window-operation commands,
+  including packed loads/stores, ROP_M and funnel shifts. Scanout decodes
+  8/16/32-bit pixels and the raw/BGR/component-plane apertures; vertical
+  retrace drives the video interrupt. Complete SX instructions and arbitrary
+  programmed display timings remain unsupported. See [graphics](graphics.md).
 - The integrated ESP accepts the SS-20/Axil 32-bit register lane accesses and
   test-mode probe commands, while the SS-5 profile retains byte-only access and
   strict reserved-register behavior.
@@ -95,14 +98,13 @@ diagnostic writes install real translations. The integer and FPU endianness test
 PSR.DE dual-byte-ordering conversions. The next full-POST diagnostic is the
 CPU/MBus module cache-tag test at `0x4000_0000` (`exp[31:0]=0`,
 observed `0x1e`), reported as a suspect MBus module. With a blank NVRAM the OBP
-then rejects the configuration checksum, rewrites defaults, sets
-`diag-switch?` true and resets. Stop-A skips POST and reaches OBP
-initialization, but the serial output stops after the memory-bank probes while
-OBP searches the device tree for `/obio/zs@0,0`; the loop persists past five
-billion instructions. The Axil 320 ROM 2.19
+can reject the configuration checksum, rewrite defaults, set
+`diag-switch?` true and reset. Use the documented initialized per-machine
+NVRAM and keyboard setup for abbreviated startup. The Axil 320 ROM 2.19
 (`axil320-2-19.bin`, SHA-256
-`bc231c32d817d09e1d8192da0475a342f88b3ac2ed64e6fb67ab61e797e77425`) reaches
-the same NVRAM reset path. These are not clean-POST or OS-boot claims. CPU
+`bc231c32d817d09e1d8192da0475a342f88b3ac2ed64e6fb67ab61e797e77425`) also
+reaches serial `ok` with its initialized NVRAM. Full POST completion remains
+unverified. CPU
 identity is profile-specific: SS-5 reports the MB86904 microSPARC-II IU/FPU
 identity, while SS-20 and Axil report SuperSPARC-II IU version 3 and FPU
 version 0. The interpreter and reference MMU remain functional models; there is
@@ -115,5 +117,19 @@ usual framebuffer; Helios does not require the SS-5 AFX presence byte for it.
 Axil/SS-20 SCSI discovery now works through the standalone IOMMU: OBP
 `probe-scsi-all` lists an attached ID 3 disk. The key fix is honoring the
 sun4m Arbiter Enable Register at `+0x1008` and masking IOPTE PPN bits 26:8
-instead of the wider reference-MMU CPU PTE mask. No machine profile other than
-the SS-5 has an OS compatibility claim.
+instead of the wider reference-MMU CPU PTE mask.
+
+Both SS-20 and Axil have booted installed Solaris 2.6 disks to console login.
+Disks copied from SS-5 need their device links and `path_to_inst` migrated to
+the reference-profile device paths. A migrated Axil clone also passed a
+write/sync/halt/reboot persistence check. These are specific firmware/disk
+checkpoints, not a general OS compatibility guarantee.
+
+Native SS-20 Xsun/olwm tests now preserve text through 20/1/2/3-pixel moves,
+uncover previously hidden terminal contents, switch between Full Size and
+Normal Size, and restore an iconified terminal with identical client pixels.
+These tests drive the headless core. Heliacal also passes graphical-console
+startup, xterm typing, mouse dragging with an unchanged translated client,
+and capture/release checks on Linux/X11. Fresh SS-5 and Axil disk clones reach
+login and return to OBP after a clean halt. See [graphics](graphics.md) for the
+current device subset.
