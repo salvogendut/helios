@@ -71,10 +71,9 @@ fn ss20_console_and_sbus_placeholder_windows_return_zero() {
         profile.default_nvram(),
     )
     .unwrap();
-    // SX, DBRI PROM/register windows and the legacy high VSIMM aliases are
-    // decoded as empty slots (QEMU uses unimplemented devices at these bases).
+    // The DBRI windows and legacy high VSIMM aliases remain empty slots;
+    // SX has its own register/VRAM model.
     for (asi, address) in [
-        (0x2f, 0x8000_0000), // 0xf_8000_0000 SX
         (0x2e, 0xe000_1000), // 0xe_e000_1000 DBRI PROM
         (0x2e, 0xe001_0000), // 0xe_e001_0000 DBRI registers
         (0x2f, 0xf8c0_0000), // 0xf_f8c0_0000 legacy high VSIMM alias

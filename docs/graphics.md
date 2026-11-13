@@ -174,5 +174,13 @@ uses the built-in SX framebuffer path instead of the SS-5 TurboGX card. The
 VSIMM/SX model exposes an 8 MiB framebuffer mirrored through the aperture,
 SX registers/control and CLUT pixels. With monitor sense 4 and `00BBGGRR` CLUT
 decoding, original OBP opens `cg14` and draws a native 1152x900 `ok` console.
-The serial monitor remains available; SX acceleration instructions and the
-full raw/CBGR/component-plane decoder are not implemented.
+The serial monitor remains available. SX supervisor and user register pages
+share the 128-register execution bank, including queued writes, GO/sync and
+the plane mask. SX memory operations at `0x800000000 + PA` execute the observed
+scalar-OR and masked store-select/long/byte commands. The CG14 scanout decodes
+8-, 16- and 32-bit pixels through the raw, BGR, X16/C16 and X32/B32/G32/R32
+apertures. The observed SX shift (`SLLI`), PLOT/Bresenham generation, logic, masked
+store, mixed store-select and the captured indexed byte-store path execute
+with register/range atomicity. Unsupported SX instructions and command data
+types still return an explicit unsupported-bus error instead of being stored
+as pixel data; indexed-store mode remains inferred from the captured traffic.
