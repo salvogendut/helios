@@ -36,6 +36,10 @@ modules, low slots first.
   is set: `PA[35:28] = 0xff`, low address bits from the VA. ASI `0x20` is a
   32-bit bypass; ASI `0x21..=0x2f` assemble a physical address from the ASI's low
   nibble and the full 32-bit VA, which reaches the high control-space devices.
+- SS-20/Axil DMA uses a board-owned standalone IOMMU cache and invalidation
+  queue, independent of CPU 0. SS-5 retains its integrated CPU/I/O TLB. The
+  standalone owner has no CPU context, diagnostic entries or fast caches; see
+  [IOMMU and SBus DMA](io-control.md).
 - The SS-20/Axil PROM aperture is a 16 MiB read-only alias: the image occupies
   the first 1 MiB and the remainder reads `0xff`. PROM write strobes are ignored
   for the reference profiles, matching OBP's low boot alias and its D-cache

@@ -209,17 +209,28 @@ impl Machine {
                 kind: DmaFault::Misaligned,
             });
         }
-        self.bus.set_cpu_supervisor(self.cpu.psr() & 0x80 != 0);
         let mapping = self
             .bus
             .devices()
             .ok_or(DmaError::Unsupported("no SBus/IOMMU installed"))?
             .io_control
             .mapping(master, address)?;
-        let physical = self
-            .cpu
-            .mmu
-            .translate_io(&mut self.bus, address, write, mapping)?;
+        let standalone = self.standalone_iommu.take();
+        let (physical, boot_mode) = if let Some(mut iommu) = standalone {
+            let result = iommu.translate(&mut self.bus, address, write, mapping);
+            self.standalone_iommu = Some(iommu);
+            (result?, false)
+        } else {
+            // SS-5's integrated CPU/I/O TLB retains the documented CPU pin
+            // attributes and shared invalidations.
+            self.bus.set_cpu_supervisor(self.cpu.psr() & 0x80 != 0);
+            (
+                self.cpu
+                    .mmu
+                    .translate_io(&mut self.bus, address, write, mapping)?,
+                self.cpu.mmu.boot_mode(),
+            )
+        };
         if physical >= 0x1000_0000 {
             return Err(DmaError::Unsupported("non-DRAM DVMA target"));
         }
@@ -234,7 +245,7 @@ impl Machine {
             MemoryRequest {
                 kind,
                 cpu: false,
-                boot_mode: self.cpu.mmu.boot_mode(),
+                boot_mode,
                 cacheable: false,
             },
         );

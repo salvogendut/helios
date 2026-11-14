@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 pub const IO_CONTROL_SIZE: u64 = 0x8000;
 const VERSION: u32 = 0x0400_0000;
 const BASE_MASK: u32 = 0x07ff_fc00;
+const MBUS_BASE_MASK: u32 = 0xffff_fc00;
 const ARBITRATION_MASK: u32 = 0x003f_0000;
 // microSPARC-II manual table 38: revision 3.0. This is a model choice,
 // independent of the IOCR version, not QEMU's turboSPARC identity.
@@ -37,6 +38,7 @@ impl Default for IoControl {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum IoMapping {
     Bypass(u64),
     PageTable(u64),
@@ -107,12 +109,18 @@ impl IoControl {
                 self.flushes.push_back(IoTlbFlush::All);
             }
             0x18 => {
-                let flush = IoTlbFlush::Page(value & !0xfff);
+                let page = if self.version == 0x1300_0000 {
+                    // Sun-4M 7.2.4.2: FA is bits 30:12; bit 31 is reserved.
+                    value & 0x7fff_f000
+                } else {
+                    value & !0xfff
+                };
+                let flush = IoTlbFlush::Page(page);
                 if !self.flushes.contains(&IoTlbFlush::All) && !self.flushes.contains(&flush) {
                     self.flushes.push_back(flush);
                 }
             }
-            4 => self.table_base = value & BASE_MASK,
+            4 => self.table_base = value & self.base_mask(),
             0x1000 => {
                 self.async_status = value & 0xff0e_0000;
                 self.async_locked = value & (1 << 31) != 0;
@@ -237,6 +245,15 @@ impl IoControl {
         Ok(IoMapping::PageTable(
             base | (u64::from((address & mask) >> 12) * 4),
         ))
+    }
+
+    fn base_mask(&self) -> u32 {
+        if self.version == 0x1300_0000 {
+            // Sun-4M 5.8.2: the standalone IBA field is PA<35:14>.
+            MBUS_BASE_MASK
+        } else {
+            BASE_MASK
+        }
     }
 
     fn unsupported_register(offset: u64) -> BusErrorKind {

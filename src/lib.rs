@@ -8,6 +8,7 @@ pub mod devices;
 pub mod dma;
 pub mod dram;
 pub mod fpu;
+pub mod iommu;
 pub mod machine;
 pub mod mmu;
 pub mod net;
