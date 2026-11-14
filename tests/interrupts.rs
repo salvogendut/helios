@@ -212,7 +212,7 @@ fn software_set_clear_reserved_bits_and_reset() {
     assert_eq!(ic.levels(), 0x7ffc);
     ic.write(true, 12, !MASK_BITS).unwrap();
     assert_eq!(ic.read(true, 4).unwrap(), 0);
-    ic.write(true, 16, 15).unwrap(); // reserved MP target: no other CPU exists
+    ic.write(true, 16, 15).unwrap(); // NCR reserved target: read-only zero
     assert_eq!(ic.read(true, 16).unwrap(), 0);
     ic.reset();
     assert_eq!(ic, InterruptController::default());

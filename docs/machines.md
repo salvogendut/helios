@@ -54,9 +54,12 @@ modules, low slots first.
   and MXCC control at `0xf_f8c0_0a00`; slot 1 is hardware processor 2 with MID
   10 and control at `0xf_fac0_0a00`. The architected port identities are
   `0x08000104` at `0xf_f8ff_fffc` and `0x0a000104` at `0xf_faff_fffc`.
-  Processors 1 and 3 (MIDs 9 and 11) remain absent. Default machines populate
-  only slot 0, and SS-5 has no MBus module entry. A second independent CPU,
-  MMU and MXCC can be constructed for focused tests, but there is no
+  Processors 1 and 3 (MIDs 9 and 11) remain absent. The second populated
+  processor (hardware 2) has timer/interrupt banks at
+  `0xff1302000`/`0xff1402000`; the Current Interrupt Target is
+  `0xff1410010`. Default machines populate only slot 0, and SS-5 has no MBus
+  module entry. A second independent CPU, MMU and MXCC, plus processor-2
+  timer/interrupt banks, can be constructed for focused tests, but there is no
   scheduler, startup protocol or two-CPU production boot yet.
 - Empty CPU timer/interrupt slots and unpopulated VSIMM probe windows return
   zero and discard writes, matching an unpopulated machine. The populated

@@ -170,6 +170,12 @@ impl ProcessorModuleState {
         self.cpu.reset_sun4m();
         self.mxcc.borrow_mut().reset();
     }
+
+    /// Install this module's interrupt and timer bank by its hardware
+    /// processor number. This does not schedule the module.
+    pub fn install_processor_banks(&self, bus: &mut SystemBus) -> bool {
+        bus.install_processor_banks(self.module.processor)
+    }
 }
 
 #[derive(Debug)]
@@ -293,6 +299,12 @@ impl Machine {
 
     pub fn processor_modules(&self) -> impl Iterator<Item = ProcessorModule> + '_ {
         self.topology.modules()
+    }
+
+    /// Install the addressable interrupt and timer banks for one hardware
+    /// processor number. This does not schedule a second CPU.
+    pub fn install_processor_banks(&mut self, processor: u8) -> bool {
+        self.bus.install_processor_banks(processor)
     }
 
     /// Apply the power-on reset baseline, clearing reset-cause status.
