@@ -3,8 +3,9 @@
 2026-11-14. Reviewed the implementation on `feat/sun4m-smp`, after
 planning/cleanup commit `495523d`. The original review found two host-failure
 paths; both are corrected and independently revalidated. **Slice 1 is accepted
-for a feature-branch commit.** Scheduling and two-CPU boot remain unimplemented;
-this is not acceptance of issue #2 for merging to main.
+for a feature-branch commit.** The user subsequently approved merging slices 1
+and 2A as an incremental foundation checkpoint after the final 2A validation.
+Scheduling and two-CPU boot remain unimplemented; issue #2 remains open.
 
 ## Accepted corrections
 

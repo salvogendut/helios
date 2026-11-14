@@ -2,8 +2,11 @@
 
 2026-11-14. Issue: [helios#2](https://github.com/salvogendut/helios/issues/2).
 Branch: `feat/sun4m-smp`. This is a design and implementation work order;
-SMP has not been implemented or accepted. The other AI will implement the
-slices below, with review between slices.
+end-to-end SMP has not been implemented or accepted. Slices 1 and 2A are
+independently validated through core revision `a94f0aa` and approved by the
+user for an incremental foundation merge. Production machines remain
+single-CPU. Continue on this branch with [slice 2B](smp-slice2b.md), with
+review between slices; issue #2 remains open.
 
 ## Scope and baseline
 
@@ -266,9 +269,12 @@ Update root/docs hardware-support and timing/API descriptions, and record
 measured evidence in `clanker/smp-progress.md` with an index entry. Compare
 fixed UP workloads and matched UP guest phases with the reviewed baseline;
 record any regression and avoid unrelated optimization work in this branch.
-Run all required checks on the final tree. Commit reviewable slices; merge
-only after both machine profiles pass the acceptance above. Issue #2 remains
-open until then. Four-CPU support must not be implied by these results.
+Run all required checks on the final tree. Commit reviewable slices. The
+user-approved incremental merge of slices 1 and 2A brings validated foundations
+to main without enabling two-CPU execution. Enabling and claiming supported
+SMP, and closing issue #2, still require both machine profiles to pass the
+acceptance above. Later slices return for review before merge. Four-CPU
+support must not be implied by these results.
 
 ## Validation and test media
 

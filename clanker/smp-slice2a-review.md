@@ -1,9 +1,11 @@
 # SMP slice 2A review — 2026-11-14
 
-Status: **slice 2A independently accepted for a feature-branch commit** on
+Status: **slice 2A independently accepted and user-approved for an incremental
+foundation merge**, together with slice 1. The reviewed core is `a94f0aa` on
 `feat/sun4m-smp`, based on `2bed9ff`. All four blocking findings are resolved.
 Scheduling, startup arbitration, standalone-IOMMU ownership and two-CPU boot
-remain unimplemented; this is not acceptance of issue #2 for merging to main.
+remain unimplemented; production execution remains single-CPU and issue #2
+stays open. Continue with the bounded slice-2B assignment after this merge.
 
 ## Final acceptance
 

@@ -1,7 +1,8 @@
 # SMP slice 2B: standalone IOMMU ownership
 
-Assignment for the implementing AI after acceptance of slice 2A on
-`feat/sun4m-smp`. This is the next bounded part of
+Assignment for the implementing AI after the incremental merge of slices 1
+and 2A, validated through core revision `a94f0aa`. Continue on
+`feat/sun4m-smp` from the merged main revision. This is the next bounded part of
 [issue #2](https://github.com/salvogendut/helios/issues/2) and the
 [SMP plan](smp-plan.md). Return for review before committing this slice or
 starting scheduling, startup/arbitration or a two-CPU firmware boot.
