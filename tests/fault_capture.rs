@@ -1,4 +1,4 @@
-use helios::bus::{Bus, BusErrorKind, MapError};
+use helios::bus::{AccessContext, Bus, BusErrorKind, MapError};
 use helios::cpu::{Cpu, FaultKind, Step, PSR_ET, PSR_S};
 use helios::devices::io_control::IoControl;
 use helios::machine::Machine;
@@ -387,7 +387,9 @@ fn table_walks_and_dma_requests_update_memory_capture_with_their_physical_addres
     m.bus.write32(IO + 0x2000, 1 << 21).unwrap();
     m.bus.write32(0x10000, 0).unwrap();
     assert!(m.dma_read(5, 0xff00_0000, Width::Word).is_err());
-    assert_eq!(m.bus.read32(MFSR).unwrap(), 0x0100_0010); // CP=0 for I/O walk
+    // Integrated microSPARC-II DMA keeps the CPU S pin and current PCR.BM
+    // state. This fixture selected PCR_EN without BM.
+    assert_eq!(m.bus.read32(MFSR).unwrap(), 0x0100_0010);
     assert_eq!(m.bus.read32(MFAR).unwrap(), 0x10000);
     m.bus.write32(0x10000, 0x806).unwrap();
     m.dma_write(5, 0xff00_0002, Width::Half, 0x1234).unwrap();
@@ -455,4 +457,75 @@ fn table_walk_and_probe_failures_keep_the_sbus_cause_and_virtual_fault_address()
         assert_eq!(m.bus.read32(AFSR).unwrap(), 0x0080_0000);
         assert_eq!(m.bus.read32(IRQ).unwrap(), 0);
     }
+}
+
+#[test]
+fn ss5_dma_capture_retains_cpu_supervisor_and_boot_mode() {
+    for boot_mode in [false, true] {
+        let mut m = fixture();
+        assert!(m.cpu.mmu.boot_mode());
+        if !boot_mode {
+            put(&mut m, 0, 4, PCR_EN);
+        }
+        m.bus.write32(IO, 1).unwrap();
+        m.bus.write32(IO + 4, 0x1000).unwrap();
+        m.bus.write32(IO + 0x2000, 1 << 21).unwrap();
+        m.bus.write32(0x10000, 0x806).unwrap();
+        m.bus.write32(0x8000, 0x1234_5678).unwrap();
+        let baseline = AccessContext::host();
+        m.bus.set_access_context(baseline);
+        assert_eq!(m.dma_read(5, 0xff00_0000, Width::Word), Ok(0x1234_5678));
+        eprintln!(
+            "after success boot={} psr={:08x}",
+            m.cpu.mmu.boot_mode(),
+            m.cpu.psr()
+        );
+        assert_eq!(m.bus.access_context(), baseline);
+        assert_eq!(
+            m.bus.read32(MFSR).unwrap() & 0x0180_1810,
+            0x0100_0010 | (u32::from(boot_mode) << 12)
+        );
+
+        eprintln!(
+            "before invalid boot={} psr={:08x} status={:08x}",
+            m.cpu.mmu.boot_mode(),
+            m.cpu.psr(),
+            m.bus.read32(MFSR).unwrap()
+        );
+        m.bus.write32(IO + 0x18, 0xff00_0000).unwrap();
+        m.bus.write32(0x10000, 0).unwrap();
+        assert!(matches!(
+            m.dma_read(5, 0xff00_0000, Width::Word),
+            Err(helios::dma::DmaError::Fault { .. })
+        ));
+        assert_eq!(m.bus.access_context(), baseline);
+        assert_eq!(
+            m.bus.read32(MFSR).unwrap() & 0x0180_1810,
+            0x0100_0010 | (u32::from(boot_mode) << 12)
+        );
+    }
+}
+
+#[test]
+fn ss5_dma_capture_covers_write_protected_and_bypass_paths() {
+    let mut m = fixture();
+    assert!(m.cpu.mmu.boot_mode());
+    m.bus.write32(IO, 1).unwrap();
+    m.bus.write32(IO + 4, 0x1000).unwrap();
+    m.bus.write32(IO + 0x2000, 1 << 21).unwrap();
+    m.bus.write32(0x10000, 0x902).unwrap();
+    m.bus.write32(0x9000, 0xaaaa_bbbb).unwrap();
+    assert!(matches!(
+        m.dma_write(5, 0xff00_0000, Width::Word, 0),
+        Err(helios::dma::DmaError::Fault { .. })
+    ));
+    assert_eq!(m.bus.read32(MFSR).unwrap() & 0x0180_1810, 0x0100_1010);
+
+    m.bus.write32(IO + 0x1010, 1).unwrap(); // slot 0 bypass
+    m.bus.write32(IO + 0x2000, 1 << 16).unwrap();
+    let baseline = AccessContext::host();
+    m.bus.set_access_context(baseline);
+    assert_eq!(m.dma_read(0, 0x9000, Width::Word), Ok(0xaaaa_bbbb));
+    assert_eq!(m.bus.access_context(), baseline);
+    assert_eq!(m.bus.read32(MFSR).unwrap() & 0x0180_1810, 0x0100_1010);
 }

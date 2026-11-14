@@ -58,13 +58,15 @@ modules, low slots first.
   and MXCC control at `0xf_f8c0_0a00`; slot 1 is hardware processor 2 with MID
   10 and control at `0xf_fac0_0a00`. The architected port identities are
   `0x08000104` at `0xf_f8ff_fffc` and `0x0a000104` at `0xf_faff_fffc`.
-  Processors 1 and 3 (MIDs 9 and 11) remain absent. The second populated
-  processor (hardware 2) has timer/interrupt banks at
+  Processors 1 and 3 (MIDs 9 and 11) remain absent. When hardware processor 2
+  is explicitly configured, it has timer/interrupt banks at
   `0xff1302000`/`0xff1402000`; the Current Interrupt Target is
   `0xff1410010`. Default machines populate only slot 0, and SS-5 has no MBus
-  module entry. A second independent CPU, MMU and MXCC, plus processor-2
-  timer/interrupt banks, can be constructed for focused tests, but there is no
-  scheduler, startup protocol or two-CPU production boot yet.
+  module entry. `Machine::with_profile_processors` constructs one or two
+  independently owned modules for synthetic tests; the second module has its
+  own CPU, MMU, FPU and MXCC and starts arbitration-disabled. SS-5 rejects two
+  processors. Production constructors and firmware boots still use one CPU;
+  there is no original-OBP startup protocol or two-CPU OS boot yet.
 - Empty CPU timer/interrupt slots and unpopulated VSIMM probe windows return
   zero and discard writes, matching an unpopulated machine. The populated
   SS-20 SX/VSIMM windows route to the device before these empty-slot defaults.
@@ -140,6 +142,62 @@ four-byte port is `Unmapped`, and a misaligned one is `Misaligned`; writes have
 no effects. A doubleword that is fully outside the zero windows uses normal
 memory decoding and remains `Unmapped` in unrelated empty physical space.
 
+### Processor arbitration and initiator identity
+
+Sun-4M section 5.1.2 places processor arbitration in the IOMMU Arbiter Enable
+Register at `0xfe0001008`. Processor 0 (MID 8) is the boot master and has no
+enable bit; the register's bit 0 is read-only one. The reset state enables the
+MID-9 split-requester bit, clears MID-A and MID-B, and clears the SBus enables.
+Helios configures processors 0 and 2 as present only on SS-20/Axil. Processor 2
+(MID A) is present but arbitration-disabled until software sets AER bit 2.
+Processor 1 (MID 9) and processor 3 (MID B) remain absent even when their AER
+bits are set; an enabled absent slot does not create CPU state. SS-5 has no MBus
+module or processor arbitration and retains its fixed integrated MID 8; its AER
+readback is separate and has no processor effect.
+
+The board exposes:
+
+- `SystemBus::configure_processor` / `processor_present` for configured
+  presence, independent of interrupt/timer bank installation.
+- `SystemBus::processor_arbitration` returning `Absent`, `Disabled` or
+  `Enabled` from presence plus the AER bits.
+- `SystemBus::set_processor_arbitration` and the guest AER writes as the
+  transition interface.
+- `ProcessorModuleState::arbitration` / `run_state` for a constructed module.
+  `run_state` distinguishes `Ready`, `ArbitrationDenied`, `CpuError` and
+  `Absent`. Arbitration denial is not a retired instruction, a synthetic trap
+  or CPU error mode; the deterministic scheduler leaves the module unexecuted.
+  `ProcessorModuleState::reset` is an explicit module-local reset, not a run
+  state. A guest firmware spin loop is ordinary guest code.
+
+Pending software, processor-timer and level-15 interrupts do not affect
+arbitration. The processor-2 bank can hold pending state while AER bit 2 is
+clear, and enabling the module is a separate board write.
+
+Bus accesses carry an explicit initiator (`Cpu(module)`, `Dma`, or `Host`) and
+the actual supervisor pin. CPU steps and DMA transfers save, set and restore
+this context; page-table walks, fault capture and nested MXCC stream transfers
+therefore keep the original caller and cannot leak identity or privilege. The
+Sun-4M MID register at `0xfe0002000` returns the initiating module's MID (8 or
+A), or 0 for DMA/direct host/debug. The SS-5 `+0x2000` register remains fixed
+MID 8. MXCC port identity stays fixed per addressed module, while local ASI 2
+uses the executing module and physical MXCC windows use the physical address.
+
+Functional enable/disable timing: an AER write takes effect at the store's
+completion. The next instruction boundary for the affected module observes the
+new eligibility; a transaction already started finishes. Sun-4M describes
+arbitration parking and an indeterminate hardware delay, which is not modeled.
+AER changes are visible at the next scheduler boundary; no device time is
+consumed by the board-state transition itself. `Machine::step_scheduled`
+selects the earliest eligible CPU deadline, samples that CPU's interrupt bank,
+charges only that CPU for its quantum/wait and advances the shared device clock
+to the next eligible deadline without skipping another CPU's opportunity.
+`Machine::reset_processor_module(processor)` resets only that module's CPU/MMU
+and MXCC and preserves the other module, RAM, shared devices, AER state and the
+standalone IOMMU. Whole-machine reset resets every owned CPU/MXCC and clears
+shared devices, the AER and the standalone IOMMU. CPU-2 storage is
+Machine-owned in the explicit two-module construction.
+
 ## Evidence and limits
 
 Original SMCC SPARCstation 10/20 POST 3.45 (`ss10-20-v2.25r-rom`, SHA-256
@@ -163,7 +221,7 @@ unverified. CPU
 identity is profile-specific: SS-5 reports the MB86904 microSPARC-II IU/FPU
 identity, while SS-20 and Axil report SuperSPARC-II IU version 3 and FPU
 version 0. The interpreter and reference MMU remain functional models; there is
-no SuperSPARC pipeline or cache-fill model, MBus SMP scheduling/startup, full
+no SuperSPARC pipeline or cache-fill model, original-OBP two-CPU startup, full
 PTP2 replacement policy, complete SX acceleration, DBRI audio, BPP or Axil
 custom-controller model. CG6/TurboGX cards can be attached through
 `--cgsix-rom`; SS-20/Axil place them in SBus slot 2 at physical

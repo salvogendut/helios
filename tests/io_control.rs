@@ -1,10 +1,11 @@
-use helios::bus::{Bus, BusErrorKind, MapError};
+use helios::bus::{Bus, BusErrorKind, Initiator, MapError};
 use helios::cpu::{FaultKind, Step};
 use helios::devices::io_control::IoControl;
 use helios::devices::nvram::Nvram;
 use helios::machine::Machine;
 use helios::mmu::{FaultType, MemoryError, Srmmu, Width, PCR_BM, PCR_EN, PCR_NF};
 use helios::system_bus::{SystemBus, IO_CONTROL_BASE, RESET_BASE};
+use helios::topology::ProcessorModule;
 
 #[test]
 fn io_control_identity_range_and_table_base_follow_microsparc_fields() {
@@ -266,4 +267,63 @@ fn chip_revision_is_immutable_and_address_compare_fields_replace_and_reset() {
     io.reset();
     assert_eq!(io.read(0x3018).unwrap(), 0x3000_0000);
     assert_eq!(io.read(0x301c).unwrap(), 0);
+}
+
+#[test]
+fn standalone_aer_and_mid_registers_follow_sun4m_and_the_initiator() {
+    let mut io = IoControl::new(0x1300_0000);
+    // Sun-4M 5.1.2 POR: bit 0 reads one, EN_P1/MID-9 set, MID-A/B clear.
+    assert_eq!(io.read(0x1008).unwrap(), 0x0000_0003);
+    let cpu0 = ProcessorModule::from_processor(0).unwrap();
+    let cpu2 = ProcessorModule::from_processor(2).unwrap();
+    assert_eq!(io.read_for(0x2000, Initiator::Cpu(cpu0)).unwrap(), 8);
+    assert_eq!(io.read_for(0x2000, Initiator::Cpu(cpu2)).unwrap(), 0xa);
+    assert_eq!(
+        io.read_for(0x2000, Initiator::Dma { master: 5 }).unwrap(),
+        0
+    );
+    assert_eq!(io.read_for(0x2000, Initiator::Host).unwrap(), 0);
+    // MID is read-only; writes must not disturb the AER SBus/processor bits.
+    io.write(0x2000, u32::MAX).unwrap();
+    assert_eq!(io.read_for(0x2000, Initiator::Cpu(cpu2)).unwrap(), 0xa);
+    assert_eq!(io.read(0x1008).unwrap(), 0x0000_0003);
+
+    // Only AER bits 0:3, 16:20 and 31 are defined; bit 0 reads one.
+    io.write(0x1008, u32::MAX).unwrap();
+    assert_eq!(io.read(0x1008).unwrap(), 0x801f_000f);
+    io.write(0x1008, 0x7fff_fffe).unwrap();
+    assert_eq!(io.read(0x1008).unwrap(), 0x001f_000f);
+    // MID-9/MID-B are absent processor slots; enabling them leaves the AER
+    // bits observable but creates no CPU in the board presence query.
+    assert!(io.processor_arbitration_enabled(1));
+    assert!(io.processor_arbitration_enabled(3));
+    assert!(io.processor_arbitration_enabled(2));
+    io.write(0x1008, 0).unwrap();
+    assert_eq!(io.read(0x1008).unwrap(), 1);
+    assert!(!io.processor_arbitration_enabled(2));
+    assert!(io.set_processor_arbitration(2, true));
+    assert!(io.processor_arbitration_enabled(2));
+    assert!(io.set_processor_arbitration(2, false));
+    assert!(!io.processor_arbitration_enabled(2));
+    assert!(!io.set_processor_arbitration(0, false));
+    assert!(!io.set_processor_arbitration(4, true));
+}
+
+#[test]
+fn integrated_ss5_aer_keeps_its_reset_and_has_no_processor_eligibility() {
+    let mut io = IoControl::default();
+    assert_eq!(io.read(0x1008).unwrap(), 1);
+    io.write(0x1008, u32::MAX).unwrap();
+    assert_eq!(io.read(0x1008).unwrap(), 0x801f_000f);
+    assert!(io.processor_arbitration_enabled(0));
+    assert!(!io.processor_arbitration_enabled(1));
+    assert!(!io.processor_arbitration_enabled(2));
+    assert!(!io.set_processor_arbitration(2, true));
+    // The integrated +0x2000 register is fixed MID 8 plus SBAE, never the
+    // caller's MID, and writes replace only the six arbitration enables.
+    assert_eq!(io.read(0x2000).unwrap(), 8);
+    let cpu2 = ProcessorModule::from_processor(2).unwrap();
+    assert_eq!(io.read_for(0x2000, Initiator::Cpu(cpu2)).unwrap(), 8);
+    io.write(0x2000, u32::MAX).unwrap();
+    assert_eq!(io.read(0x2000).unwrap(), 0x003f_0008);
 }

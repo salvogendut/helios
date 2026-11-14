@@ -53,8 +53,8 @@ impl StandaloneIommu {
         write: bool,
         mapping: IoMapping,
     ) -> Result<u64, DmaError> {
-        // Device requests have no CPU privilege or boot-mode attribute.
-        bus.set_cpu_supervisor(false);
+        // The caller establishes an explicit DMA access context; do not mutate
+        // it here. Device requests have no CPU privilege or boot-mode attribute.
         self.sync_flushes(bus);
         let pte_address = match mapping {
             IoMapping::Bypass(physical) => return Ok(physical),

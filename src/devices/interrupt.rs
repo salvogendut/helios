@@ -38,6 +38,7 @@ pub enum Source {
     SystemTimer = 19,
     Video = 20,
     Floppy = 22,
+    MToS = 29,
     ModuleError = 30,
 }
 
@@ -45,7 +46,7 @@ pub enum Source {
 struct Bank {
     soft: u32,
     cpu_timer: bool,
-    level15: bool,
+    level15_sources: u32,
     levels: u16,
 }
 
@@ -142,7 +143,7 @@ impl InterruptController {
                 let capture = !self.is_mbus() || self.mask & MODULE_ERROR == 0;
                 if capture {
                     for bank in self.banks.values_mut() {
-                        bank.level15 = true;
+                        bank.level15_sources |= MODULE_ERROR;
                     }
                 }
             }
@@ -150,7 +151,7 @@ impl InterruptController {
             self.sources &= !MODULE_ERROR;
             if !self.is_mbus() {
                 for bank in self.banks.values_mut() {
-                    bank.level15 = false;
+                    bank.level15_sources &= !MODULE_ERROR;
                 }
             }
         }
@@ -160,17 +161,40 @@ impl InterruptController {
     fn clear_level15(&mut self) {
         self.sources &= !MODULE_ERROR;
         for bank in self.banks.values_mut() {
-            bank.level15 = false;
+            bank.level15_sources = 0;
         }
     }
 
     fn acknowledge_level15(&mut self, processor: u8) {
         if let Some(bank) = self.banks.get_mut(&processor) {
-            bank.level15 = false;
+            bank.level15_sources = 0;
         }
-        if !self.is_mbus() && !self.banks.values().any(|bank| bank.level15) {
+        if !self.is_mbus() && !self.banks.values().any(|bank| bank.level15_sources != 0) {
             self.sources &= !MODULE_ERROR;
         }
+    }
+
+    fn set_level15_source(&mut self, source: Source, asserted: bool) {
+        let bit = 1u32 << source as u8;
+        if asserted {
+            if self.sources & bit == 0 {
+                self.sources |= bit;
+                let capture = !self.is_mbus() || self.mask & bit == 0;
+                if capture {
+                    for bank in self.banks.values_mut() {
+                        bank.level15_sources |= bit;
+                    }
+                }
+            }
+        } else {
+            self.sources &= !bit;
+            if !self.is_mbus() {
+                for bank in self.banks.values_mut() {
+                    bank.level15_sources &= !bit;
+                }
+            }
+        }
+        self.refresh();
     }
 
     pub fn reset(&mut self) {
@@ -186,6 +210,10 @@ impl InterruptController {
     pub fn set_source(&mut self, source: Source, asserted: bool) {
         if source == Source::ModuleError {
             self.set_module_error(asserted);
+            return;
+        }
+        if source == Source::MToS {
+            self.set_level15_source(source, asserted);
             return;
         }
         let bit = 1u32 << source as u8;
@@ -242,7 +270,7 @@ impl InterruptController {
                 if bank.cpu_timer {
                     levels |= 1 << 14;
                 }
-                if bank.level15 && level15_enabled {
+                if bank.level15_sources != 0 && level15_enabled {
                     levels |= 1 << 15;
                 }
                 levels |= (bank.soft >> 16) as u16;
@@ -323,7 +351,7 @@ impl InterruptController {
                 if bank.cpu_timer {
                     pending |= 1 << 14;
                 }
-                if bank.level15 {
+                if bank.level15_sources != 0 {
                     pending |= 1 << 15;
                 }
                 Ok(pending)

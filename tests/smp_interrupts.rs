@@ -115,10 +115,12 @@ fn masked_level15_event_is_not_captured_retroactively() {
 }
 
 #[test]
-fn mbus_bus_error_pulses_rearm_captures_and_preserve_external_source_status() {
+fn mbus_bus_errors_use_a_held_write_buffer_source_and_keep_module_error_independent() {
     use helios::bus::{BusError, BusErrorKind};
     use helios::machine::MachineProfile;
 
+    const WRITE_BUFFER: u32 = 1 << 29;
+    const HARD15: u32 = 1 << 15;
     for profile in [MachineProfile::Ss20, MachineProfile::Axil320] {
         let mut m = Machine::with_profile(
             profile,
@@ -128,6 +130,10 @@ fn mbus_bus_error_pulses_rearm_captures_and_preserve_external_source_status() {
         )
         .unwrap();
         assert!(m.install_processor_banks(2));
+        let io = m.bus.layout().io_control;
+        let irq = m.bus.system_interrupt_base();
+        let cpu0 = m.bus.processor_interrupt_base(0);
+        let cpu2 = m.bus.processor_interrupt_base(2);
         let pulse = |m: &mut Machine| {
             assert!(m.bus.capture_sbus_write_error(
                 BusError {
@@ -137,44 +143,45 @@ fn mbus_bus_error_pulses_rearm_captures_and_preserve_external_source_status() {
                 4,
             ));
         };
-        m.bus.write32(0xff1410008, u32::MAX).unwrap();
+        m.bus.write32(irq + 8, u32::MAX).unwrap();
         pulse(&mut m);
-        assert_eq!(m.bus.read32(0xff1410000).unwrap() & MODULE_ERROR, 0);
-        assert_eq!(m.bus.interrupt_levels_for(0), 1 << 15);
-        assert_eq!(m.bus.interrupt_levels_for(2), 1 << 15);
+        assert_eq!(m.bus.read32(irq).unwrap() & WRITE_BUFFER, WRITE_BUFFER);
+        assert_eq!(m.bus.read32(irq).unwrap() & MODULE_ERROR, 0);
+        assert_eq!(m.bus.read32(cpu0).unwrap() & HARD15, HARD15);
+        assert_eq!(m.bus.read32(cpu2).unwrap() & HARD15, HARD15);
 
-        m.bus.write32(0xff1400004, 1 << 15).unwrap();
-        assert_eq!(m.bus.interrupt_levels_for(0), 0);
-        assert_eq!(m.bus.interrupt_levels_for(2), 1 << 15);
-        pulse(&mut m);
-        assert_eq!(m.bus.interrupt_levels_for(0), 1 << 15);
-        assert_eq!(m.bus.interrupt_levels_for(2), 1 << 15);
-        m.bus.write32(0xff1400004, 1 << 15).unwrap();
-        m.bus.write32(0xff1402004, 1 << 15).unwrap();
+        // CPU acknowledgement is per bank and leaves the held source.
+        m.bus.write32(cpu0 + 4, HARD15).unwrap();
+        assert_eq!(m.bus.read32(cpu0).unwrap() & HARD15, 0);
+        assert_eq!(m.bus.read32(cpu2).unwrap() & HARD15, HARD15);
+        assert_eq!(m.bus.read32(irq).unwrap() & WRITE_BUFFER, WRITE_BUFFER);
 
-        m.bus.write32(0xff141000c, MODULE_ERROR).unwrap();
-        pulse(&mut m);
-        m.bus.write32(0xff1410008, MODULE_ERROR).unwrap();
-        assert_eq!(m.bus.read32(0xff1400000).unwrap() & (1 << 15), 0);
-        assert_eq!(m.bus.read32(0xff1402000).unwrap() & (1 << 15), 0);
-        pulse(&mut m);
-        assert_eq!(m.bus.interrupt_levels_for(0), 1 << 15);
-        assert_eq!(m.bus.interrupt_levels_for(2), 1 << 15);
+        // AFSR acknowledgement releases the source but not CPU 2's capture.
+        m.bus.write32(io + 0x1000, 0).unwrap();
+        assert_eq!(m.bus.read32(irq).unwrap() & WRITE_BUFFER, 0);
+        assert_eq!(m.bus.read32(cpu2).unwrap() & HARD15, HARD15);
+        m.bus.write32(cpu2 + 4, HARD15).unwrap();
+        assert_eq!(m.bus.read32(cpu2).unwrap() & HARD15, 0);
 
+        // An independently asserted ModuleError is a separate level-15 source.
+        m.bus.write32(irq + 8, u32::MAX).unwrap();
         m.bus
             .devices_mut()
             .unwrap()
             .interrupts
             .set_source(Source::ModuleError, true);
-        pulse(&mut m);
-        m.bus.write32(0xff1400004, 1 << 15).unwrap();
-        m.bus.write32(0xff1402004, 1 << 15).unwrap();
-        assert_eq!(
-            m.bus.read32(0xff1410000).unwrap() & MODULE_ERROR,
-            MODULE_ERROR
-        );
-        assert_eq!(m.bus.interrupt_levels_for(0), 0);
-        assert_eq!(m.bus.interrupt_levels_for(2), 0);
+        assert_eq!(m.bus.read32(irq).unwrap() & MODULE_ERROR, MODULE_ERROR);
+        assert_eq!(m.bus.read32(cpu0).unwrap() & HARD15, HARD15);
+        assert_eq!(m.bus.read32(cpu2).unwrap() & HARD15, HARD15);
+        m.bus.write32(cpu0 + 4, HARD15).unwrap();
+        m.bus.write32(cpu2 + 4, HARD15).unwrap();
+        assert_eq!(m.bus.read32(irq).unwrap() & MODULE_ERROR, MODULE_ERROR);
+        m.bus
+            .devices_mut()
+            .unwrap()
+            .interrupts
+            .set_source(Source::ModuleError, false);
+        assert_eq!(m.bus.read32(irq).unwrap() & MODULE_ERROR, 0);
     }
 }
 

@@ -13,9 +13,11 @@ SS-20/Axil can install a second bank for hardware processor 2, which is the
 second MBus module. Hardware processor numbers are not compact vector indexes:
 processor 2 uses timer/interrupt offsets `+0x2000`, and its timer mode bit is
 bit 2. On SS-20/Axil, banks 1 and 3 remain absent zero windows. Production
-execution still uses processor 0; the second bank is addressable state for
-later SMP work. Standalone timer/controller helpers accept hardware numbers
-0–3; the machine installation API enforces the supported profile population.
+execution still uses one CPU. The explicit two-module scheduler feeds each CPU
+its own bank; each CPU has an independent deadline and the shared device clock
+advances to the earliest next eligible deadline, not once per CPU event.
+Standalone timer/controller helpers accept hardware numbers 0–3; the machine
+installation API enforces the supported profile population.
 
 ## CPU delivery
 
@@ -40,8 +42,11 @@ pipeline exception arbitration and interrupt latency are outside this model.
 
 `Step::InterruptTaken` carries the interrupted PC/nPC, level and vector;
 `Step::TrapTaken` continues to carry a synchronous fault. `Cpu::step` supplies no
-interrupt lines. `Machine::step` supplies the wired controller outputs. The CLI
-counts instructions, synchronous traps and interrupt entries separately.
+interrupt lines. `Machine::step` supplies CPU 0's wired controller outputs.
+For two-CPU synthetic execution, `Machine::step_scheduled` samples the selected
+processor's bank and reports `InterruptTaken` with that hardware processor
+number. The CLI counts instructions, synchronous traps and interrupt entries
+separately.
 
 ## Interrupt controller
 
@@ -91,24 +96,29 @@ writable target field is an implementation extension, not the Sun-4M board
 register.
 The processor timer contributes hard level 14 without a separate source-mask
 bit. Mask All (bit 31) gates delivery of both timers and software requests.
+Pending software, processor-timer and level-15 state is independent of MBus
+processor arbitration: an interrupt never sets an AER processor-enable bit,
+and a processor-2 bank may accumulate pending state while its module is
+arbitration-disabled. See [machine profiles](machines.md#processor-arbitration-and-initiator-identity).
 
 The software request for level n occupies bit `16+n`. It persists until cleared
 through the addressed CPU bank's clear alias; clearing soft requests does not
-acknowledge timer hardware. On SS-20/Axil, module-error source status, per-CPU
-capture and per-CPU acknowledgement are separate. A source assertion is captured
-only in banks not disabled by the module-error source mask at that instant; a
-masked event is not captured retroactively when the mask is later cleared.
-Deasserting the source clears the system source status but does not erase a
-processor's already-captured level-15 bit. The internal bus-error producer is a
-pulse: it releases its live source after capture, while each CPU retains the
-captured event. Each processor clears only its own captured bit with CPU
-clear-pending bit 15; the last acknowledgement does not fabricate deassertion
-of a source that is still held externally. System source-mask writes do not
-acknowledge another processor's capture. SS-5 retains the NCR
-single-CPU rule, where clearing pending bit 15 or setting the source mask is
-also the local acknowledgement; AFSR reads/writes do not acknowledge either
-profile. See [fault capture](fault-capture.md). Mask All still gates delivery of
-the captured level while preserving its pending state.
+acknowledge timer hardware. On SS-20/Axil, level-15 source status, per-CPU
+capture and per-CPU acknowledgement are separate. Source bit 29 is the held
+M-to-S write-buffer error; source bit 30 is the independent ModuleError input.
+A source assertion is captured only in banks not disabled by that source's mask
+at the instant of assertion; a masked event is not captured retroactively when
+the mask is later cleared. Deasserting a source clears its system status but
+does not erase a processor's already-captured level-15 bit. Each processor
+clears only its own captured level-15 indication with CPU clear-pending bit 15;
+the last processor acknowledgement does not fabricate deassertion of either
+source. An AFSR write acknowledges the M-to-S source and releases it without
+clearing CPU-0 or CPU-2's already-captured pending bit. System source-mask
+writes do not acknowledge another processor's capture or either held source.
+SS-5 retains the NCR single-CPU rule, where clearing pending bit 15 or setting
+the source mask is also the local acknowledgement; the integrated module-error
+producer remains a pulse. See [fault capture](fault-capture.md). Mask All still
+gates delivery of a captured level while preserving its pending state.
 
 | System source bit | Source | CPU level |
 | --- | --- | --- |
@@ -118,7 +128,8 @@ the captured level while preserving its pending state.
 | 18 | SCSI | 4 |
 | 19 | System counter | 10 |
 | 22 | Floppy | 11 |
-| 30 | Module error latch | 15 |
+| 29 | M-to-S write-buffer error (SS-20/Axil) | 15 |
+| 30 | Module error latch / independent external input | 15 |
 
 The level-sensitive inputs are available through `InterruptController` for
 wiring and tests; module errors use a separate latch. Sources sharing a level
@@ -216,10 +227,14 @@ and `u64::MAX` seconds.
 
 ## Time and ownership
 
-The machine services one pending Ethernet DMA transfer, samples interrupt lines,
-executes one CPU outcome, then advances devices by a base `STEP_NS = 100` ns
-plus physical PROM read service time. NCR89C105 table 6-10 specifies six SBus
-clocks per byte of the byte-wide PROM. The SS5/85 SBus runs at 21.25 MHz
+The single-CPU machine services one pending Ethernet DMA transfer, samples
+interrupt lines, executes one CPU outcome, then advances devices by a base
+`STEP_NS = 100` ns plus physical PROM read service time. The two-CPU scheduler
+gives each CPU an independent next-ready deadline, selects the earliest one and
+services devices once at that distinct boundary. Only the selected CPU is
+charged its quantum and PROM wait; the shared clock then moves to the earliest
+next eligible deadline, without passing another CPU's earlier opportunity.
+NCR89C105 table 6-10 specifies six SBus clocks per byte of the byte-wide PROM. The SS5/85 SBus runs at 21.25 MHz
 (CPU/4), so a word fetch adds 24 clocks, about 1129.41 ns. Instruction and data
 reads both count, including the reset boot alias; RAM execution adds no PROM
 wait. Fractional nanoseconds carry across accesses. Direct bus inspection does
@@ -277,5 +292,7 @@ phase, mode changes with pending interrupts, forbidden accesses, translated
 write protection and alternate-space doubleword transfers on both populated
 banks. Initial original OBP and OpenBIOS probes are recorded separately.
 Single-CPU original-OBP and Solaris boot evidence is recorded in
-[machines.md](machines.md). No differential reference execution, SMP scheduler
-or two-CPU firmware startup/prompt has been demonstrated.
+[machines.md](machines.md). Synthetic two-CPU scheduler tests cover progress,
+atomic locks, directed IPIs, independent TLB state, timer parity and reset
+isolation. No differential reference execution or two-CPU firmware
+startup/prompt has been demonstrated.

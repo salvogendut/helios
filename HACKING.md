@@ -39,16 +39,19 @@ or assume host scheduling is guest timing.
 | `src/dma.rs` | Machine-owned SBus DMA transfers and device-facing errors |
 | `src/cache.rs` | Cache diagnostic arrays and indexed invalidation; ordinary cache hits/fills pending |
 | `src/dram.rs` | SS-5 DSIMM layout, mirrors and empty-bank behavior |
-| `src/machine.rs` | Bare-metal/reset construction, SS-5/SS-20/Axil profiles, RAM/PROM limits and demo images |
-| `src/topology.rs` | MBus connector, hardware processor and module identities; independent module construction is testable, while production machines remain single-CPU |
+| `src/machine.rs` | Bare-metal/reset construction, SS-5/SS-20/Axil profiles, processor modules, deterministic scheduler, RAM/PROM limits and demo images |
+| `src/topology.rs` | MBus connector, hardware processor/module identities, arbitration and run-state enums; production constructors remain single-CPU |
 | `src/main.rs` | CLI parsing, image files, trace printing and CPU step budget |
 | `tests/` | Architectural and boundary behavior through the public library |
 
 `MachineProfile` selects `Sun4mLayout`, `MmuConfig`, IDPROM identity and DRAM
 bank geometry. SS-20/Axil keep the same device models but use the high physical
 map, a 36-bit reference-MMU mode and SuperSPARC-II boot/TLB register behavior.
-They are single-processor functional profiles: there is no SuperSPARC pipeline,
-MBus multiprocessor or full ECC/parity model. SS-20 installs a native SX/CG14
+They are functional profiles: there is no SuperSPARC pipeline or full
+ECC/parity model, and production constructors still select one CPU. An explicit
+two-module SS-20/Axil harness provides deterministic synthetic SMP; original-OBP
+secondary startup and two-CPU OS boot remain out of scope. SS-20 installs a
+native SX/CG14
 and VSIMM subset; Axil uses a CGsix SBus card. Both profiles have reached
 Solaris 2.6 userland, and the native SS-20 graphics tests exercise Xsun/olwm
 window operations. Heliacal also validates graphical-console startup, xterm
@@ -62,8 +65,12 @@ It does not perform SS-5 power-on, install a PROM alias or initialize devices.
 The CPU starts with S=PS=1, ET=0, CWP=0, WIM=0, TBR=0 and Y=0. These are
 harness conventions. `Machine::sun4m` installs a raw PROM, console serial and
 NVRAM/RTC, timers and interrupt control, then resets. `Machine::reset` resets
-CPU/MMU, both SCCs, timers, interrupt control and reset/status while
-retaining RAM, ROM, NVRAM/RTC and completed serial output. `sun4m_with_nvram`
+every owned CPU/MMU/MXCC, both SCCs, timers, interrupt control, the AER and
+reset/status while retaining RAM, ROM, NVRAM/RTC and completed serial output.
+`Machine::reset_processor_module(0)` or `(2)` resets only that module's CPU/MMU
+and MXCC, leaving shared devices, AER, the standalone IOMMU and the other module
+intact. An independently constructed `ProcessorModuleState` resets itself and
+retains its module MID. `sun4m_with_nvram`
 accepts an imported or customized NVRAM device. See [memory.md](docs/memory.md)
 and [devices.md](docs/devices.md) for reset state and platform limits.
 Guest software reset is serviced by the machine owner at a step boundary;
@@ -100,6 +107,33 @@ uses `u64` so later MMU implementations can expose wider physical addresses
 without rewriting device interfaces. The microSPARC-II MMU currently drives
 31 physical address bits. CPU accesses pass through ASI dispatch; the physical
 bus remains responsible only for physical mappings and device access.
+
+Every bus access carries an `AccessContext`: an `Initiator` (`Cpu` with the
+actual `ProcessorModule`, `Dma { master }`, or `Host`) and the actual supervisor
+pin. CPU steps and DMA transfers save the previous context, set their own for
+the complete top-level operation and restore it on success or error. MMU page
+walks, fault capture and nested MXCC stream transfers inherit that context, so
+identity/privilege cannot leak between CPU-0, CPU-2, DMA and debug accesses.
+`Srmmu` stores its owning module identity; `Cpu::reset_sun4m` and
+`use_mmu_config` preserve it. Direct `Bus` calls outside a scoped operation use
+the host/debug baseline (no MBus owner, with the historical supervisor flag for
+direct CPU/MMU helpers); use `SystemBus::with_host_access` for an explicit
+scoped no-CPU debug access. The Sun-4M MID register at `0xfe0002000`
+follows the initiator (8/A, or 0 for DMA/host); the integrated SS-5 register
+keeps fixed MID 8. MXCC port identities are fixed by the addressed physical
+module. See [io-control](docs/io-control.md) and
+[machine profiles](docs/machines.md#processor-arbitration-and-initiator-identity).
+
+Processor arbitration is board state separate from CPU storage and interrupt
+banks. `SystemBus::configure_processor` marks hardware presence; the Sun-4M AER
+provides processor 2's enable, while processor 0 is always enabled. An enabled
+absent MID creates no CPU, and pending interrupts never grant arbitration.
+`processor_arbitration` returns `Absent`/`Disabled`/`Enabled`;
+`ProcessorModuleState::run_state` additionally distinguishes a latched CPU
+error from arbitration denial. These queries are scheduler inputs, not
+instructions: denial must not retire an instruction or synthesize a guest
+trap. AER changes take effect at the next instruction boundary in this
+functional model; hardware parking/indeterminate delay is not modeled.
 
 RAM/ROM mappings are nonempty, word-aligned, nonoverlapping half-open ranges. RAM starts
 at zero; ROM writes fail. Image loading validates the entire destination within
@@ -270,15 +304,49 @@ with ET=0 updates TT and enters error state. See V8 appendix B.26.
 entry outcome executes handler code yet. `Err(CpuFault)` denotes an emulator
 stop or latched CPU error state. Fetch faults have no instruction word.
 
-`Machine::step` samples wired interrupt levels before CPU execution and advances
-device clocks by `STEP_NS` (100 ns) after a successful outcome. Errors do not
-advance time. This fixed quantum is a functional scheduling choice; no cycle
-accuracy is claimed. `advance_ns` and `advance_seconds` advance devices without
-executing the CPU. Fractional ticks and RTC seconds are retained. The CLI bounds
-and reports instructions, synchronous traps and interrupts separately.
-`Machine::step` can also return `Step::SoftwareReset`; `Cpu` alone never does.
+`Machine::step` is the existing single-CPU compatibility path. It samples CPU-0
+interrupt levels and advances device clocks by `STEP_NS` (100 ns) after a
+successful outcome. Errors do not advance time. This fixed quantum is a
+functional scheduling choice; no cycle accuracy is claimed. `advance_ns` and
+`advance_seconds` advance devices without executing the CPU. Fractional ticks
+and RTC seconds are retained. The CLI bounds and reports instructions,
+synchronous traps and interrupts separately. `Machine::step` can also return
+`Step::SoftwareReset`; `Cpu` alone never does.
+
+Two-CPU callers use `Machine::step_scheduled` (or `run_scheduled`) instead of
+calling `step` once per CPU. Each CPU owns an independent next-ready deadline;
+the scheduler selects the earliest eligible deadline, with processor 0 before 2
+on ties. Arbitration-disabled processors are not candidates; CPU error state is
+reported with its processor number. At a selected deadline the machine advances
+shared devices to that boundary, services pending Ethernet/SCSI work once for
+that distinct time, samples that CPU's interrupt bank and executes at most one
+instruction or interrupt entry. Only the selected CPU's base quantum plus its
+PROM wait is charged to that CPU. The shared clock then moves to the earliest
+next eligible deadline, never past another CPU's earlier opportunity; tied
+deadlines do not advance device time twice. Consequently two CPUs performing
+1,000 instructions each retain the one-CPU 100,000 ns cadence, while a slow PROM
+read delays only its issuing CPU.
+
+`ScheduledStep` carries the hardware processor, the step outcome and the shared
+virtual clock at return; it does not imply that the selected instruction's entire
+quantum elapsed before another CPU's opportunity. `SchedulerStats` separates
+instructions, synchronous traps, interrupt entries and errors per processor and
+in aggregate. Arbitration denial or device-only advancement is never counted as
+an instruction. Admission clamps an expired deadline to the current shared
+clock without cancelling an outstanding instruction/PROM wait. A module reset
+starts that CPU at the current clock. External `advance_ns`/`advance_seconds`
+clamp readiness to the new clock. If no processor has an arbitration grant,
+`SchedulerError::NoRunnable` is returned rather than spinning.
+`Machine::with_profile_processors` is the explicit one/two-module constructor;
+SS-5 rejects two. Default `with_profile` construction remains one CPU. CPU 2 is
+independently owned in `secondary_cpu`; it starts present but arbitration-
+disabled and is reset with the whole machine. A guest AER write becomes visible
+at the next scheduler boundary. Interrupts never enable arbitration. Atomic
+operations and their faults stay inside one scheduling boundary.
 A completed reset store advances time before I/O reset and counts as an
-instruction. A request already on the bus is serviced before CPU execution
+instruction. Whole-system reset stops both processors at the requesting store;
+its base quantum and PROM wait reach retained RTC/serial state before shared
+devices and scheduler state reset. A request already on the bus is serviced before CPU execution
 without time advancement. Reset counts are additional to instruction totals.
 
 ## Optional MMU profiling

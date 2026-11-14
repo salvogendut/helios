@@ -143,3 +143,39 @@ impl Default for ProcessorTopology {
         Self::single()
     }
 }
+
+/// Board-level processor arbitration eligibility. Sun-4M 5.1.2 gives processor
+/// 0 no enable bit (AER bit 0 reads one), processor 1 the split-requester MID-9
+/// enable, and processors 2/3 the MID-A/MID-B enables. Configuration presence is
+/// independent: enabling an unpopulated MID never creates a CPU.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessorArbitration {
+    /// No processor module occupies this hardware processor number.
+    Absent,
+    /// A module is configured but its AER enable bit is clear.
+    Disabled,
+    /// A configured module may request the bus.
+    Enabled,
+}
+
+impl ProcessorArbitration {
+    pub const fn is_present(self) -> bool {
+        !matches!(self, Self::Absent)
+    }
+
+    pub const fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
+
+/// Combined module state for a future scheduler. It deliberately separates
+/// board arbitration denial from a CPU that has latched error mode. A module
+/// reset is an explicit host transition, not a persistent run state; a guest
+/// firmware wait loop is ordinary guest code, not an emulator state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessorRunState {
+    Ready,
+    ArbitrationDenied,
+    CpuError,
+    Absent,
+}

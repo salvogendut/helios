@@ -2,13 +2,11 @@
 
 2026-11-14. Issue: [helios#2](https://github.com/salvogendut/helios/issues/2).
 Branch: `feat/sun4m-smp`. This is a design and implementation work order;
-end-to-end SMP has not been implemented or accepted. Slices 1 and 2A are
-independently validated through core revision `a94f0aa` and approved by the
-user for an incremental foundation merge. Production machines remain
-single-CPU. Slice 2B's standalone-IOMMU ownership is independently accepted
-at `4555aa2` and user-approved for an incremental merge to `main` on
-2026-11-14. Continue with [slice 2C](smp-slice2c.md) on this branch, based on
-the resulting merge, with review between slices. Issue #2 remains open.
+end-to-end SMP has not been implemented or accepted. Slices 1, 2A and 2B are
+merged to `main` through `27c582e`. Slice 2C's initiator/arbitration and fault
+handling are independently accepted on this feature branch; production
+machines remain single-CPU. Continue with [slice 3](smp-slice3.md), with
+review between slices. Issue #2 remains open.
 
 ## Scope and baseline
 
