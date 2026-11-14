@@ -3,11 +3,12 @@
 
 use crate::bus::{BusError, MapError};
 use crate::cpu::{Cpu, CpuConfig, CpuFault, FaultKind, Step};
-use crate::devices::{cgsix::Cgsix, nvram::Nvram, sx::Sx};
+use crate::devices::{cgsix::Cgsix, mxcc::MxccState, nvram::Nvram, sx::Sx};
 use crate::dram::Ss5Dram;
 use crate::mmu::MmuConfig;
 use crate::system_bus::{Sun4mLayout, SystemBus};
-use std::fmt;
+use crate::topology::{ProcessorModule, ProcessorTopology};
+use std::{cell::RefCell, fmt, rc::Rc};
 
 pub const TARGET: &str = "SPARCstation 5 (sun4m), SPARC V8 / microSPARC-II";
 pub const MAX_RAM_BYTES: usize = 256 * 1024 * 1024;
@@ -64,6 +65,18 @@ impl MachineProfile {
 
     pub const fn builtin_sx(self) -> bool {
         matches!(self, Self::Ss20)
+    }
+
+    /// Validate and select the explicit MBus processor topology. The default
+    /// constructors remain single-CPU; two-module construction is reserved for
+    /// the current topology tests and later scheduler work.
+    pub fn processor_topology(self, processors: usize) -> Option<ProcessorTopology> {
+        match (self, processors) {
+            (Self::Ss5, 1) => Some(ProcessorTopology::empty()),
+            (Self::Ss20 | Self::Axil320, 1) => Some(ProcessorTopology::single()),
+            (Self::Ss20 | Self::Axil320, 2) => Some(ProcessorTopology::dual()),
+            _ => None,
+        }
     }
 
     pub const fn nvram_machine_type(self) -> u8 {
@@ -127,10 +140,49 @@ impl fmt::Display for MachineError {
 
 impl std::error::Error for MachineError {}
 
+/// One independently constructed processor module. The CPU, MMU diagnostic
+/// state and MXCC state are owned here, not cloned from the boot CPU.
+#[derive(Debug)]
+pub struct ProcessorModuleState {
+    pub module: ProcessorModule,
+    pub cpu: Cpu,
+    pub mxcc: Rc<RefCell<MxccState>>,
+}
+
+impl ProcessorModuleState {
+    /// Construct a fresh module for a profile whose selected topology contains
+    /// it. SS-5 and modules outside the selected profile topology return `None`.
+    pub fn new(profile: MachineProfile, module: ProcessorModule) -> Option<Self> {
+        let count = usize::from(module.storage_index) + 1;
+        let topology = profile.processor_topology(count)?;
+        if !topology.modules().any(|candidate| candidate == module) {
+            return None;
+        }
+        let mut cpu = Cpu::new(0);
+        cpu.use_cpu_config(profile.cpu_config());
+        cpu.use_mmu_config(profile.mmu());
+        let mxcc = Rc::new(RefCell::new(MxccState::for_module(module)));
+        cpu.mmu.set_mxcc(mxcc.clone());
+        Some(Self { module, cpu, mxcc })
+    }
+
+    pub fn reset(&mut self) {
+        self.cpu.reset_sun4m();
+        self.mxcc.borrow_mut().reset();
+    }
+
+    /// Install this module's interrupt and timer bank by its hardware
+    /// processor number. This does not schedule the module.
+    pub fn install_processor_banks(&self, bus: &mut SystemBus) -> bool {
+        bus.install_processor_banks(self.module.processor)
+    }
+}
+
 #[derive(Debug)]
 pub struct Machine {
     pub cpu: Cpu,
     pub bus: SystemBus,
+    topology: ProcessorTopology,
 }
 
 impl Machine {
@@ -186,6 +238,7 @@ impl Machine {
         let mut machine = Self {
             cpu: Cpu::new(0),
             bus,
+            topology: profile.processor_topology(1).unwrap(),
         };
         machine.cpu.use_cpu_config(profile.cpu_config());
         machine.cpu.use_mmu_config(profile.mmu());
@@ -236,6 +289,24 @@ impl Machine {
         Ok(())
     }
 
+    /// Explicit processor-module topology for this machine. Profile
+    /// constructors report one populated module for SS-20/Axil, no MBus module
+    /// for SS-5, and bare-metal machines report no module. Tests may build a
+    /// second independent module without changing the production execution path.
+    pub fn topology(&self) -> ProcessorTopology {
+        self.topology
+    }
+
+    pub fn processor_modules(&self) -> impl Iterator<Item = ProcessorModule> + '_ {
+        self.topology.modules()
+    }
+
+    /// Install the addressable interrupt and timer banks for one hardware
+    /// processor number. This does not schedule a second CPU.
+    pub fn install_processor_banks(&mut self, processor: u8) -> bool {
+        self.bus.install_processor_banks(processor)
+    }
+
     /// Apply the power-on reset baseline, clearing reset-cause status.
     /// Reset CPU/MMU, timers, interrupt controller and serial. Retain RAM, ROM, NVRAM/RTC and bytes
     /// already transmitted to the host endpoint.
@@ -253,6 +324,7 @@ impl Machine {
         Ok(Self {
             cpu: Cpu::new(entry),
             bus,
+            topology: ProcessorTopology::empty(),
         })
     }
 

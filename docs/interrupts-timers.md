@@ -1,11 +1,21 @@
 # Interrupts, counters and guest time
 
-Helios implements the uniprocessor NCR89C105 control registers used in the
-SS-5/sun4m map. Sources are the NCR chip specification, SPARC V8 and the pinned
-QEMU/MAME revisions in [references.md](references.md). The synthetic
-[timer PROM](../examples/timer.s) demonstrates both counter interrupts and return
-to interrupted code. Original OBP now passes its processor counter diagnostic;
-see [firmware.md](firmware.md) for the bounded boot evidence and remaining gaps.
+Helios implements the NCR89C105-compatible system interrupt controller and
+counter timers used in the sun4m map. Sources are the NCR chip specification,
+SPARC V8 and the pinned QEMU/MAME revisions in [references.md](references.md).
+The synthetic [timer PROM](../examples/timer.s) demonstrates the processor
+counter interrupt and return to interrupted code. Original OBP now passes its
+processor counter diagnostic; see [firmware.md](firmware.md) for the bounded
+boot evidence and remaining gaps.
+
+The default SS-5 and SS-20/Axil machines install only the processor-0 bank.
+SS-20/Axil can install a second bank for hardware processor 2, which is the
+second MBus module. Hardware processor numbers are not compact vector indexes:
+processor 2 uses timer/interrupt offsets `+0x2000`, and its timer mode bit is
+bit 2. On SS-20/Axil, banks 1 and 3 remain absent zero windows. Production
+execution still uses processor 0; the second bank is addressable state for
+later SMP work. Standalone timer/controller helpers accept hardware numbers
+0–3; the machine installation API enforces the supported profile population.
 
 ## CPU delivery
 
@@ -36,7 +46,11 @@ counts instructions, synchronous traps and interrupt entries separately.
 ## Interrupt controller
 
 These registers accept aligned 32-bit loads/stores only. The CPU aperture is
-16 bytes and the system aperture is 20 bytes; other CPU banks are not installed.
+16 bytes and the system aperture is 20 bytes. In the SS-20/Axil high map the
+processor-0 timer/interrupt pages are at `0xff1300000`/`0xff1400000`; processor
+2 uses `0xff1302000`/`0xff1402000`; system timer/interrupt pages are
+`0xff1310000`/`0xff1410000`. The SS-5 low map has only the processor-0 bank;
+the high-map absent processor numbers 1 and 3 remain zero windows.
 
 | Address | Read | Write |
 | --- | --- | --- |
@@ -52,18 +66,49 @@ These registers accept aligned 32-bit loads/stores only. The CPU aperture is
 
 System mask bits are `0xf05dff80`; other bits read zero and writes have no effect.
 Reset clears pending state and sets all implemented mask bits. A mask changes
-delivery without erasing a held level-sensitive source. The module-error latch
-is separately acknowledged by IC or its source-mask-set bit. Pending reads
-show masked requests too.
+delivery without erasing a held level-sensitive source. On SS-5 the
+module-error latch is acknowledged by IC or its source-mask-set bit; the MBus
+source/capture rules are described below. Pending reads show masked requests
+too.
+
+Each processor bank owns independent software-pending bits, processor-timer
+pending, and a level-15 broadcast latch. A write to a bank clear/set register
+affects that addressed bank regardless of which processor issued it; an absent
+bank address reads zero and discards the narrow or word access. The system
+mask and source state are shared by the banks. On SS-20/Axil, the Current
+Interrupt Target register at system interrupt `+0x10` uses TARGET bits 1:0;
+bits 31:2 are reserved and ignored on writes, so writing `0xffff_fffe` selects
+processor 2 and reads back 2. On SS-5, the NCR reserved target address reads
+zero and ignores writes. Changing an MBus target while a source is asserted
+moves delivery; a valid but absent target leaves the source pending and delivers
+it to no CPU. The processor timer and directed software bits are local and
+remain pending independently of the target. Mask All (bit 31) gates delivery
+from every bank, including software and processor-timer requests, while pending
+state remains readable. This follows NCR89C105's "all interrupts" wording;
+QEMU lets some software requests bypass the master disable. The difference is
+deliberate and retained as the documented functional policy. QEMU's larger
+writable target field is an implementation extension, not the Sun-4M board
+register.
 The processor timer contributes hard level 14 without a separate source-mask
 bit. Mask All (bit 31) gates delivery of both timers and software requests.
 
 The software request for level n occupies bit `16+n`. It persists until cleared
-through the CPU clear alias; clearing soft requests does not acknowledge timer
-hardware. CPU clear-pending IC bit 15 acknowledges the module-error latch
-without clearing software level 15. AFSR reads/writes do not acknowledge it;
-see [fault capture](fault-capture.md).
-Multiprocessor interrupt targeting is not part of this SS-5 profile.
+through the addressed CPU bank's clear alias; clearing soft requests does not
+acknowledge timer hardware. On SS-20/Axil, module-error source status, per-CPU
+capture and per-CPU acknowledgement are separate. A source assertion is captured
+only in banks not disabled by the module-error source mask at that instant; a
+masked event is not captured retroactively when the mask is later cleared.
+Deasserting the source clears the system source status but does not erase a
+processor's already-captured level-15 bit. The internal bus-error producer is a
+pulse: it releases its live source after capture, while each CPU retains the
+captured event. Each processor clears only its own captured bit with CPU
+clear-pending bit 15; the last acknowledgement does not fabricate deassertion
+of a source that is still held externally. System source-mask writes do not
+acknowledge another processor's capture. SS-5 retains the NCR
+single-CPU rule, where clearing pending bit 15 or setting the source mask is
+also the local acknowledgement; AFSR reads/writes do not acknowledge either
+profile. See [fault capture](fault-capture.md). Mask All still gates delivery of
+the captured level while preserving its pending state.
 
 | System source bit | Source | CPU level |
 | --- | --- | --- |
@@ -82,15 +127,25 @@ wires the two counter timers and asynchronous CPU SBus store errors; serial
 remains polled. SuperSPARC-only error masks are retained, but their pending
 bits stay clear. No absent device is fabricated by unmasking it.
 
+The system controller's source/mask state is shared, while every installed
+CPU bank has its own pending register and set/clear aliases. The bus records
+the bank at the hardware processor address rather than treating a dense module
+list index as the CPU number. `SystemBus::install_processor_banks` installs
+both the interrupt and timer bank for a processor; default machines install
+processor 0 only.
+
 ## Counter timers
 
-Both counters use a 500 ns tick. The current 22-bit count and limit occupy bits
-30:9; low bits read zero. A matching increment sets the pending latch, reloads
-the count to `0x200` and requests level 10 (system) or 14 (processor). Count reads
-include pending in bit 31 and do not acknowledge it. Multiple expirations while
-pending coalesce into the same asserted line.
+All counters use one 500 ns tick derived from the machine's shared elapsed-time
+input. The system counter is one device; every installed processor has an
+independent count, limit, run/mode state and pending latch. A matching
+increment sets the bank's pending latch, reloads the count to `0x200` and
+requests level 10 (system) or level 14 (that processor). Count reads include
+pending in bit 31 and do not acknowledge it. Multiple expirations while
+pending coalesce into the same asserted line. A limit read or configuration
+change on one processor bank does not clear another bank's pending state.
 
-| Offset | Processor at `0x71d00000` | System at `0x71d10000` |
+| Offset | Processor-0 at `0x71d00000`; processor 2 adds `0x2000` | System at `0x71d10000` |
 | --- | --- | --- |
 | `+0` | Limit: read acknowledges; write loads and resets | Same |
 | `+4` | Count and pending, read only | Same |
@@ -118,8 +173,10 @@ counter mode are rejected before any destructive limit read.
 
 ## Processor user timer
 
-Configuration bit 0 at `0x71d10010` selects the processor's user timer. The
-system counter always stays in counter mode. The user count occupies bits 62:9
+Configuration bit 0 at `0x71d10010` selects processor 0's user timer; bit 2
+selects processor 2's user timer. Each populated hardware processor uses its
+own bit, and the system counter always stays in counter mode. The same mode
+write leaves an unchanged bank's run/count state alone. The user count occupies bits 62:9
 of a 64-bit register at `0x71d00000`; bits 8:0 read zero and ignore writes.
 The most significant word is at `+0`, the least significant word at `+4`.
 The low word's bit 31 is count data, not the counter-mode pending flag.
@@ -136,7 +193,8 @@ including on overflow. No time is derived from the host clock.
 Word accesses read/write either half, preserving the other half on writes.
 NCR recommends 64-bit access for consistency and explicitly permits two-word
 SBus bursts only to this register in user mode. `SystemBus` therefore accepts
-aligned LDD/STD and LDDA/STDA at `0x71d00000` only while user mode is selected.
+aligned LDD/STD and LDDA/STDA at each installed processor timer base only while
+that bank's user mode is selected; the processor-2 base is `+0x2000`.
 Both words are sampled or committed together. Other doubleword device addresses,
 byte/halfword accesses, partial masked writes and atomics still stop without
 device effects. MMU protection checks precede the whole transfer, allowing a
@@ -172,10 +230,12 @@ The base quantum and serialized DMA are functional conventions. This is not a
 cycle-accurate pipeline, ordinary cache, SBus arbitration or burst timing model.
 
 `Machine::advance_ns` and `advance_seconds` advance all devices between CPU steps.
-They do not execute the CPU or auto-enter handlers. Timer tick fractions and
-RTC second fractions accumulate. Whole-second advancement handles `u64::MAX`
-without multiplying into a `u64` overflow; timer arithmetic skips whole periods
-with bounded work. The RTC retains its separate oscillator-stop and R/W latches.
+They do not execute the CPU or auto-enter handlers. Every installed processor
+timer bank receives the same elapsed ticks and shared phase; there is no
+per-CPU host clock or double advancement. Timer tick fractions and RTC second
+fractions accumulate. Whole-second advancement handles `u64::MAX` without
+multiplying into a `u64` overflow; timer arithmetic skips whole periods with
+bounded work. The RTC retains its separate oscillator-stop and R/W latches.
 
 Machine reset clears timers, timer phase and interrupt state while retaining
 NVRAM/RTC, its fractional second, RAM/ROM and completed serial output. Standalone
@@ -193,9 +253,10 @@ OBP processor-timer diagnostic also requires the limit flag on the acknowledging
 read. The earlier NCR-based model produced a spurious level 10 interrupt once
 PROM service time was added. QEMU likewise suppresses zero-limit interrupts,
 but resets Run to one; Helios retains NCR's zero counter/Run reset baseline.
-QEMU also implements a multiprocessor target register, while NCR
-reserves that address. Helios applies NCR's Mask All wording to software
-requests as well; QEMU lets them bypass that bit. The wording is not explicit
+QEMU accepts a larger writable multiprocessor target field everywhere. Helios
+instead follows the selected board: NCR reserves that address on SS-5, while
+Sun-4M defines two TARGET bits on the MBus profiles. Helios applies NCR's Mask
+All wording to software requests as well; QEMU lets them bypass that bit. The wording is not explicit
 about this exception, so the software-mask choice needs hardware confirmation.
 MAME's inspected Sun timer wiring is for sun4/sun4c and is not a sun4m oracle.
 QEMU also permits doubleword MMIO in counter mode and uses its countdown limit
@@ -205,11 +266,16 @@ neither it nor the chip text establishes Helios's return-to-counter choices.
 
 Regressions cover every ET/PIL/level combination, entry without a fetch,
 branch-delay return, held sources, mask/set/clear semantics, exact tick and
-overflow boundaries, destructive reads and a scalar counter oracle. Large and
-partitioned time advances agree. `timer-demo` runs a synthetic reset PROM and
-checks one entry per timer, acknowledgement and resumed work. User-timer tests
-cover both word carries, overflow clear, start/stop phase, mode changes with
-pending interrupts, forbidden accesses, translated write protection and a
-synthetic PROM using alternate-space doubleword transfers. Initial original
-OBP and OpenBIOS probes are recorded separately. No differential reference
-execution or real firmware prompt has been demonstrated.
+overflow boundaries, destructive reads and a scalar counter oracle. Slice 2A
+adds hardware-processor-addressed software banks, Current Interrupt Target
+routing (including absent targets), per-processor level-15 acknowledgement,
+independent timer limits/pending/mode bits 0 and 2, and one shared elapsed-time
+advance. Large and partitioned time advances agree. `timer-demo` runs a
+synthetic reset PROM and checks one entry per timer, acknowledgement and resumed
+work. User-timer tests cover both word carries, overflow clear, start/stop
+phase, mode changes with pending interrupts, forbidden accesses, translated
+write protection and alternate-space doubleword transfers on both populated
+banks. Initial original OBP and OpenBIOS probes are recorded separately.
+Single-CPU original-OBP and Solaris boot evidence is recorded in
+[machines.md](machines.md). No differential reference execution, SMP scheduler
+or two-CPU firmware startup/prompt has been demonstrated.

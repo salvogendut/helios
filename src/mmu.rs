@@ -921,10 +921,7 @@ impl Srmmu {
                 return Ok(());
             }
             2 if width == Width::Word => {
-                self.mxcc
-                    .borrow_mut()
-                    .write_word(bus, address, value)
-                    .map_err(MemoryError::Bus)?;
+                self.mxcc_write_word(bus, address, value)?;
                 return Ok(());
             }
             0x10..=0x14 if width == Width::Word => {
@@ -1189,6 +1186,21 @@ impl Srmmu {
         // this register window. Copy, run bus transfers, then publish state.
         let mut state = self.mxcc.borrow().clone();
         let result = state.write_u64(bus, address, value);
+        *self.mxcc.borrow_mut() = state;
+        result.map_err(MemoryError::Bus)
+    }
+
+    fn mxcc_write_word(
+        &mut self,
+        bus: &mut impl Bus,
+        address: u32,
+        value: u32,
+    ) -> Result<(), MemoryError> {
+        // Word stores use the same snapshot/transfer/publish discipline as
+        // doubleword stores so ordinary RAM streams never re-enter a live
+        // mutable borrow through the physical module decoder.
+        let mut state = self.mxcc.borrow().clone();
+        let result = state.write_word(bus, address, value);
         *self.mxcc.borrow_mut() = state;
         result.map_err(MemoryError::Bus)
     }

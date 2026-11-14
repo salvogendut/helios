@@ -49,6 +49,18 @@ modules, low slots first.
   retains its enable/delay/fault/event registers and reports memory addresses;
   parity generation, injected errors and the correctable-error interrupt are not
   modeled.
+- Processor topology follows the MBus connector numbering rather than a
+  compact CPU index. Host storage slot 0 is hardware processor 0 with MID 8
+  and MXCC control at `0xf_f8c0_0a00`; slot 1 is hardware processor 2 with MID
+  10 and control at `0xf_fac0_0a00`. The architected port identities are
+  `0x08000104` at `0xf_f8ff_fffc` and `0x0a000104` at `0xf_faff_fffc`.
+  Processors 1 and 3 (MIDs 9 and 11) remain absent. The second populated
+  processor (hardware 2) has timer/interrupt banks at
+  `0xff1302000`/`0xff1402000`; the Current Interrupt Target is
+  `0xff1410010`. Default machines populate only slot 0, and SS-5 has no MBus
+  module entry. A second independent CPU, MMU and MXCC, plus processor-2
+  timer/interrupt banks, can be constructed for focused tests, but there is no
+  scheduler, startup protocol or two-CPU production boot yet.
 - Empty CPU timer/interrupt slots and unpopulated VSIMM probe windows return
   zero and discard writes, matching an unpopulated machine. The populated
   SS-20 SX/VSIMM windows route to the device before these empty-slot defaults.
@@ -65,13 +77,28 @@ modules, low slots first.
 - The built-in SX/cg14 subset is installed only for the SS-20. It models an
   8 MiB VSIMM 2 mirrored through the 64 MiB aperture, the SX register/control
   blocks and the ASI `0x28` memory alias at `0x800000000 + target PA`.
-  `cg14` opens through OBP and draws the native 1152x900 console. MXCC state
-  is shared by ASI 2 and the populated CPU-0 module-control alias at
-  `0xf_f8c0_0000`; the architected port identity is read-only at
-  `0xf_f8ff_fffc` and the `0xf_f8c0_0f04` page alias. MID 9 remains a zero
-  window. Stream source/destination registers copy four doublewords through
-  the regular bus and reject recursive register-window targets without
-  panicking the host. Full MXCC error/control semantics remain incomplete.
+  `cg14` opens through OBP and draws the native 1152x900 console. Each
+  populated module has its own MXCC state, shared locally by ASI 2 and by that
+  module's `0xf_f8c0_0000` or `0xf_fac0_0000` control window. Physical
+  decoding uses the module identity recorded when the MXCC was installed, not
+  a live state borrow. Unpopulated module control windows and their
+  architected port words (`0xf_f9ff_fffc`, `0xf_faff_fffc` and
+  `0xf_fbff_fffc`) read zero and discard byte, aligned-halfword and aligned-word
+  accesses; unaligned halfword/word transfers are rejected as misaligned, and
+  other addresses and wider accesses remain unmapped. See the width matrix
+  below for the exact doubleword and zero-window-boundary cases. Populated port
+  identities are read-only at their module addresses and through the
+  associated page alias, and decode consistent big-endian byte and aligned
+  halfword lanes; writes at any lane are ignored. MID 9 and MID 11 remain
+  absent. Stream source/destination registers copy four doublewords through
+  the regular bus. Before any module or RAM state changes, the complete
+  32-byte transfer span is checked against every architected MBus module
+  control window and port (MIDs 8, 9, A and B), populated or absent. A
+  control-space stream returns an explicit unsupported error with no partial
+  effects; ordinary RAM transfer failures retain the existing address/RDY
+  and partial-transfer semantics. ASI 2 word and doubleword stores both use
+  snapshot/transfer/publish rather than holding a live `RefCell` borrow across
+  bus access. Full MXCC error/control semantics remain incomplete.
   Monitor sense 4 selects the 1152x900 timing used by the renderer, and CLUT
   words are decoded as `00BBGGRR`. With these settings original OBP opens
   `cg14` and draws a native `ok` console. The Axil 320 shares the SS-20
@@ -84,6 +111,30 @@ modules, low slots first.
 - The integrated ESP accepts the SS-20/Axil 32-bit register lane accesses and
   test-mode probe commands, while the SS-5 profile retains byte-only access and
   strict reserved-register behavior.
+
+### MBus module and empty-window access widths
+
+The following is the functional width policy for the module and empty-slot
+windows. Sun-4M defines the module control registers, the port address and the
+read-only port fields; it does not establish the bus response of an absent
+module or narrow-cycle support at the port. The zero-window rows therefore
+preserve the project's existing empty-slot convention only for the documented
+windows, and the populated rows describe the modeled register subset.
+
+| Region | Byte | Halfword | Word | Doubleword |
+| --- | --- | --- | --- | --- |
+| Populated MXCC control window (4 KiB, including the `...0f04` page alias) | read/write any lane | aligned read/write | aligned read/write | 8-byte-aligned register decode; unknown offsets read zero/ignore writes; misaligned `Misaligned` |
+| Populated architected port word (4 bytes) | read identity, writes ignored | aligned read identity, writes ignored | aligned read identity, writes ignored | at the port `Misaligned`; aligned block overlapping the port `Unmapped` |
+| Absent module control window (8 KiB per absent MID) | zero/discard any lane | zero/discard aligned; unaligned `Misaligned` | zero/discard aligned; unaligned `Misaligned` | `Unmapped`, contained or overlapping |
+| Absent architected port word (4 bytes) | zero/discard any lane | zero/discard aligned; unaligned `Misaligned` | zero/discard aligned; unaligned `Misaligned` | at the port `Misaligned`; aligned block overlapping the port `Unmapped` |
+| Other empty-slot zero windows (timer/interrupt slots, VSIMM/DBRI/BPP placeholders) | zero/discard any lane | zero/discard aligned; unaligned `Misaligned` | zero/discard aligned; unaligned `Misaligned` | `Unmapped`, contained or overlapping |
+
+Doubleword accesses are never decided from their starting address alone. Any
+8-byte access overlapping a zero window is rejected over its whole span, so an
+aligned doubleword in an absent control window or in the block containing a
+four-byte port is `Unmapped`, and a misaligned one is `Misaligned`; writes have
+no effects. A doubleword that is fully outside the zero windows uses normal
+memory decoding and remains `Unmapped` in unrelated empty physical space.
 
 ## Evidence and limits
 
@@ -108,9 +159,9 @@ unverified. CPU
 identity is profile-specific: SS-5 reports the MB86904 microSPARC-II IU/FPU
 identity, while SS-20 and Axil report SuperSPARC-II IU version 3 and FPU
 version 0. The interpreter and reference MMU remain functional models; there is
-no SuperSPARC pipeline, cache-fill, MBus multiprocessor, full PTP2 replacement
-policy, complete SX acceleration, DBRI audio, BPP or Axil custom-controller
-model. CG6/TurboGX cards can be attached through
+no SuperSPARC pipeline or cache-fill model, MBus SMP scheduling/startup, full
+PTP2 replacement policy, complete SX acceleration, DBRI audio, BPP or Axil
+custom-controller model. CG6/TurboGX cards can be attached through
 `--cgsix-rom`; SS-20/Axil place them in SBus slot 2 at physical
 `0xe_2000_0000`, matching the Sun-4M slot map. The Axil 320 uses a CG6 as its
 usual framebuffer; Helios does not require the SS-5 AFX presence byte for it.
