@@ -1,14 +1,16 @@
 //! Bare-metal and sun4m harnesses with a polled console and NVRAM/RTC.
 //! Timers and interrupt delivery share a deterministic functional timebase.
 
-use crate::bus::{BusError, MapError};
+use crate::bus::{BusError, Initiator, MapError};
 use crate::cpu::{Cpu, CpuConfig, CpuFault, FaultKind, Step};
 use crate::devices::{cgsix::Cgsix, mxcc::MxccState, nvram::Nvram, sx::Sx};
 use crate::dram::Ss5Dram;
 use crate::iommu::StandaloneIommu;
 use crate::mmu::MmuConfig;
 use crate::system_bus::{Sun4mLayout, SystemBus};
-use crate::topology::{ProcessorModule, ProcessorTopology};
+use crate::topology::{
+    ProcessorArbitration, ProcessorModule, ProcessorRunState, ProcessorTopology, PROCESSOR_MODULES,
+};
 use std::{cell::RefCell, fmt, rc::Rc};
 
 pub const TARGET: &str = "SPARCstation 5 (sun4m), SPARC V8 / microSPARC-II";
@@ -162,6 +164,7 @@ impl ProcessorModuleState {
         let mut cpu = Cpu::new(0);
         cpu.use_cpu_config(profile.cpu_config());
         cpu.use_mmu_config(profile.mmu());
+        cpu.mmu.set_initiator(Initiator::Cpu(module));
         let mxcc = Rc::new(RefCell::new(MxccState::for_module(module)));
         cpu.mmu.set_mxcc(mxcc.clone());
         Some(Self { module, cpu, mxcc })
@@ -176,6 +179,26 @@ impl ProcessorModuleState {
     /// processor number. This does not schedule the module.
     pub fn install_processor_banks(&self, bus: &mut SystemBus) -> bool {
         bus.install_processor_banks(self.module.processor)
+    }
+
+    /// Board arbitration eligibility for this module. Presence is configured
+    /// separately with `SystemBus::configure_processor`.
+    pub fn arbitration(&self, bus: &SystemBus) -> ProcessorArbitration {
+        bus.processor_arbitration(self.module.processor)
+    }
+
+    /// Scheduler-facing state. Arbitration denial is not a retired instruction
+    /// or a synthesized trap; a denied module simply must not execute. A
+    /// module reset is an explicit `reset` call, not a persistent state.
+    pub fn run_state(&self, bus: &SystemBus) -> ProcessorRunState {
+        match self.arbitration(bus) {
+            ProcessorArbitration::Absent => ProcessorRunState::Absent,
+            ProcessorArbitration::Disabled => ProcessorRunState::ArbitrationDenied,
+            ProcessorArbitration::Enabled if self.cpu.error_state().is_some() => {
+                ProcessorRunState::CpuError
+            }
+            ProcessorArbitration::Enabled => ProcessorRunState::Ready,
+        }
     }
 }
 
@@ -245,6 +268,10 @@ impl Machine {
         };
         machine.cpu.use_cpu_config(profile.cpu_config());
         machine.cpu.use_mmu_config(profile.mmu());
+        machine
+            .cpu
+            .mmu
+            .set_initiator(Initiator::Cpu(PROCESSOR_MODULES[0]));
         if profile.mmu().reference_mmu {
             machine.bus.install_mxcc(machine.cpu.mmu.mxcc_handle());
         }
@@ -305,9 +332,26 @@ impl Machine {
     }
 
     /// Install the addressable interrupt and timer banks for one hardware
-    /// processor number. This does not schedule a second CPU.
+    /// processor number. This does not schedule a second CPU and does not make
+    /// an absent module present.
     pub fn install_processor_banks(&mut self, processor: u8) -> bool {
         self.bus.install_processor_banks(processor)
+    }
+
+    /// Configure board-level presence for arbitration without creating CPU
+    /// storage or a scheduler slot.
+    pub fn configure_processor(&mut self, processor: u8) -> bool {
+        self.bus.configure_processor(processor)
+    }
+
+    pub fn processor_arbitration(&self, processor: u8) -> ProcessorArbitration {
+        self.bus.processor_arbitration(processor)
+    }
+
+    /// Host-side AER transition for an installed processor. See
+    /// `SystemBus::set_processor_arbitration`.
+    pub fn set_processor_arbitration(&mut self, processor: u8, enabled: bool) -> bool {
+        self.bus.set_processor_arbitration(processor, enabled)
     }
 
     /// The standalone MBus I/O translation owner, when this profile has one.
@@ -324,6 +368,22 @@ impl Machine {
         if let Some(iommu) = &mut self.standalone_iommu {
             iommu.reset();
         }
+    }
+
+    /// Reset only the local CPU/MMU and MXCC of one processor module. Board
+    /// devices, AER state, the standalone IOMMU, RAM and other modules are
+    /// retained. Only the boot module has Machine-owned CPU storage in this
+    /// slice; an independently constructed module resets through
+    /// `ProcessorModuleState::reset`.
+    pub fn reset_processor_module(&mut self, processor: u8) -> bool {
+        if !self.bus.processor_present(processor) {
+            return false;
+        }
+        if processor != 0 {
+            return false;
+        }
+        self.cpu.reset_sun4m();
+        true
     }
 
     pub fn bare_metal(ram_bytes: usize, entry: u32) -> Result<Self, MachineError> {

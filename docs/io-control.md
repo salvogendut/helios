@@ -18,6 +18,14 @@ Unlike the SS-5 shared CPU/I/O TLB path, the MBus profiles use a dedicated
 invalidation queue. CPU 0 and CPU 2 do not translate or consume I/O entries
 through their SRMMU state. See [machine profiles](machines.md).
 
+Bus accesses carry an explicit `AccessContext`: the initiating CPU module, an
+SBus DMA master, or direct host/debug access, plus the actual supervisor pin.
+The CPU and DMA owners set and restore this context around the complete
+top-level operation, so page-table walks, MXCC stream transfers and fault
+capture keep the original initiator without leaking it to the next caller.
+Direct host/debug access has no MBus owner; on the standalone profile its MID
+register read is `0`, the documented DVMA owner code, not CPU 0's identity.
+
 The primary source is the microSPARC-II User's Manual revision 1.1, sections
 5.2.1–5.2.5, 5.6.6, 5.7.1–5.7.4, 5.7.7, 5.7.10, 5.8, 5.10, 9.1/9.4 and
 chapter 11 table 50. [References](references.md) link the manual and pinned
@@ -34,12 +42,36 @@ generic sun4m model.
 | `0x10000018` | I/O TLB page flush | SS-5: matching value[31:12]. SS-20/Axil: FA bits 30:12; bit 31 reserved |
 | `0x10001010`–`0x1000101c` | Slot configuration 0–3 | SA30 bit 16, BA8 bit 1, bypass bit 0 writable |
 | `0x10001020` | Shared slot configuration 4 | BA8 bit 1 writable; bypass and SA30 zero |
-| `0x10002000` | MID / SBus arbitration | MID reads 8; six enable bits at 21:16 writable |
+| `0x10002000` | SS-5 MID / SBus arbitration | MID reads 8; six enable bits at 21:16 writable |
 | `0x10003018` | Mask ID / virtual-address mask | ID `0x30` at 31:24; compare enables/inversions at 10:0 writable |
 | `0x1000301c` | Virtual-address compare | Full word readable/writable |
 
 Reserved/identity bits ignore writes. Flush ports have no stored readback value;
 reads stop explicitly. All registers require plain aligned word accesses.
+
+### Sun-4M Arbiter Enable and MID registers
+
+The standalone SS-20/Axil controller follows Sun-4M System Architecture section
+5.1.2 at `0xfe0001008` (I/O-control offset `+0x1008`):
+
+| Bits | Name | Reset | Behavior |
+| --- | --- | --- | --- |
+| 0 | Reserved | 1 | Read-only, always reads one (processor 0 is the boot master) |
+| 1 | `EN_P1_ARB` | 1 | MID-9 split-requester enable; absent processor 1 stays absent |
+| 2 | `EN_P2_ARB` | 0 | MID-A / hardware processor 2 enable |
+| 3 | `EN_P3_ARB` | 0 | MID-B / hardware processor 3 enable; absent on this topology |
+| 15:4 | Reserved | 0 | Read only |
+| 16:20 | `EN<0>`–`EN<3>`,`EN<F>` | 0 | SBus slot 0–3 and onboard-F arbitration enables |
+| 30:21 | Reserved | 0 | Read only |
+| 31 | `SBW` | 0 | Asynchronous S-to-M writes; stored without additional timing |
+
+Writes replace only the writable bits; reserved bits and bit 0 are unchanged.
+The integrated microSPARC-II (SS-5) keeps its previous AER reset/readback and
+uses the MID/SBAE register at `+0x2000` for SBus grants; its AER has no
+processor-arbitration effect. The Sun-4M MID register at `0xfe0002000` is
+read-only and returns the current MBus master ID (8 or A for the installed CPU
+modules, 0 for DMA or direct host/debug access). The SS-5 `+0x2000` register
+keeps a fixed MID 8 and its six SBus enable bits.
 Bytes, halfwords, doublewords, masked stores, atomics and raw-image writes stop
 before device effects. The physical bus reserves `0x10000000`–`0x10007fff`;
 RAM/ROM cannot overlap it. Wider control-space mirrors remain pending.
@@ -102,7 +134,9 @@ commands, the standalone cache and the SS-5 shared TLB while retaining RAM.
 ## Arbitration, bypass and failures
 
 Each master needs its SBAE bit before a transfer. A disabled master gets
-`DmaError::NotGranted`, meaning no transaction was issued. Masters 4 and 5 share
+`DmaError::NotGranted`, meaning no transaction was issued. Processor AER bits
+1–3 and SBus AER bits 16–20 are separate: enabling MID A never enables an SBus
+master, and pending interrupts never change either field. Masters 4 and 5 share
 slot register 4 and cannot bypass; master 5 serves the on-board SCSI/Ethernet
 DMA block. Slots 0–3 may bypass only for DVMA addresses with bits 31:30 zero.
 In that case PA[29:0] comes from DVMA and PA[30] from SA30. Section 5.8 restricts
@@ -115,8 +149,11 @@ leave target memory unchanged, do not populate CPU SFSR/SFAR and do not raise
 an interrupt themselves. CPU PCR.NF has no effect on DMA errors. Standalone
 I/O translations use explicit device initiator attributes: CPU=0, boot mode=0,
 cacheable=0 and supervisor=0; they do not inherit CPU 0 PSR privilege or boot
-mode. A future master must report its completion/error status and generate its
-own interrupt. Physical table/target failures retain `BusError` and its physical
+mode. SS-5 integrated I/O page-table walks and target accesses intentionally
+retain the CPU's actual S pin and PCR.BM in MFSR, as specified by the
+microSPARC-II manual; CP remains zero for the device request. The DMA
+initiator still prevents attribution to a CPU's MID. A future master must
+report its completion/error status and generate its own interrupt. Physical table/target failures retain `BusError` and its physical
 address; `Unsupported` and `WouldBlock` remain emulator stops/backpressure.
 
 Unlike QEMU's `iommu_bad_addr`, invalid/protected mappings do not synthesize an
@@ -124,6 +161,18 @@ AFSR late error or a CPU level-15 interrupt. The manual's error table distinguis
 these DMA errors from parity errors and asynchronous CPU SBus write failures.
 CPU SBus store errors now have separate [capture and interrupt wiring](fault-capture.md);
 real memory-parity error generation remains pending.
+
+On SS-20/Axil the M-to-S AFSR follows Sun-4M sections 5.2.1–5.2.2: MID bits
+23:20 identify the module that owned the faulted MBus cycle, not the CPU that
+later reads the register. The supported plain-store subset records ERR/TO or
+BERR, MBus SIZ, S, initiating MID, ME, SBus SSIZ, SA<4:0> and PA<35:32>; AFAR
+holds PA<31:0> and is read-only. Reads of either register leave the first-error
+capture frozen. Any AFSR write—regardless of value—acknowledges the fault,
+clears ERR and unlocks the pair without synthesizing diagnostics. The error
+asserts held system-interrupt source bit 29; an AFSR write releases that source
+but not per-processor level-15 captures. SS-5 retains its integrated fixed
+`1000` MID field, read-unlock and diagnostic-address semantics. Broader MBus
+late-error, RMW, burst-size and VME write-buffer behavior remains unsupported.
 
 ## Limits and validation
 

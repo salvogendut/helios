@@ -236,7 +236,13 @@ encoding; its configurable host geometry does not define Helios's raw target.
   the SS-20/Axil layout and the implementation's high-address path.
   Sections A.I.2/A.II.2 give connector/processor/MID numbering; B.III.5.4.7
   defines the MXCC port identity and B.III.8 gives per-MID physical control
-  and port addresses. The two single-CPU-module topology uses processors
+  and port addresses. Section 5.1.2, printed page 22 (inspected visually),
+  defines the Arbiter Enable Register at `0xFE0001008`: bit 0 reads one, the
+  MID-9 enable resets set, MID-A/MID-B reset clear, SBus enables 16:20 reset
+  clear, and bit 31 is the asynchronous-write control. Section 5.4.3, printed
+  page 26, defines the read-only MID register at `0xFE0002000` as the current
+  MBus master ID, and section 5.5.3.3 gives the MID assignments (8 = processor
+  0, A = processor 2). The two single-CPU-module topology uses processors
   0/2 and MIDs 8/A. The absence and narrow-access policies in
   [machines.md](machines.md#mbus-module-and-empty-window-access-widths) are
   documented functional choices, not inferred hardware guarantees.

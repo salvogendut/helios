@@ -1,11 +1,14 @@
 //! microSPARC-II SRMMU. See docs/memory.md for the supported control spaces,
 //! implementation choices, and differences from generic SPARC Reference MMUs.
 
-use crate::bus::{Bus, BusError, BusErrorKind, IoTlbFlush, MemoryRequest, MemoryRequestKind};
+use crate::bus::{
+    Bus, BusError, BusErrorKind, Initiator, IoTlbFlush, MemoryRequest, MemoryRequestKind,
+};
 use crate::cache::CacheDiagnostics;
 use crate::devices::io_control::IoMapping;
 use crate::devices::mxcc::MxccState;
 use crate::dma::{DmaError, DmaFault};
+use crate::topology::PROCESSOR_MODULES;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -335,6 +338,10 @@ pub struct Srmmu {
     breakpoint_action: u32,
     /// SuperSPARC MXCC state shared with the physical module-control alias.
     mxcc: Rc<RefCell<MxccState>>,
+    /// Module that owns this MMU. Local ASI 2 and bus requests carry this
+    /// identity; it is set when the CPU module is constructed, not inferred
+    /// from the last register address.
+    initiator: Initiator,
     /// SuperSPARC II I/D-TLB diagnostic storage (ASI 0x05/0x06), keyed by
     /// the full diagnostic address so entry/tag writes never alias.
     itlb_diag: HashMap<u32, u32>,
@@ -368,6 +375,7 @@ impl PartialEq for Srmmu {
             && self.counter_status == other.counter_status
             && self.breakpoint_action == other.breakpoint_action
             && self.mxcc == other.mxcc
+            && self.initiator == other.initiator
             && self.itlb_diag == other.itlb_diag
             && self.dtlb_diag == other.dtlb_diag
             && self.itlb_ptp2 == other.itlb_ptp2
@@ -405,6 +413,7 @@ impl Default for Srmmu {
             counter_status: 0,
             breakpoint_action: 0,
             mxcc: Rc::new(RefCell::new(MxccState::default())),
+            initiator: Initiator::Cpu(PROCESSOR_MODULES[0]),
             itlb_diag: HashMap::new(),
             dtlb_diag: HashMap::new(),
             itlb_ptp2: None,
@@ -799,6 +808,16 @@ impl Srmmu {
         asi: u8,
         width: Width,
     ) -> Result<u32, MemoryError> {
+        self.scoped(bus, |this, bus| this.load_inner(bus, address, asi, width))
+    }
+
+    fn load_inner(
+        &mut self,
+        bus: &mut impl Bus,
+        address: u32,
+        asi: u8,
+        width: Width,
+    ) -> Result<u32, MemoryError> {
         self.sync_io_flushes(bus);
         Self::aligned(address, width)?;
         match asi {
@@ -866,6 +885,19 @@ impl Srmmu {
     }
 
     pub fn store(
+        &mut self,
+        bus: &mut impl Bus,
+        address: u32,
+        asi: u8,
+        width: Width,
+        value: u32,
+    ) -> Result<(), MemoryError> {
+        self.scoped(bus, |this, bus| {
+            this.store_inner(bus, address, asi, width, value)
+        })
+    }
+
+    fn store_inner(
         &mut self,
         bus: &mut impl Bus,
         address: u32,
@@ -968,6 +1000,17 @@ impl Srmmu {
         address: u32,
         asi: u8,
     ) -> Result<[u32; 2], MemoryError> {
+        self.scoped(bus, |this, bus| {
+            this.load_doubleword_inner(bus, address, asi)
+        })
+    }
+
+    fn load_doubleword_inner(
+        &mut self,
+        bus: &mut impl Bus,
+        address: u32,
+        asi: u8,
+    ) -> Result<[u32; 2], MemoryError> {
         self.sync_io_flushes(bus);
         Self::aligned_to(address, 8)?;
         if asi == 0x0f || (self.config.reference_mmu && matches!(asi, 0x0c..=0x0e)) {
@@ -1017,6 +1060,18 @@ impl Srmmu {
     }
 
     pub fn store_doubleword(
+        &mut self,
+        bus: &mut impl Bus,
+        address: u32,
+        asi: u8,
+        words: [u32; 2],
+    ) -> Result<(), MemoryError> {
+        self.scoped(bus, |this, bus| {
+            this.store_doubleword_inner(bus, address, asi, words)
+        })
+    }
+
+    fn store_doubleword_inner(
         &mut self,
         bus: &mut impl Bus,
         address: u32,
@@ -1097,6 +1152,18 @@ impl Srmmu {
     }
 
     fn exchange(
+        &mut self,
+        bus: &mut impl Bus,
+        address: u32,
+        asi: u8,
+        value: Option<u32>,
+    ) -> Result<u32, MemoryError> {
+        self.scoped(bus, |this, bus| {
+            this.exchange_inner(bus, address, asi, value)
+        })
+    }
+
+    fn exchange_inner(
         &mut self,
         bus: &mut impl Bus,
         address: u32,
@@ -1212,6 +1279,30 @@ impl Srmmu {
 
     pub fn set_mxcc(&mut self, mxcc: Rc<RefCell<MxccState>>) {
         self.mxcc = mxcc;
+    }
+
+    /// Module identity carried by this MMU's bus accesses.
+    pub fn initiator(&self) -> Initiator {
+        self.initiator
+    }
+
+    /// Assign the processor module that owns this MMU. Preserved across MMU and
+    /// CPU reset so a module keeps its MID after local reset.
+    pub fn set_initiator(&mut self, initiator: Initiator) {
+        self.initiator = initiator;
+    }
+
+    /// Run one CPU-side memory operation with this module's identity. Nested
+    /// page-table walks, MXCC stream transfers and fault updates keep the same
+    /// context; the previous context is restored on success or error.
+    fn scoped<T, B: Bus>(&mut self, bus: &mut B, f: impl FnOnce(&mut Self, &mut B) -> T) -> T {
+        let previous = bus.access_context();
+        let mut context = previous;
+        context.initiator = self.initiator;
+        bus.set_access_context(context);
+        let result = f(self, bus);
+        bus.set_access_context(previous);
+        result
     }
 
     pub fn reset_mxcc(&mut self) {

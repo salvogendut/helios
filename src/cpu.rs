@@ -1,7 +1,7 @@
 //! SPARC V8 interpreter with privileged state, floating-point transfers,
 //! precise traps, external interrupts and microSPARC-II memory access.
 
-use crate::bus::{Bus, BusError, BusErrorKind};
+use crate::bus::{AccessContext, Bus, BusError, BusErrorKind};
 use crate::fpu::{Action as FpAction, Fpu, Operation as FpOperation};
 use crate::mmu::{MemoryError, MmuConfig, MmuFault, Srmmu, Width};
 use std::fmt;
@@ -263,11 +263,13 @@ impl Cpu {
         let config = self.mmu.config();
         let identity = self.identity;
         let mxcc = self.mmu.mxcc_handle();
+        let initiator = self.mmu.initiator();
         *self = Self::new(0);
         self.wim = 1;
         self.identity = identity;
         self.mmu = Srmmu::reset_with(config);
         self.mmu.set_mxcc(mxcc);
+        self.mmu.set_initiator(initiator);
         self.mmu.reset_mxcc();
         self.fpu.set_version(identity.fpu_version);
     }
@@ -275,8 +277,10 @@ impl Cpu {
     /// Select a profile's physical-address/boot-window behavior before reset.
     pub fn use_mmu_config(&mut self, config: MmuConfig) {
         let mxcc = self.mmu.mxcc_handle();
+        let initiator = self.mmu.initiator();
         self.mmu = Srmmu::reset_with(config);
         self.mmu.set_mxcc(mxcc);
+        self.mmu.set_initiator(initiator);
         self.mmu.reset_mxcc();
     }
 
@@ -384,6 +388,15 @@ impl Cpu {
         bus: &mut impl Bus,
         pending: u16,
     ) -> Result<Step, CpuFault> {
+        let previous = bus.access_context();
+        let context = AccessContext::new(self.mmu.initiator(), self.psr_control & PSR_S != 0);
+        bus.set_access_context(context);
+        let result = self.step_inner(bus, pending);
+        bus.set_access_context(previous);
+        result
+    }
+
+    fn step_inner(&mut self, bus: &mut impl Bus, pending: u16) -> Result<Step, CpuFault> {
         if let Some(fault) = self.error_state {
             return Err(fault);
         }
@@ -404,7 +417,6 @@ impl Cpu {
             }
         }
         let asi = if self.psr_control & PSR_S != 0 { 9 } else { 8 };
-        bus.set_cpu_supervisor(self.psr_control & PSR_S != 0);
         let instruction = match self.mmu.load(bus, self.pc, asi, Width::Word) {
             Ok(word) => word,
             Err(error) => return self.handle_fault(None, Self::memory_fault(error, true)),

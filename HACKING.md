@@ -40,7 +40,7 @@ or assume host scheduling is guest timing.
 | `src/cache.rs` | Cache diagnostic arrays and indexed invalidation; ordinary cache hits/fills pending |
 | `src/dram.rs` | SS-5 DSIMM layout, mirrors and empty-bank behavior |
 | `src/machine.rs` | Bare-metal/reset construction, SS-5/SS-20/Axil profiles, RAM/PROM limits and demo images |
-| `src/topology.rs` | MBus connector, hardware processor and module identities; independent module construction is testable, while production machines remain single-CPU |
+| `src/topology.rs` | MBus connector, hardware processor/module identities, arbitration and run-state enums; independent module construction is testable, while production machines remain single-CPU |
 | `src/main.rs` | CLI parsing, image files, trace printing and CPU step budget |
 | `tests/` | Architectural and boundary behavior through the public library |
 
@@ -62,8 +62,12 @@ It does not perform SS-5 power-on, install a PROM alias or initialize devices.
 The CPU starts with S=PS=1, ET=0, CWP=0, WIM=0, TBR=0 and Y=0. These are
 harness conventions. `Machine::sun4m` installs a raw PROM, console serial and
 NVRAM/RTC, timers and interrupt control, then resets. `Machine::reset` resets
-CPU/MMU, both SCCs, timers, interrupt control and reset/status while
-retaining RAM, ROM, NVRAM/RTC and completed serial output. `sun4m_with_nvram`
+CPU/MMU, both SCCs, timers, interrupt control, the AER, bus-installed MXCC state
+and reset/status while retaining RAM, ROM, NVRAM/RTC and completed serial
+output. `Machine::reset_processor_module(0)` resets only the owned CPU/MMU and
+its MXCC, leaving shared devices, AER, the standalone IOMMU and other modules
+intact. An independently constructed `ProcessorModuleState` resets itself and
+retains its module MID. `sun4m_with_nvram`
 accepts an imported or customized NVRAM device. See [memory.md](docs/memory.md)
 and [devices.md](docs/devices.md) for reset state and platform limits.
 Guest software reset is serviced by the machine owner at a step boundary;
@@ -100,6 +104,33 @@ uses `u64` so later MMU implementations can expose wider physical addresses
 without rewriting device interfaces. The microSPARC-II MMU currently drives
 31 physical address bits. CPU accesses pass through ASI dispatch; the physical
 bus remains responsible only for physical mappings and device access.
+
+Every bus access carries an `AccessContext`: an `Initiator` (`Cpu` with the
+actual `ProcessorModule`, `Dma { master }`, or `Host`) and the actual supervisor
+pin. CPU steps and DMA transfers save the previous context, set their own for
+the complete top-level operation and restore it on success or error. MMU page
+walks, fault capture and nested MXCC stream transfers inherit that context, so
+identity/privilege cannot leak between CPU-0, CPU-2, DMA and debug accesses.
+`Srmmu` stores its owning module identity; `Cpu::reset_sun4m` and
+`use_mmu_config` preserve it. Direct `Bus` calls outside a scoped operation use
+the host/debug baseline (no MBus owner, with the historical supervisor flag for
+direct CPU/MMU helpers); use `SystemBus::with_host_access` for an explicit
+scoped no-CPU debug access. The Sun-4M MID register at `0xfe0002000`
+follows the initiator (8/A, or 0 for DMA/host); the integrated SS-5 register
+keeps fixed MID 8. MXCC port identities are fixed by the addressed physical
+module. See [io-control](docs/io-control.md) and
+[machine profiles](docs/machines.md#processor-arbitration-and-initiator-identity).
+
+Processor arbitration is board state separate from CPU storage and interrupt
+banks. `SystemBus::configure_processor` marks hardware presence; the Sun-4M AER
+provides processor 2's enable, while processor 0 is always enabled. An enabled
+absent MID creates no CPU, and pending interrupts never grant arbitration.
+`processor_arbitration` returns `Absent`/`Disabled`/`Enabled`;
+`ProcessorModuleState::run_state` additionally distinguishes a latched CPU
+error from arbitration denial. These queries are scheduler inputs, not
+instructions: denial must not retire an instruction or synthesize a guest
+trap. AER changes take effect at the next instruction boundary in this
+functional model; hardware parking/indeterminate delay is not modeled.
 
 RAM/ROM mappings are nonempty, word-aligned, nonoverlapping half-open ranges. RAM starts
 at zero; ROM writes fail. Image loading validates the entire destination within

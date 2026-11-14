@@ -1,6 +1,8 @@
 //! Machine-owned physical decoding. Device bytes never pass through RAM's
 //! word-based narrow-access defaults or a speculative read-modify-write.
-use crate::bus::{Bus, BusError, BusErrorKind, IoTlbFlush, MapError, MemoryBus, MemoryRequest};
+use crate::bus::{
+    AccessContext, Bus, BusError, BusErrorKind, IoTlbFlush, MapError, MemoryBus, MemoryRequest,
+};
 use crate::devices::mxcc::MxccState;
 use crate::devices::{
     auxiliary::Auxiliary,
@@ -24,7 +26,7 @@ use crate::devices::{
     timer::Timers,
 };
 use crate::dram::{Ss5Dram, APERTURE_BYTES};
-use crate::topology::ProcessorModule;
+use crate::topology::{ProcessorArbitration, ProcessorModule};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -461,7 +463,8 @@ pub struct SystemBus {
     memory: MemoryBus,
     devices: Option<Sun4mDevices>,
     dram: Option<Ss5Dram>,
-    cpu_user: bool,
+    context: AccessContext,
+    configured_processors: u8,
     prom_cycles: Option<u64>,
     prom_phase: u64,
     cgsix: Option<Cgsix>,
@@ -488,7 +491,8 @@ impl SystemBus {
             memory: MemoryBus::default(),
             devices: None,
             dram: None,
-            cpu_user: false,
+            context: AccessContext::default(),
+            configured_processors: 0x01, // hardware processor 0 / MID 8 boot CPU
             prom_cycles: None,
             prom_phase: 0,
             cgsix: None,
@@ -500,6 +504,100 @@ impl SystemBus {
 
     pub fn layout(&self) -> Sun4mLayout {
         self.layout
+    }
+
+    /// Current bus access attributes. The default is a host/debug baseline
+    /// with no MBus owner; CPU steps and DMA transfers replace it for the
+    /// complete operation and restore it on success or failure.
+    pub fn access_context(&self) -> AccessContext {
+        self.context
+    }
+
+    pub fn set_access_context(&mut self, context: AccessContext) {
+        self.context = context;
+    }
+
+    /// Run a direct host/debug access with an explicit no-CPU identity. The
+    /// previous context is restored even when the closure reports an error.
+    pub fn with_host_access<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.with_access_context(AccessContext::host(), f)
+    }
+
+    /// Scoped access context for CPU/DMA/debug owners. Nested bus calls retain
+    /// the context; the caller's previous attributes are restored afterwards.
+    pub fn with_access_context<R>(
+        &mut self,
+        context: AccessContext,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous = self.context;
+        self.context = context;
+        let result = f(self);
+        self.context = previous;
+        result
+    }
+
+    /// Mark a hardware processor as configured on the board. This is presence
+    /// for arbitration queries, not CPU storage or a scheduler slot.
+    pub fn configure_processor(&mut self, processor: u8) -> bool {
+        let supported = if self.layout.ncr_windows {
+            processor == 0
+        } else {
+            matches!(processor, 0 | 2)
+        };
+        if !supported {
+            return false;
+        }
+        if self.configured_processors & (1 << processor) != 0 {
+            return false;
+        }
+        self.configured_processors |= 1 << processor;
+        true
+    }
+
+    pub fn processor_present(&self, processor: u8) -> bool {
+        processor < 8 && self.configured_processors & (1 << processor) != 0
+    }
+
+    /// Arbitration eligibility from configured presence and the Sun-4M AER.
+    /// Processor 0 needs no enable bit. Enabling an absent MID 9/A/B does not
+    /// create a processor.
+    pub fn processor_arbitration(&self, processor: u8) -> ProcessorArbitration {
+        if !self.processor_present(processor) {
+            return ProcessorArbitration::Absent;
+        }
+        // Processor 0 has no AER enable bit and is the boot master.
+        if processor == 0 {
+            return ProcessorArbitration::Enabled;
+        }
+        let enabled = self
+            .devices
+            .as_ref()
+            .is_some_and(|devices| devices.io_control.processor_arbitration_enabled(processor));
+        if enabled {
+            ProcessorArbitration::Enabled
+        } else {
+            ProcessorArbitration::Disabled
+        }
+    }
+
+    /// Host-side enable/disable transition for an installed processor. Returns
+    /// false for absent modules, processor 0 (always enabled), the integrated
+    /// SS-5 controller, or before the sun4m devices are installed.
+    pub fn set_processor_arbitration(&mut self, processor: u8, enabled: bool) -> bool {
+        if !self.processor_present(processor) {
+            return false;
+        }
+        let Some(devices) = &mut self.devices else {
+            return false;
+        };
+        if !devices
+            .io_control
+            .set_processor_arbitration(processor, enabled)
+        {
+            return false;
+        }
+        self.processor_arbitration(processor).is_enabled() == enabled
     }
 
     pub fn prom_base(&self) -> u64 {
@@ -854,7 +952,7 @@ impl SystemBus {
         for mxcc in &self.mxccs {
             mxcc.state.borrow_mut().reset();
         }
-        self.cpu_user = false;
+        self.context = AccessContext::default();
         self.prom_cycles = None;
         self.prom_phase = 0;
         if let Some(devices) = &mut self.devices {
@@ -1135,8 +1233,12 @@ impl SystemBus {
 }
 
 impl Bus for SystemBus {
-    fn set_cpu_supervisor(&mut self, supervisor: bool) {
-        self.cpu_user = !supervisor;
+    fn access_context(&self) -> AccessContext {
+        self.context
+    }
+
+    fn set_access_context(&mut self, context: AccessContext) {
+        self.context = context;
     }
 
     fn observe_memory_request(&mut self, address: u64, request: MemoryRequest) {
@@ -1148,7 +1250,7 @@ impl Bus for SystemBus {
             if let Some(devices) = &mut self.devices {
                 devices
                     .io_control
-                    .memory_request(address, request, !self.cpu_user);
+                    .memory_request(address, request, self.context.supervisor);
             }
         }
     }
@@ -1161,11 +1263,19 @@ impl Bus for SystemBus {
         {
             return false;
         }
+        let standalone = !self.layout.ncr_windows;
         if let Some(devices) = &mut self.devices {
-            devices
-                .io_control
-                .sbus_write_error(error, bytes, !self.cpu_user);
-            devices.interrupts.latch_module_error();
+            devices.io_control.sbus_write_error(
+                error,
+                bytes,
+                self.context.supervisor,
+                self.context.initiator,
+            );
+            if standalone {
+                devices.interrupts.set_source(Source::MToS, true);
+            } else {
+                devices.interrupts.latch_module_error();
+            }
             true
         } else {
             false
@@ -1594,10 +1704,11 @@ impl Bus for SystemBus {
         }
         if let Some((device, offset)) = self.word_device(address) {
             self.flush_device_time();
+            let initiator = self.context.initiator;
             let devices = self.devices.as_mut().expect("decoded installed device");
             devices.sync_interrupts();
             let result = match device {
-                WordDevice::IoControl => devices.io_control.read(offset),
+                WordDevice::IoControl => devices.io_control.read_for(offset, initiator),
                 WordDevice::Cs4231 => devices.cs4231.read(offset),
                 WordDevice::Ecc => devices.ecc.read(offset),
                 WordDevice::Timer(system, processor) => {
@@ -1734,9 +1845,16 @@ impl Bus for SystemBus {
                     kind: BusErrorKind::Unsupported("masked device word store"),
                 });
             }
+            let release_m_to_s = !self.layout.ncr_windows && offset == 0x1000;
             let devices = self.devices.as_mut().expect("decoded installed device");
             let result = match device {
-                WordDevice::IoControl => devices.io_control.write(offset, value),
+                WordDevice::IoControl => {
+                    let result = devices.io_control.write(offset, value);
+                    if result.is_ok() && release_m_to_s {
+                        devices.interrupts.set_source(Source::MToS, false);
+                    }
+                    result
+                }
                 WordDevice::Cs4231 => devices.cs4231.write(offset, value),
                 WordDevice::Ecc => devices.ecc.write(offset, value),
                 WordDevice::MacioId => Err(BusErrorKind::Unsupported("write to MACIO ID")),

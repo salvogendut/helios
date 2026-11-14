@@ -58,8 +58,8 @@ modules, low slots first.
   and MXCC control at `0xf_f8c0_0a00`; slot 1 is hardware processor 2 with MID
   10 and control at `0xf_fac0_0a00`. The architected port identities are
   `0x08000104` at `0xf_f8ff_fffc` and `0x0a000104` at `0xf_faff_fffc`.
-  Processors 1 and 3 (MIDs 9 and 11) remain absent. The second populated
-  processor (hardware 2) has timer/interrupt banks at
+  Processors 1 and 3 (MIDs 9 and 11) remain absent. When hardware processor 2
+  is explicitly configured, it has timer/interrupt banks at
   `0xff1302000`/`0xff1402000`; the Current Interrupt Target is
   `0xff1410010`. Default machines populate only slot 0, and SS-5 has no MBus
   module entry. A second independent CPU, MMU and MXCC, plus processor-2
@@ -139,6 +139,59 @@ aligned doubleword in an absent control window or in the block containing a
 four-byte port is `Unmapped`, and a misaligned one is `Misaligned`; writes have
 no effects. A doubleword that is fully outside the zero windows uses normal
 memory decoding and remains `Unmapped` in unrelated empty physical space.
+
+### Processor arbitration and initiator identity
+
+Sun-4M section 5.1.2 places processor arbitration in the IOMMU Arbiter Enable
+Register at `0xfe0001008`. Processor 0 (MID 8) is the boot master and has no
+enable bit; the register's bit 0 is read-only one. The reset state enables the
+MID-9 split-requester bit, clears MID-A and MID-B, and clears the SBus enables.
+Helios configures processors 0 and 2 as present only on SS-20/Axil. Processor 2
+(MID A) is present but arbitration-disabled until software sets AER bit 2.
+Processor 1 (MID 9) and processor 3 (MID B) remain absent even when their AER
+bits are set; an enabled absent slot does not create CPU state. SS-5 has no MBus
+module or processor arbitration and retains its fixed integrated MID 8; its AER
+readback is separate and has no processor effect.
+
+The board exposes:
+
+- `SystemBus::configure_processor` / `processor_present` for configured
+  presence, independent of interrupt/timer bank installation.
+- `SystemBus::processor_arbitration` returning `Absent`, `Disabled` or
+  `Enabled` from presence plus the AER bits.
+- `SystemBus::set_processor_arbitration` and the guest AER writes as the
+  transition interface.
+- `ProcessorModuleState::arbitration` / `run_state` for a constructed module.
+  `run_state` distinguishes `Ready`, `ArbitrationDenied`, `CpuError` and
+  `Absent`. Arbitration denial is not a retired instruction, a synthetic trap
+  or CPU error mode; a future scheduler must leave the module unexecuted.
+  `ProcessorModuleState::reset` is an explicit module-local reset, not a run
+  state. A guest firmware spin loop is ordinary guest code.
+
+Pending software, processor-timer and level-15 interrupts do not affect
+arbitration. The processor-2 bank can hold pending state while AER bit 2 is
+clear, and enabling the module is a separate board write.
+
+Bus accesses carry an explicit initiator (`Cpu(module)`, `Dma`, or `Host`) and
+the actual supervisor pin. CPU steps and DMA transfers save, set and restore
+this context; page-table walks, fault capture and nested MXCC stream transfers
+therefore keep the original caller and cannot leak identity or privilege. The
+Sun-4M MID register at `0xfe0002000` returns the initiating module's MID (8 or
+A), or 0 for DMA/direct host/debug. The SS-5 `+0x2000` register remains fixed
+MID 8. MXCC port identity stays fixed per addressed module, while local ASI 2
+uses the executing module and physical MXCC windows use the physical address.
+
+Functional enable/disable timing: an AER write takes effect at the store's
+completion. The next instruction boundary for the affected module observes the
+new eligibility; a transaction already started finishes. Sun-4M describes
+arbitration parking and an indeterminate hardware delay, which is not modeled.
+No device time or scheduler slot is advanced by these transitions in this
+slice. `Machine::reset_processor_module(0)` resets only the owned boot CPU/MMU
+and its MXCC; it retains RAM, shared devices, AER state, the standalone IOMMU
+and independently constructed modules. Whole-machine reset also clears shared
+devices, the AER and the standalone IOMMU. CPU-2 integer state is not yet
+Machine-owned, so only its bus-installed MXCC participates in a whole-machine
+reset; authoritative CPU storage is the next slice.
 
 ## Evidence and limits
 

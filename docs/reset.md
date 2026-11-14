@@ -48,7 +48,11 @@ documented in [fpu.md](fpu.md). Full preservation of cache/TLB RAM and
 physical reset timing are outside this functional model.
 
 `Machine::reset` applies the existing power-on baseline and clears both status
-latches, while retaining the same machine memory and nonvolatile state.
+latches, while retaining the same machine memory and nonvolatile state. It also
+resets the MBus AER, bus-installed MXCC state and the standalone IOMMU.
+`Machine::reset_processor_module(0)` is a narrower module-local reset: it
+resets only the owned boot CPU/MMU and its MXCC, leaving shared devices, the
+AER, the standalone IOMMU, RAM and independently constructed modules intact.
 
 The NCR controller latches IU_ERROR without resetting SBus devices. Helios
 latches WD when a machine step first enters CPU error state. Repeated attempts

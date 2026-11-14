@@ -1,7 +1,80 @@
 //! Word-transparent physical bus. Values are guest bit patterns, never swapped
 //! host integers. Narrow accesses select big-endian byte lanes using shifts.
 
+use crate::topology::ProcessorModule;
 use std::fmt;
+
+/// MBus initiator for one bus access. A CPU identity is the module that issued
+/// the transaction, not the last decoded register or a dense slot index. DMA
+/// transfers use the SBus master number and direct host/debug accesses have no
+/// MBus owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Initiator {
+    Cpu(ProcessorModule),
+    Dma { master: u8 },
+    Host,
+}
+
+impl Initiator {
+    /// Hardware processor number, when a CPU module initiated the access.
+    pub const fn processor(self) -> Option<u8> {
+        match self {
+            Self::Cpu(module) => Some(module.processor),
+            Self::Dma { .. } | Self::Host => None,
+        }
+    }
+
+    /// MBus master ID presented in Sun-4M's MID register. DVMA (0) is the
+    /// documented owner code for device transfers; this model also uses it for
+    /// direct host/debug accesses that have no MBus master.
+    pub const fn mid(self) -> u8 {
+        match self {
+            Self::Cpu(module) => module.mid,
+            Self::Dma { .. } | Self::Host => 0,
+        }
+    }
+}
+
+/// Attributes attached to a bus access. CPU and DMA owners set these around
+/// their complete top-level operation, including nested MXCC stream transfers.
+/// The supervisor flag is the actual CPU pin state, independent of the ASI
+/// privilege used to select a page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AccessContext {
+    pub initiator: Initiator,
+    pub supervisor: bool,
+}
+
+impl AccessContext {
+    pub const fn new(initiator: Initiator, supervisor: bool) -> Self {
+        Self {
+            initiator,
+            supervisor,
+        }
+    }
+
+    pub const fn cpu(module: ProcessorModule, supervisor: bool) -> Self {
+        Self::new(Initiator::Cpu(module), supervisor)
+    }
+
+    pub const fn dma(master: u8) -> Self {
+        Self::new(Initiator::Dma { master }, false)
+    }
+
+    /// Explicit host/debug access: no CPU identity and no CPU privilege.
+    pub const fn host() -> Self {
+        Self::new(Initiator::Host, false)
+    }
+}
+
+impl Default for AccessContext {
+    /// Headless/debug baseline: no MBus owner. The supervisor bit preserves the
+    /// historical attribute expected by direct CPU/MMU helper callers; CPU
+    /// steps and DMA transfers always replace it with their own scoped value.
+    fn default() -> Self {
+        Self::new(Initiator::Host, true)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BusErrorKind {
@@ -93,9 +166,30 @@ fn aligned(address: u64, alignment: u64) -> Result<(), BusError> {
 /// them explicitly: generic read-then-write fallbacks can consume MMIO data before
 /// discovering a write failure. Future concurrent owners must serialize them.
 pub trait Bus {
-    /// CPU pin state for module fault capture, independent of alternate ASI
-    /// permissions. Debugger/raw bus accesses do not issue memory requests.
-    fn set_cpu_supervisor(&mut self, _supervisor: bool) {}
+    /// Current access attributes. Implementations without identity-bearing
+    /// registers may ignore the context.
+    fn access_context(&self) -> AccessContext {
+        AccessContext::default()
+    }
+
+    /// Replace the complete access context. Top-level CPU and DMA owners must
+    /// save and restore it across success and failure; nested bus calls inherit
+    /// it so MXCC stream transfers keep the original initiator.
+    fn set_access_context(&mut self, _context: AccessContext) {}
+
+    fn set_access_initiator(&mut self, initiator: Initiator) {
+        let mut context = self.access_context();
+        context.initiator = initiator;
+        self.set_access_context(context);
+    }
+
+    /// Compatibility spelling for CPU pin state used by existing test and
+    /// headless callers. It changes privilege without changing the initiator.
+    fn set_cpu_supervisor(&mut self, supervisor: bool) {
+        let mut context = self.access_context();
+        context.supervisor = supervisor;
+        self.set_access_context(context);
+    }
 
     fn observe_memory_request(&mut self, _address: u64, _request: MemoryRequest) {}
 

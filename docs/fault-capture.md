@@ -48,23 +48,30 @@ PCR.NF does not suppress an asynchronous error.
 
 | Address | Register | Behavior |
 | --- | --- | --- |
-| `0x10001000` | AFSR | Writable mask `0xff0e0000`; bits 23:20 always read `1000`; read unlocks capture |
-| `0x10001004` | AFAR | Physical address bits 30:0; reading does not unlock capture |
+| `0x10001000` | AFSR | SS-5: fixed MID `1000` at bits 23:20, writable mask `0xff0e0000`, read unlocks. SS-20/Axil: Sun-4M ERR/TO/BERR, MBus SIZ, S, initiating MID, ME, SSIZ, SA and PA<35:32>; reads preserve capture and any write acknowledges |
+| `0x10001004` | AFAR | SS-5: PA<30:0>; SS-20/Axil: PA<31:0> read-only; reads do not unlock capture |
 | `0x10001050` | MFSR | Writable mask `0x8188f8f0`; read unlocks status capture |
 | `0x10001054` | MFAR | Physical address bits 30:0; read unlocks address capture |
 
 Fault registers require aligned word accesses. Rejected widths/atomics do not
-perform destructive reads. Status/address values remain readable after unlock;
-the next eligible capture replaces them. Reset clears writable contents and
-locks; the fixed AFSR nibble remains visible.
+perform destructive reads. SS-5 read-unlock retains the captured values until
+the next eligible request. Standalone AFSR acknowledgement clears the status;
+AFAR retains the address until the next eligible fault. Reset clears capture
+state and locks; SS-5's fixed AFSR nibble remains visible.
 
-AFSR records ERR, TO or BE, S, FAV and SBus SIZE: byte=1, halfword=2, word=0.
-RD is clear for these store errors. While locked, subsequent errors set ME and
-retain the first address/cause. Reading AFSR unlocks the pair. Software can write
-implemented status/address fields for diagnostics; an ERR status write establishes
-the capture lock and a zero ERR clears it. Such writes do not generate interrupts.
-This treatment of diagnostic lock writes is a functional choice; the manual
-specifies writable fields and hardware-error locking but not their interaction.
+For SS-5, AFSR records ERR, TO or BE, S, FAV and SBus SIZE: byte=1,
+halfword=2, word=0, with the fixed integrated MID field. RD is clear for these
+store errors. For SS-20/Axil, AFSR records the Sun-4M ERR/TO/BERR, MBus SIZ, S,
+the initiating module MID, ME, SBus SSIZ, SA<4:0> and PA<35:32>; AFAR holds
+PA<31:0> and is read-only. While locked, subsequent errors set ME and retain
+the first address/cause. On SS-5, reading AFSR unlocks the pair and diagnostic
+writes retain their documented behavior. On SS-20/Axil, AFSR and AFAR reads do
+not unlock; any AFSR write acknowledges and unlocks without synthesizing a
+fault. The standalone error also holds system source bit 29 (M-to-S write
+buffer), separate from ModuleError bit 30, until that AFSR write; it does not
+erase per-CPU level-15 captures. SS-5 diagnostic lock writes and error policy
+remain unchanged. Broader MBus late-error, RMW, burst-size and VME write-buffer
+behavior remains unsupported.
 
 The NCR latches system pending bit 30 (module error), mapped to CPU level 15.
 CPU clear-pending bit 15 (IC) acknowledges it independently of software level 15
@@ -82,7 +89,10 @@ Successful RAM doublewords retain their existing indivisible behavior.
 
 MFSR/MFAR update on CPU and DMA requests to the main-memory aperture, including
 page-table reads and CPU R/M updates. MFAR records the physical request address.
-MFSR captures S, CP, BM, C and request Type:
+MFSR captures S, CP, BM, C and request Type. SS-5 DMA page-table walks and
+target accesses retain the actual CPU S pin and PCR.BM; CP remains zero for
+the integrated I/O request. SS-20/Axil standalone I/O requests use explicit
+device attributes (S=0, CP=0, BM=0, C=0).
 
 | Request | Type |
 | --- | --- |
@@ -90,11 +100,12 @@ MFSR captures S, CP, BM, C and request Type:
 | Byte / halfword / word / doubleword store | `9` / `a` / `b` / `c` |
 
 The CPU drives S from actual PSR.S, independently of alternate-space permissions.
-CP distinguishes CPU requests from I/O requests. BM reflects PCR.BM; C reflects
-the CPU PTE's cacheable bit for translated target accesses and is zero for bypass,
-walks and DMA. Ordinary coherent accesses do not perform cache-line fills; their
-capture type follows the current uncached transfer path. Atomic RAM operations
-record their read followed by their completed write.
+CP distinguishes CPU requests from I/O requests. BM reflects PCR.BM and is also
+retained for SS-5's integrated I/O walk/target capture; the standalone MBus I/O
+path uses BM=0. C reflects the CPU PTE's cacheable bit for translated target
+accesses and is zero for bypass, walks and DMA. Ordinary coherent accesses do not
+perform cache-line fills; their capture type follows the current uncached transfer
+path. Atomic RAM operations record their read followed by their completed write.
 
 `Bus::set_cpu_supervisor` and `observe_memory_request` carry this information
 without making the physical memory decoder infer CPU state. CPU stepping and

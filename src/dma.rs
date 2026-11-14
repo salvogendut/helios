@@ -1,5 +1,5 @@
 //! Single-transfer SBus DVMA interface for future device engines.
-use crate::bus::{Bus, BusError, MemoryRequest, MemoryRequestKind};
+use crate::bus::{AccessContext, Bus, BusError, MemoryRequest, MemoryRequestKind};
 use crate::machine::Machine;
 use crate::mmu::Width;
 use std::fmt;
@@ -163,14 +163,17 @@ impl Machine {
 
     /// Read one naturally aligned byte, halfword or word from guest RAM.
     /// No CPU execution or time advancement; values remain guest bit patterns.
+    /// The complete translation and target access carry the DMA initiator.
     pub fn dma_read(&mut self, master: u8, address: u32, width: Width) -> Result<u32, DmaError> {
-        let physical = self.dma_address(master, address, width, false)?;
-        match width {
-            Width::Byte => self.bus.read8(physical).map(u32::from),
-            Width::Half => self.bus.read16(physical).map(u32::from),
-            Width::Word => self.bus.read32(physical),
-        }
-        .map_err(DmaError::Bus)
+        self.with_dma_context(master, |this| {
+            let physical = this.dma_address(master, address, width, false)?;
+            match width {
+                Width::Byte => this.bus.read8(physical).map(u32::from),
+                Width::Half => this.bus.read16(physical).map(u32::from),
+                Width::Word => this.bus.read32(physical),
+            }
+            .map_err(DmaError::Bus)
+        })
     }
 
     /// Write one transfer. Denied mappings and failed target writes leave RAM
@@ -182,13 +185,27 @@ impl Machine {
         width: Width,
         value: u32,
     ) -> Result<(), DmaError> {
-        let physical = self.dma_address(master, address, width, true)?;
-        match width {
-            Width::Byte => self.bus.write8(physical, value as u8),
-            Width::Half => self.bus.write16(physical, value as u16),
-            Width::Word => self.bus.write32(physical, value),
-        }
-        .map_err(DmaError::Bus)
+        self.with_dma_context(master, |this| {
+            let physical = this.dma_address(master, address, width, true)?;
+            match width {
+                Width::Byte => this.bus.write8(physical, value as u8),
+                Width::Half => this.bus.write16(physical, value as u16),
+                Width::Word => this.bus.write32(physical, value),
+            }
+            .map_err(DmaError::Bus)
+        })
+    }
+
+    fn with_dma_context<T>(
+        &mut self,
+        master: u8,
+        f: impl FnOnce(&mut Self) -> Result<T, DmaError>,
+    ) -> Result<T, DmaError> {
+        let previous = self.bus.access_context();
+        self.bus.set_access_context(AccessContext::dma(master));
+        let result = f(self);
+        self.bus.set_access_context(previous);
+        result
     }
 
     fn dma_address(
@@ -221,8 +238,8 @@ impl Machine {
             self.standalone_iommu = Some(iommu);
             (result?, false)
         } else {
-            // SS-5's integrated CPU/I/O TLB retains the documented CPU pin
-            // attributes and shared invalidations.
+            // The integrated microSPARC-II I/O path records the real CPU S pin
+            // and PCR.BM in MFSR, while CP remains zero for the DMA request.
             self.bus.set_cpu_supervisor(self.cpu.psr() & 0x80 != 0);
             (
                 self.cpu

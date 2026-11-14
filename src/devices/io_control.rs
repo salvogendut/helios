@@ -1,13 +1,20 @@
 //! microSPARC-II SBus/IOMMU controls. See docs/io-control.md.
-use crate::bus::{BusError, BusErrorKind, IoTlbFlush, MemoryRequest};
+use crate::bus::{BusError, BusErrorKind, Initiator, IoTlbFlush, MemoryRequest};
 use crate::dma::{DmaError, DmaFault};
+use crate::topology::ProcessorModule;
 use std::collections::VecDeque;
 
 pub const IO_CONTROL_SIZE: u64 = 0x8000;
 const VERSION: u32 = 0x0400_0000;
+const STANDALONE_VERSION: u32 = 0x1300_0000;
 const BASE_MASK: u32 = 0x07ff_fc00;
 const MBUS_BASE_MASK: u32 = 0xffff_fc00;
 const ARBITRATION_MASK: u32 = 0x003f_0000;
+/// Sun-4M 5.1.2 AER writable bits: processor enables 1:3, SBus slot/onboard
+/// enables 16:20 and bit 31 asynchronous writes. Bit 0 is read-only one;
+/// 15:4 and 30:21 are reserved and read zero.
+const AER_MASK: u32 = 0x801f_000e;
+const AER_PROCESSOR_1: u32 = 1 << 1;
 // microSPARC-II manual table 38: revision 3.0. This is a model choice,
 // independent of the IOCR version, not QEMU's turboSPARC identity.
 const MASK_ID: u32 = 0x3000_0000;
@@ -64,7 +71,14 @@ impl IoControl {
             memory_address_locked: false,
             virtual_address_mask: 0,
             virtual_address_compare: 0,
-            arbiter_enable: 0,
+            // Sun-4M 5.1.2 reset: processor 0 always enabled (bit 0 reads
+            // one), split-requester MID-9 enable set, MID-A/MID-B clear.
+            // The integrated microSPARC-II retains its previous reset value.
+            arbiter_enable: if version == STANDALONE_VERSION {
+                AER_PROCESSOR_1
+            } else {
+                0
+            },
         }
     }
 
@@ -73,15 +87,29 @@ impl IoControl {
     }
 
     pub fn read(&mut self, offset: u64) -> Result<u32, BusErrorKind> {
+        self.read_for(
+            offset,
+            Initiator::Cpu(ProcessorModule::from_processor(0).unwrap()),
+        )
+    }
+
+    /// Read with the actual bus initiator. On the standalone MBus profile the
+    /// MID register at +0x2000 follows the initiating module; the integrated
+    /// SS-5 register keeps its fixed MID 8 identity.
+    pub fn read_for(&mut self, offset: u64, initiator: Initiator) -> Result<u32, BusErrorKind> {
         match offset {
             0 => Ok(self.version | self.control),
             4 => Ok(self.table_base),
             0x1000 => {
-                self.async_locked = false;
-                Ok(self.async_status | 0x0080_0000)
+                if self.version == STANDALONE_VERSION {
+                    Ok(self.async_status)
+                } else {
+                    self.async_locked = false;
+                    Ok(self.async_status | 0x0080_0000)
+                }
             }
             0x1004 => Ok(self.async_address),
-            0x1008 => Ok(self.arbiter_enable | 1), // MBus master 8 always enabled
+            0x1008 => Ok(self.arbiter_enable | 1),
 
             0x1050 => {
                 self.memory_status_locked = false;
@@ -94,7 +122,12 @@ impl IoControl {
             0x1010 | 0x1014 | 0x1018 | 0x101c | 0x1020 => {
                 Ok(self.slots[((offset - 0x1010) / 4) as usize])
             }
-            0x2000 => Ok(self.arbitration | 8), // immutable MID=8
+            0x2000 if self.version == STANDALONE_VERSION => {
+                // Sun-4M 5.4.3: MID of the current MBus master, bits 3:0.
+                Ok(u32::from(initiator.mid() & 0xf))
+            }
+            // Integrated microSPARC-II MID/SBus arbitration register.
+            0x2000 => Ok(self.arbitration | 8),
             0x3018 => Ok(MASK_ID | self.virtual_address_mask),
             0x301c => Ok(self.virtual_address_compare),
             _ => Err(Self::unsupported_register(offset)),
@@ -121,12 +154,21 @@ impl IoControl {
                 }
             }
             4 => self.table_base = value & self.base_mask(),
+            0x1000 if self.version == STANDALONE_VERSION => {
+                // Any write acknowledges the captured M-to-S error; written
+                // bits do not synthesize a fault or re-lock the pair.
+                self.async_status = 0;
+                self.async_locked = false;
+            }
             0x1000 => {
                 self.async_status = value & 0xff0e_0000;
                 self.async_locked = value & (1 << 31) != 0;
             }
+            0x1004 if self.version == STANDALONE_VERSION => {
+                // AFAR is read-only on the standalone IOMMU.
+            }
             0x1004 => self.async_address = value & 0x7fff_ffff,
-            0x1008 => self.arbiter_enable = value & 0x801f_000f,
+            0x1008 => self.arbiter_enable = value & AER_MASK,
             0x1050 => {
                 self.memory_status = value & 0x8188_f8f0;
                 self.memory_status_locked = value & (1 << 31) != 0;
@@ -141,7 +183,12 @@ impl IoControl {
             }
             // Figure 5.23 and the six-master arbiter description agree on
             // bits 21:16; the text's reserved-bit list has an off-by-one typo.
-            0x2000 => self.arbitration = value & ARBITRATION_MASK,
+            // On the standalone Sun-4M MBus the +0x2000 register is the
+            // read-only current-master MID; SBus grants live in the AER.
+            0x2000 if self.version != STANDALONE_VERSION => {
+                self.arbitration = value & ARBITRATION_MASK;
+            }
+            0x2000 => {}
             // Figure 5.30: ID[31:24] read-only, [23:11] reserved,
             // comparison enables/inversions [10:0] writable.
             0x3018 => self.virtual_address_mask = value & 0x7ff,
@@ -149,6 +196,34 @@ impl IoControl {
             _ => return Err(Self::unsupported_register(offset)),
         }
         Ok(())
+    }
+
+    /// AER processor-enable state for a hardware processor number. Processor 0
+    /// has no enable bit and is always enabled; processor 1 is the
+    /// split-requester control; processors 2 and 3 use the MID-A/MID-B bits.
+    pub fn processor_arbitration_enabled(&self, processor: u8) -> bool {
+        match processor {
+            0 => true,
+            1..=3 if self.version == STANDALONE_VERSION => {
+                self.arbiter_enable & (1 << processor) != 0
+            }
+            _ => false,
+        }
+    }
+
+    /// Change an AER processor-enable bit. Processor 0 cannot be disabled and
+    /// the integrated SS-5 controller has no MBus processor arbitration.
+    pub fn set_processor_arbitration(&mut self, processor: u8, enabled: bool) -> bool {
+        if self.version != STANDALONE_VERSION || !matches!(processor, 1..=3) {
+            return false;
+        }
+        let bit = 1 << processor;
+        if enabled {
+            self.arbiter_enable |= bit;
+        } else {
+            self.arbiter_enable &= !bit;
+        }
+        true
     }
 
     pub(crate) fn take_flush(&mut self) -> Option<IoTlbFlush> {
@@ -173,25 +248,52 @@ impl IoControl {
         }
     }
 
-    pub(crate) fn sbus_write_error(&mut self, error: BusError, bytes: u8, supervisor: bool) {
+    pub(crate) fn sbus_write_error(
+        &mut self,
+        error: BusError,
+        bytes: u8,
+        supervisor: bool,
+        initiator: Initiator,
+    ) {
         if self.async_locked {
             self.async_status |= 1 << 19; // retain first address/cause, report multiple errors
             return;
         }
-        let size = match bytes {
-            1 => 1,
-            2 => 2,
-            4 => 0,
-            _ => unreachable!("plain SBus store size"),
-        };
         let cause = match error.kind {
             BusErrorKind::SBusTimeout => 1 << 29,
             BusErrorKind::SBusError => 1 << 28,
             _ => unreachable!("SBus hardware error"),
         };
-        self.async_status =
-            (1 << 31) | cause | (size << 25) | (u32::from(supervisor) << 24) | (1 << 17);
-        self.async_address = error.address as u32 & 0x7fff_ffff;
+        if self.version == STANDALONE_VERSION {
+            // Sun-4M 5.2.1: ERR/LE/TO/BERR, MBus SIZ, S, initiating MID,
+            // ME, RD, SA, SBus SSIZ and PA<35:32>. Plain stores only here.
+            let (mbus_size, sbus_size) = match bytes {
+                1 => (0, 1),
+                2 => (1, 2),
+                4 => (2, 0),
+                _ => unreachable!("plain SBus store size"),
+            };
+            let mid = u32::from(initiator.mid() & 0xf);
+            self.async_status = (1 << 31)
+                | cause
+                | (mbus_size << 25)
+                | (u32::from(supervisor) << 24)
+                | (mid << 20)
+                | (sbus_size << 9)
+                | ((error.address as u32 & 0x1f) << 12)
+                | ((error.address >> 32) as u32 & 0xf);
+            self.async_address = error.address as u32;
+        } else {
+            let size = match bytes {
+                1 => 1,
+                2 => 2,
+                4 => 0,
+                _ => unreachable!("plain SBus store size"),
+            };
+            self.async_status =
+                (1 << 31) | cause | (size << 25) | (u32::from(supervisor) << 24) | (1 << 17);
+            self.async_address = error.address as u32 & 0x7fff_ffff;
+        }
         self.async_locked = true;
     }
 
