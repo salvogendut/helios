@@ -373,3 +373,46 @@ fn single_selected_byte_store_is_direct_not_an_offset_array() {
     assert_eq!(sx.vram_byte(2), 0x5a);
     assert_eq!(sx.vram_byte(0), 0);
 }
+
+#[test]
+fn sx_scanout_generation_ignores_nonvisual_writes_and_retrace_ack() {
+    let mut sx = Sx::new();
+    let key = sx.generation();
+    sx.write(VSIMM_CTL_BASE + 4, 0, u32::MAX).unwrap();
+    sx.write(SX_BASE + 0x1010, 0, u32::MAX).unwrap();
+    sx.write(SX_BASE, 0x1000, u32::MAX).unwrap();
+    sx.advance_ns(14_000_000);
+    assert_eq!(sx.generation(), key);
+    sx.write(VSIMM_CTL_BASE + 0x1100, 4, u32::MAX).unwrap();
+    assert_ne!(sx.generation(), key);
+    let cursor = sx.generation();
+    sx.write(VSIMM_VRAM_BASE, 0x1234_5678, u32::MAX).unwrap();
+    assert_ne!(sx.generation(), cursor);
+}
+
+#[test]
+fn sx_scanout_generation_tracks_visible_tables_modes_and_reset() {
+    let mut sx = Sx::new();
+    let base = sx.generation();
+    sx.write(VSIMM_CTL_BASE, 0x51, u32::MAX).unwrap();
+    assert_ne!(sx.generation(), base);
+    let mode = sx.generation();
+    sx.write(VSIMM_CTL_BASE + 0x4000, 0x0012_3456, u32::MAX)
+        .unwrap();
+    assert_ne!(sx.generation(), mode);
+    let clut = sx.generation();
+    sx.write(VSIMM_CTL_BASE + 0x3000, 0x40, u32::MAX).unwrap();
+    assert_ne!(sx.generation(), clut);
+    let xlut = sx.generation();
+    sx.write(VSIMM_CTL_BASE + 0x3800, 0, u32::MAX).unwrap();
+    assert_eq!(sx.generation(), xlut);
+    sx.write(VSIMM_CTL_BASE + 0xf000, 0x12, u32::MAX).unwrap();
+    assert_ne!(sx.generation(), xlut);
+    let stream = sx.generation();
+    sx.write(VSIMM_CTL_BASE + 0x1000, 0x8000_0000, u32::MAX)
+        .unwrap();
+    assert_ne!(sx.generation(), stream);
+    let cursor = sx.generation();
+    sx.reset();
+    assert_ne!(sx.generation(), cursor);
+}

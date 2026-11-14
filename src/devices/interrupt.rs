@@ -33,6 +33,7 @@ pub struct InterruptController {
     soft: u32,
     mask: u32,
     cpu_timer: bool,
+    levels: u16,
 }
 
 impl Default for InterruptController {
@@ -42,13 +43,17 @@ impl Default for InterruptController {
             soft: 0,
             mask: MASK_BITS,
             cpu_timer: false,
+            levels: 0,
         }
     }
 }
 
 impl InterruptController {
     pub(crate) fn latch_module_error(&mut self) {
-        self.sources |= MODULE_ERROR;
+        if self.sources & MODULE_ERROR == 0 {
+            self.sources |= MODULE_ERROR;
+            self.recompute();
+        }
     }
     pub fn reset(&mut self) {
         *self = Self::default();
@@ -56,11 +61,28 @@ impl InterruptController {
 
     pub fn set_source(&mut self, source: Source, asserted: bool) {
         let bit = 1u32 << source as u8;
-        self.sources = (self.sources & !bit) | if asserted { bit } else { 0 };
+        let sources = (self.sources & !bit) | if asserted { bit } else { 0 };
+        if sources != self.sources {
+            self.sources = sources;
+            self.recompute();
+        }
     }
 
     pub fn set_cpu_timer(&mut self, asserted: bool) {
-        self.cpu_timer = asserted;
+        if asserted != self.cpu_timer {
+            self.cpu_timer = asserted;
+            self.recompute();
+        }
+    }
+
+    fn recompute(&mut self) {
+        self.levels = if self.mask & MASK_ALL != 0 {
+            0
+        } else {
+            Self::hardware_levels(self.sources & !self.mask)
+                | if self.cpu_timer { 1 << 14 } else { 0 }
+                | (self.soft >> 16) as u16
+        };
     }
 
     fn hardware_levels(sources: u32) -> u16 {
@@ -93,12 +115,7 @@ impl InterruptController {
     /// Pending display is independent of masks. Mask All gates delivery,
     /// including software requests (NCR's documented "all interrupts" rule).
     pub fn levels(&self) -> u16 {
-        if self.mask & MASK_ALL != 0 {
-            return 0;
-        }
-        Self::hardware_levels(self.sources & !self.mask)
-            | if self.cpu_timer { 1 << 14 } else { 0 }
-            | (self.soft >> 16) as u16
+        self.levels
     }
 
     pub fn read(&self, system: bool, offset: u64) -> Result<u32, BusErrorKind> {
@@ -123,12 +140,16 @@ impl InterruptController {
     pub fn write(&mut self, system: bool, offset: u64, value: u32) -> Result<(), BusErrorKind> {
         if system {
             match offset {
-                8 => self.mask &= !(value & MASK_BITS),
+                8 => {
+                    self.mask &= !(value & MASK_BITS);
+                    self.recompute();
+                }
                 12 => {
                     self.mask |= value & MASK_BITS;
                     if value & MODULE_ERROR != 0 {
                         self.sources &= !MODULE_ERROR;
                     }
+                    self.recompute();
                 }
                 0 | 4 | 16 => {} // read-only or reserved
                 _ => return Err(BusErrorKind::Unsupported("interrupt register offset")),
@@ -140,8 +161,12 @@ impl InterruptController {
                     if value & (1 << 15) != 0 {
                         self.sources &= !MODULE_ERROR;
                     }
+                    self.recompute();
                 }
-                8 => self.soft |= value & SOFT_BITS,
+                8 => {
+                    self.soft |= value & SOFT_BITS;
+                    self.recompute();
+                }
                 0 | 12 => {}
                 _ => return Err(BusErrorKind::Unsupported("interrupt register offset")),
             }

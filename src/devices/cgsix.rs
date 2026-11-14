@@ -30,6 +30,7 @@ pub struct Cgsix {
     blink_frame: u8,
     vblank_pending: bool,
     generation: u64,
+    scanout_generation: u64,
 }
 
 impl Cgsix {
@@ -62,6 +63,7 @@ impl Cgsix {
             blink_frame: 0,
             vblank_pending: false,
             generation: 0,
+            scanout_generation: 0,
         })
     }
     pub fn reset(&mut self) {
@@ -79,12 +81,39 @@ impl Cgsix {
         self.blink_frame = 0;
         self.vblank_pending = false;
         self.generation = self.generation.wrapping_add(1);
+        self.scanout_generation = self.scanout_generation.wrapping_add(1);
     }
     pub fn generation(&self) -> u64 {
         self.generation
     }
     pub fn scanout_key(&self) -> u64 {
-        (u64::from(self.blink_frame) << 32) ^ self.generation
+        let blink = u64::from(self.enabled() && self.blink_affects_scanout() && self.blink_off());
+        (self.scanout_generation << 1) | blink
+    }
+    fn blink_off(&self) -> bool {
+        let command = self.dac_control[2];
+        let (on, period) = match (command >> 4) & 3 {
+            0 => (16, 64),
+            1 => (16, 32),
+            2 => (32, 64),
+            _ => (64, 128),
+        };
+        self.blink_frame % period >= on
+    }
+    fn blink_affects_scanout(&self) -> bool {
+        self.dac_control[1] != 0 || (self.dac_control[2] >> 2) & 3 != 0
+    }
+    fn invalidate_scanout(&mut self) {
+        self.scanout_generation = self.scanout_generation.wrapping_add(1);
+    }
+    fn register_affects_scanout(&self, offset: u64) -> bool {
+        match offset {
+            0x200004 | 0x20000c => true,
+            0x200008 => (4..8).contains(&self.dac_address),
+            0x301818 => true,
+            0x3018fc | 0x301900..=0x3019fc => true,
+            _ => false,
+        }
     }
     pub fn enabled(&self) -> bool {
         self.thc[6] & 0x400 != 0
@@ -170,7 +199,11 @@ impl Cgsix {
         }
         if (VRAM_OFFSET..VRAM_OFFSET + VRAM_BYTES as u64).contains(&offset) {
             let word = &mut self.vram[(offset - VRAM_OFFSET) as usize / 4];
-            *word = (*word & !mask) | (value & mask);
+            let next = (*word & !mask) | (value & mask);
+            if next != *word {
+                *word = next;
+                self.invalidate_scanout();
+            }
             self.generation = self.generation.wrapping_add(1);
             return Ok(());
         }
@@ -180,7 +213,13 @@ impl Cgsix {
         if mask != u32::MAX {
             return Err(BusErrorKind::Unsupported("masked CGsix register access"));
         }
+        let enabled = self.enabled();
         self.write_register(offset, value)?;
+        if self.register_affects_scanout(offset)
+            && (offset != 0x301818 || self.enabled() != enabled)
+        {
+            self.invalidate_scanout();
+        }
         self.generation = self.generation.wrapping_add(1);
         Ok(())
     }
@@ -418,6 +457,7 @@ impl Cgsix {
             self.fbc[coord / 4] = self.fbc[coord / 4].wrapping_add(self.fbc[inc / 4]);
         }
         self.fbc[0x1c / 4] = value;
+        self.invalidate_scanout();
         Ok(())
     }
 
@@ -513,6 +553,7 @@ impl Cgsix {
             self.draw_polygon(&points, overlapping)?;
         }
         self.generation = self.generation.wrapping_add(1);
+        self.invalidate_scanout();
         Ok(())
     }
 
@@ -658,6 +699,7 @@ impl Cgsix {
             }
         }
         self.generation = self.generation.wrapping_add(1);
+        self.invalidate_scanout();
         Ok(())
     }
 }

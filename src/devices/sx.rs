@@ -140,12 +140,21 @@ impl Sx {
 
     pub fn reset(&mut self) {
         let trace = self.trace;
+        let generation = self.generation.wrapping_add(1);
         *self = Self::new();
         self.trace = trace;
+        self.generation = generation;
     }
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+    fn control_affects_scanout(offset: usize, bytes: usize) -> bool {
+        let end = offset.saturating_add(bytes);
+        (offset == 0 && end > 0)
+            || offset < 0x1110 && end > 0x1000
+            || offset < 0x3100 && end > 0x3000
+            || offset < 0x7000 && end > 0x4000
     }
     pub fn set_trace(&mut self, trace: bool) {
         self.trace = trace;
@@ -475,8 +484,6 @@ impl Sx {
                     self.error = saved_error;
                     self.status = saved_status;
                     self.rop_control = saved_rop;
-                } else {
-                    self.generation = self.generation.wrapping_add(1);
                 }
                 return result;
             }
@@ -838,21 +845,21 @@ impl Sx {
                 eprintln!("SX REG {offset:#06x} <- {value:#010x} mask {mask:#010x}");
             }
             self.write_sx(offset, value, mask)?;
-            self.generation = self.generation.wrapping_add(1);
             return Ok(());
         }
         if (VSIMM_CTL_BASE..VSIMM_CTL_BASE + VSIMM_CTL_SIZE).contains(&address) {
             let offset = (address - VSIMM_CTL_BASE) as usize;
             if offset == 4 {
                 self.retrace_pending = false;
-                self.generation = self.generation.wrapping_add(1);
                 return Ok(());
             }
             if self.table_stream(offset, value, mask) {
                 if self.trace {
                     eprintln!("CG14 STREAM {offset:#06x} <- {value:#010x} mask {mask:#010x}");
                 }
-                self.generation = self.generation.wrapping_add(1);
+                if offset == 0xf000 {
+                    self.generation = self.generation.wrapping_add(1);
+                }
                 return Ok(());
             }
             Self::write_bytes(&mut self.control[..], offset, value, mask);
@@ -868,7 +875,10 @@ impl Sx {
             {
                 eprintln!("CG14 REG {offset:#06x} <- {value:#010x} mask {mask:#010x}");
             }
-            self.generation = self.generation.wrapping_add(1);
+            let bytes = mask.count_ones().div_ceil(8) as usize;
+            if Self::control_affects_scanout(offset, bytes) {
+                self.generation = self.generation.wrapping_add(1);
+            }
             return Ok(());
         }
         Err(BusErrorKind::Unmapped)

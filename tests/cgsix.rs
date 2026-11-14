@@ -815,3 +815,90 @@ fn ss20_cgsix_card_uses_sbus_slot_two() {
     assert_eq!(SS20_CGSIX_BASE, 0xe_2000_0000);
     assert_eq!(b.read32(SS20_CGSIX_BASE).unwrap(), 0xfd03_1234);
 }
+
+#[test]
+fn scanout_key_ignores_retrace_and_nonvisual_registers_without_blink() {
+    let mut b = bus();
+    let key = b.cgsix().unwrap().scanout_key();
+    b.advance_ns(240_000_000);
+    assert_eq!(b.cgsix().unwrap().scanout_key(), key);
+    reg(&mut b, 0, 0);
+    assert_eq!(b.cgsix().unwrap().scanout_key(), key);
+    b.write32(THC + 0x818, 0x400).unwrap();
+    let enabled = b.cgsix().unwrap().scanout_key();
+    b.write32(THC + 0x818, 0x410).unwrap();
+    assert_eq!(b.cgsix().unwrap().scanout_key(), enabled);
+    b.write32(VRAM, 0x12345678).unwrap();
+    assert_ne!(b.cgsix().unwrap().scanout_key(), enabled);
+}
+
+#[test]
+fn scanout_key_and_pixels_track_visible_blink_only_when_enabled() {
+    let mut b = bus();
+    b.write32(THC + 0x818, 0x400).unwrap();
+    rgb(&mut b, 1, [255, 0, 0], false);
+    b.write32(VRAM, 0x01000000).unwrap();
+    control(&mut b, 5, 0xff);
+    let mut pixels = vec![0; WIDTH * HEIGHT];
+    b.cgsix().unwrap().pixels(&mut pixels);
+    assert_eq!(pixels[0], 0x00ff_0000);
+    let key = b.cgsix().unwrap().scanout_key();
+    b.advance_ns(240_000_000);
+    let phase = b.cgsix().unwrap().scanout_key();
+    assert_ne!(phase, key);
+    b.cgsix().unwrap().pixels(&mut pixels);
+    assert_eq!(pixels[0], 0);
+    b.advance_ns(1_000_000);
+    assert_eq!(b.cgsix().unwrap().scanout_key(), phase);
+    b.cgsix().unwrap().pixels(&mut pixels);
+    assert_eq!(pixels[0], 0);
+}
+
+#[test]
+fn scanout_key_and_pixels_track_cursor_blink_when_enabled() {
+    let mut b = bus();
+    b.write32(THC + 0x818, 0x400).unwrap();
+    rgb(&mut b, 1, [0, 255, 0], true);
+    b.write32(THC + 0x8fc, 0).unwrap();
+    b.write32(THC + 0x900, 0x8000_0000).unwrap();
+    control(&mut b, 6, 0x47);
+    let mut pixels = vec![0; WIDTH * HEIGHT];
+    b.cgsix().unwrap().pixels(&mut pixels);
+    assert_eq!(pixels[0], 0x0000_ff00);
+    let key = b.cgsix().unwrap().scanout_key();
+    b.advance_ns(240_000_000);
+    assert_ne!(b.cgsix().unwrap().scanout_key(), key);
+    b.cgsix().unwrap().pixels(&mut pixels);
+    assert_eq!(pixels[0], 0);
+}
+
+#[test]
+fn scanout_key_tracks_cursor_and_palette_writes() {
+    let mut b = bus();
+    let key = b.cgsix().unwrap().scanout_key();
+    b.write32(THC + 0x8fc, 0).unwrap();
+    assert_ne!(b.cgsix().unwrap().scanout_key(), key);
+    let cursor = b.cgsix().unwrap().scanout_key();
+    rgb(&mut b, 1, [1, 2, 3], false);
+    assert_ne!(b.cgsix().unwrap().scanout_key(), cursor);
+}
+
+#[test]
+fn scanout_key_tracks_draw_font_and_blit_operations() {
+    let mut b = bus();
+    drawing(&mut b);
+    let key = b.cgsix().unwrap().scanout_key();
+    reg(&mut b, 0x1c, 0x8000_0000);
+    assert_ne!(b.cgsix().unwrap().scanout_key(), key);
+    let font = b.cgsix().unwrap().scanout_key();
+    assert_eq!(b.read32(FBC + 0x18).unwrap(), 0);
+    assert_ne!(b.cgsix().unwrap().scanout_key(), font);
+}
+
+#[test]
+fn cgsix_reset_invalidates_the_scanout_key() {
+    let mut c = Cgsix::new(&[0; 32768]).unwrap();
+    let key = c.scanout_key();
+    c.reset();
+    assert_ne!(c.scanout_key(), key);
+}
