@@ -43,6 +43,7 @@
 - [First performance slice review](performance-slice-review.md) — confirmed fixed-work benchmark errors, mismatched scanout measurement phases, 59 focused tests and the next frontend acceptance work.
 - [Corrected performance and event-loop review](performance-event-loop-review.md) — three review findings resolved; 63 focused tests, benchmark boundaries and guest-visible OBP capture/release/focus-loss acceptance pass; first performance slice ready to commit.
 - [MMU performance review](performance-mmu-review.md) — diagnostic cache behavior checked against the previous core; eight regressions promoted, per-phase counters corrected and final 514/516-test validation complete.
+- [SS-20/Axil SMP implementation handoff](smp-plan.md) — issue #2: two-module topology, CPU/MMU/MXCC ownership, startup arbitration, interrupts/timers, shared time and DMA; ordered implementation slices and original-OBP/Solaris acceptance gates.
 - [SS-20/Axil disk and CG14 review](ss20-axil-disk-cg14-review.md) — reproduced CPU identity boot blocker, native CG14 mapping failure and working prompt experiment, Heliacal selection, and remaining MMU/MXCC work.
 - [Solaris first-panic follow-up](ss20-solaris-panic.md) — confirmed wrong PFN from the segment-probe shortcut, MXCC completion wait, tested patches, and the next page-list alignment fault.
 - [Page-color MXCC alias](ss20-page-color-mxcc-alias.md) — physical MXCC control alias, shared ASI-2/physical state, userland checkpoint, and cloned-disk device migration.
