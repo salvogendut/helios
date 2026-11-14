@@ -1,5 +1,7 @@
 # Agent notes
 
+- [SMP slice 4](smp-slice4.md) — original two-CPU SS-20/Axil OBP prompts, experimental Heliacal CPU selection, and the Solaris SMP work order.
+
 - [build-environment.md](build-environment.md) — howto: reuse the local Prismatic Rust toolchain.
 - [trap-state.md](trap-state.md) — rule: follow V8 state-register and error-mode rules when references differ.
 - [memory-system.md](memory-system.md) — reference: microSPARC-II ASI/SRMMU rules and QEMU differences.

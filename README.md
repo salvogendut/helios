@@ -41,6 +41,12 @@ POST/cache accuracy, a SuperSPARC pipeline model and multiprocessor MBus
 remain incomplete. See
 [machine profiles](docs/machines.md).
 
+The deterministic two-CPU scheduler now runs both original SS-20 and Axil
+ROMs to a responsive serial `ok`; their banners identify two processors.
+Heliacal's experimental CPU selector preserves one or two CPUs in named
+machines. These results establish firmware startup, not two-CPU Solaris
+support. Four CPUs require dual-CPU MBus modules, which are not implemented.
+
 The optional **graphical console** runs the original TurboGX FCode ROM and
 Sun Type 5 keyboard protocol. SS-20 can also use its native SX/CG14 console.
 With 128 MiB RAM, OBP displays its banner and `ok` prompt; keyboard Stop-A

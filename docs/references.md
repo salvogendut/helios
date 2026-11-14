@@ -250,11 +250,21 @@ encoding; its configurable host geometry does not define Helios's raw target.
   section A.4.3.3 defines ASI `0x5`/`0x6` I/D-TLB diagnostic access;
   sections A.6.2/A.6.4 define data-cache tag diagnostics; the MMU/MXCC and
   store-buffer diagnostic spaces used by POST are retained or accepted.
-- [SPARCstation 20 Service Manual, 801-6189-11](https://docs.oracle.com/cd/E19127-01/sparc20.ws/801-6189-12/801-6189-12.pdf),
+- [SPARCstation 20 Service Manual, 801-6189-12](https://docs.oracle.com/cd/E19127-01/sparc20.ws/801-6189-12/801-6189-12.pdf),
   July 1996: table 4-4 and section 4 give the eight 64 MiB DSIMM bank addresses,
   VSIMM locations and POST test list. The [System Handbook memory
   page](https://dogemicrosystems.ca/pub/Sun/System_Handbook/Sun_syshbk_V3.4/Devices/Memory/MEM_SS20.html)
   independently lists the same bank ranges.
+- The same service manual, table 12-1 (printed page 184), lists SM52 dual
+  SuperSPARC and HS12 dual hyperSPARC modules; appendix B lists two MBus
+  slots. [Sun's MBus module installation guide](https://docs.oracle.com/cd/E19957-01/802-2566-11/install.chapter3.html),
+  "Installing the Second Module", requires compatible matching modules and
+  describes checking the processor banner and `module-info`. This supports
+  a four-CPU hardware ceiling via two dual modules, not four single modules.
+  The owner confirmed on 2026-11-14 that Axil 320 takes the same modules;
+  this is user-supplied Axil compatibility evidence, not a separate vendor
+  manual or four-CPU emulation result. Helios currently models only one or
+  two single-CPU modules.
 - [Platform Notes: SPARCstation 10SX and SPARCstation 20](https://docs.oracle.com/cd/E19620-01/805-4450/z40001b78d3/index.html)
   and the [SPARCstation 20 System Configuration Guide](https://docs.oracle.com/cd/E19127-01/sparc10.ws/806-2222-10/806-2222-10.pdf)
   describe the alternating physical slot order and 64 MiB per-slot aperture.

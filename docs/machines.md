@@ -26,6 +26,15 @@ modules, low slots first.
 
 ## SS-20/Axil implementation
 
+Both boards have two MBus module slots. Up to four hardware CPUs require two
+compatible dual-CPU modules; the SS-20 service manual lists SM52 and HS12 dual
+modules (table 12-1), and the project owner confirms Axil accepts the same
+modules. The currently emulated configurations are one or two identical
+single-CPU modules. Four-CPU topology, its CPU/module ownership and identities,
+and compatible dual-module models still need implementation and validation;
+increasing a frontend count alone would not model that hardware. See
+[references](references.md) for the module manuals.
+
 - The high sun4m map places the IOMMU at `0xfe0000000`, SLAVIO at
   `0xff0000000` (PROM, keyboard, TTYA/B, NVRAM, floppy, timers, interrupt
   controllers and reset/status), and SCSI/Ethernet MACIO at `0xef...`.
@@ -63,10 +72,14 @@ modules, low slots first.
   `0xff1302000`/`0xff1402000`; the Current Interrupt Target is
   `0xff1410010`. Default machines populate only slot 0, and SS-5 has no MBus
   module entry. `Machine::with_profile_processors` constructs one or two
-  independently owned modules for synthetic tests; the second module has its
+  independently owned modules; the second module has its
   own CPU, MMU, FPU and MXCC and starts arbitration-disabled. SS-5 rejects two
-  processors. Production constructors and firmware boots still use one CPU;
-  there is no original-OBP startup protocol or two-CPU OS boot yet.
+  processors. Default constructors and the core CLI still use one CPU.
+  Original SS-20 2.25R and Axil 2.19 ROMs identify both CPUs and reach a
+  responsive serial `ok` with `step_scheduled`, including the firmware's
+  startup reset. Two-CPU Solaris boot is not yet accepted. Heliacal's
+  experimental CPU selection uses this scheduler on one worker; changing
+  count requires cold replacement, not live insertion.
 - Empty CPU timer/interrupt slots and unpopulated VSIMM probe windows return
   zero and discard writes, matching an unpopulated machine. The populated
   SS-20 SX/VSIMM windows route to the device before these empty-slot defaults.

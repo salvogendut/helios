@@ -1,12 +1,13 @@
 # SS-20 and Axil 320 SMP implementation handoff
 
 2026-11-14. Issue: [helios#2](https://github.com/salvogendut/helios/issues/2).
-Branch: `feat/sun4m-smp`. This is a design and implementation work order;
-end-to-end SMP has not been implemented or accepted. Slices 1, 2A and 2B are
-merged to `main` through `27c582e`. Slice 2C's initiator/arbitration and fault
-handling are independently accepted on this feature branch; production
-machines remain single-CPU. Continue with [slice 3](smp-slice3.md), with
-review between slices. Issue #2 remains open.
+Branch: `feat/sun4m-smp-startup`, from `4e6ab81`. Slices 1 through 3 are
+reviewed, merged and pushed to `main`. The accepted slice-3 tree has 601
+normal / 603 feature tests and retains single-CPU Solaris boot compatibility.
+Original SS-20 and Axil firmware now identifies two CPUs and reaches a
+responsive serial prompt in a disk-free probe on that unchanged core.
+Continue with [slice 4](smp-slice4.md); two-CPU Solaris and desktop acceptance
+remain open. Issue #2 remains open.
 
 ## Scope and baseline
 
@@ -18,7 +19,7 @@ execution are separate work. The first SMP implementation should run on one
 host thread with deterministic guest scheduling. SMP guest support does not
 by itself promise higher emulation throughput.
 
-Reviewed bases:
+Original investigation bases (historical):
 
 - Helios `3875ba670d52b5231b35eadf9a39848b2fd95658`, on `main`.
 - Heliacal `95b6e100e85322f2fff16503da2596653cde9aa2`, on `main`.
@@ -253,7 +254,13 @@ successive long boots without new evidence.
 
 ### 5. Heliacal and final acceptance
 
-Add a CPU-count setting to machine definitions and F9 editing/selection.
+The user requested CPU selection ahead of Solaris bring-up. Heliacal branch
+`feat/cpu-selection` implements this part now, against the merged slice-3 core;
+it labels two CPUs experimental. Keep this work when testing slice 4 and do
+not recreate a separate frontend scheduler. The remaining desktop acceptance
+below still follows Solaris SMP boot.
+
+CPU count belongs in machine definitions and F9 editing/selection.
 Existing files must deserialize to one CPU. Preserve named-machine ROM,
 NVRAM, disks, graphics and network settings; validate model/count combinations
 before launching a worker. Changing topology requires rebuilding the machine,
