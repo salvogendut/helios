@@ -1,9 +1,9 @@
 # SMP slice 2B review — 2026-11-14
 
-Status: **slice 2B independently accepted for a feature-branch commit**, based
-on `d799ac2`. Both correctness findings are resolved. Production execution
-remains single-CPU; this does not complete issue #2 or the two-CPU acceptance
-gates.
+Status: **slice 2B independently accepted at `4555aa2` and user-approved for
+an incremental merge to `main` on 2026-11-14**, based on `d799ac2`. Both
+correctness findings are resolved. Production execution remains single-CPU;
+this does not complete issue #2 or the two-CPU acceptance gates.
 
 ## Final acceptance
 
