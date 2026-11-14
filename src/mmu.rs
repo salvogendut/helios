@@ -276,9 +276,45 @@ impl FastTlb {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Opt-in aggregate translation counters. Disabled unless the `perf-counters`
+/// Cargo feature is enabled; normal builds contain no counter state or updates.
+#[cfg(feature = "perf-counters")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TranslationCounters {
+    /// Translated CPU instruction accesses. Boot-PROM mapping, physical
+    /// bypass and disabled-MMU accesses are excluded; this is not a retired
+    /// instruction count.
+    pub instruction_requests: u64,
+    /// Translated CPU data accesses, with the same exclusions.
+    pub data_requests: u64,
+    /// Combined instruction/data hits in the host translation caches.
+    pub fast_hits: u64,
+    /// Combined instruction/data hits found by the full architectural TLB
+    /// search after a host-cache miss.
+    pub tlb_hits: u64,
+    /// Combined instruction/data page-table walks after both cache and TLB
+    /// searches missed.
+    pub walks: u64,
+    /// Calls to the shared TLB insertion path, including empty-slot and I/O
+    /// fills; not only eviction of valid CPU entries.
+    pub replacements: u64,
+    /// CPU and I/O TLB invalidation operations.
+    pub flushes: u64,
+    /// Executions of the diagnostic fill path, not HashMap writes or changed
+    /// diagnostic words.
+    pub diagnostic_updates: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DiagViewCache {
+    filled: [bool; 3],
+}
+
+#[derive(Clone, Debug)]
 pub struct Srmmu {
     config: MmuConfig,
+    #[cfg(feature = "perf-counters")]
+    counters: TranslationCounters,
     control: u32,
     context_table: u32,
     context: u32,
@@ -308,13 +344,48 @@ pub struct Srmmu {
     itlb_ptp2: Option<(u32, u32)>,
     dtlb_ptp2: [Option<(u32, u32)>; 4],
     dtlb_ptp2_next: usize,
+    diag_view_cache: [DiagViewCache; 64],
 }
+
+impl PartialEq for Srmmu {
+    fn eq(&self, other: &Self) -> bool {
+        self.config == other.config
+            && self.control == other.control
+            && self.context_table == other.context_table
+            && self.context == other.context
+            && self.fault_status == other.fault_status
+            && self.fault_address == other.fault_address
+            && self.tlb == other.tlb
+            && self.tlb_generation == other.tlb_generation
+            && self.tlb_diagnostic == other.tlb_diagnostic
+            && self.fast_instruction == other.fast_instruction
+            && self.fast_data == other.fast_data
+            && self.trcr == other.trcr
+            && self.caches == other.caches
+            && self.breakpoints == other.breakpoints
+            && self.counter_value == other.counter_value
+            && self.counter_control == other.counter_control
+            && self.counter_status == other.counter_status
+            && self.breakpoint_action == other.breakpoint_action
+            && self.mxcc == other.mxcc
+            && self.itlb_diag == other.itlb_diag
+            && self.dtlb_diag == other.dtlb_diag
+            && self.itlb_ptp2 == other.itlb_ptp2
+            && self.dtlb_ptp2 == other.dtlb_ptp2
+            && self.dtlb_ptp2_next == other.dtlb_ptp2_next
+            && self.diag_view_cache == other.diag_view_cache
+    }
+}
+
+impl Eq for Srmmu {}
 
 impl Default for Srmmu {
     /// Translation and boot mode disabled, for the bare-metal harness.
     fn default() -> Self {
         Self {
             config: MmuConfig::ss5(),
+            #[cfg(feature = "perf-counters")]
+            counters: TranslationCounters::default(),
             control: 0,
             context_table: 0,
             context: 0,
@@ -339,11 +410,23 @@ impl Default for Srmmu {
             itlb_ptp2: None,
             dtlb_ptp2: [None; 4],
             dtlb_ptp2_next: 0,
+            diag_view_cache: [DiagViewCache::default(); 64],
         }
     }
 }
 
 impl Srmmu {
+    /// Cumulative counters since MMU construction/reset. Subtract snapshots
+    /// within one reset epoch; counters are excluded from MMU equality.
+    #[cfg(feature = "perf-counters")]
+    pub fn translation_counters(&self) -> TranslationCounters {
+        self.counters
+    }
+
+    fn invalidate_diag_view(&mut self) {
+        self.diag_view_cache.fill(DiagViewCache::default());
+    }
+
     fn request(
         &self,
         bus: &mut impl Bus,
@@ -429,6 +512,11 @@ impl Srmmu {
     }
 
     fn flush_matching(&mut self, address: u32) {
+        self.invalidate_diag_view();
+        #[cfg(feature = "perf-counters")]
+        {
+            self.counters.flushes += 1;
+        }
         // Diagnostic entries use the low page index in their tag word (SEL 0).
         // A demap invalidates the cached PTE's V bit, not the whole register.
         let mask = match (address >> 8) & 7 {
@@ -471,6 +559,11 @@ impl Srmmu {
     }
 
     fn flush_context(&mut self) {
+        self.invalidate_diag_view();
+        #[cfg(feature = "perf-counters")]
+        {
+            self.counters.flushes += 1;
+        }
         // SEL 1 carries the tag context; SEL 2's V bit is cleared for the
         // matching entries. Entries of other contexts survive.
         let context = self.context;
@@ -497,6 +590,11 @@ impl Srmmu {
     }
 
     fn flush(&mut self) {
+        self.invalidate_diag_view();
+        #[cfg(feature = "perf-counters")]
+        {
+            self.counters.flushes += 1;
+        }
         for entry in &mut self.tlb {
             entry.upper &= !8;
         }
@@ -520,6 +618,10 @@ impl Srmmu {
     fn sync_io_flushes(&mut self, bus: &mut impl Bus) {
         let mut changed = false;
         while let Some(flush) = bus.take_io_tlb_flush() {
+            #[cfg(feature = "perf-counters")]
+            {
+                self.counters.flushes += 1;
+            }
             for entry in &mut self.tlb {
                 let matches = match flush {
                     IoTlbFlush::All => true,
@@ -554,6 +656,10 @@ impl Srmmu {
             index += 3;
         }
         self.tlb[index] = entry;
+        #[cfg(feature = "perf-counters")]
+        {
+            self.counters.replacements += 1;
+        }
         // Functional scheduling: advance on fills, not on individual CPU clocks.
         if self.trcr & (1 << 6) == 0 {
             self.trcr = (self.trcr & !63) | ((counter + 1) % (limit + 1)) as u32;
@@ -782,6 +888,7 @@ impl Srmmu {
             4 if width == Width::Word => return self.write_register(address, value),
             5 if width == Width::Word && self.config.reference_mmu => {
                 self.write_ptp2(address, value, true);
+                self.invalidate_diag_view();
                 self.itlb_diag.insert(address, value);
                 if (address >> 8) & 7 <= 3 {
                     self.install_diag_entry(address, true);
@@ -791,6 +898,7 @@ impl Srmmu {
             6 if width == Width::Word => {
                 if self.config.reference_mmu {
                     self.write_ptp2(address, value, false);
+                    self.invalidate_diag_view();
                     self.dtlb_diag.insert(address, value);
                     if (address >> 8) & 7 <= 3 {
                         self.install_diag_entry(address, false);
@@ -925,6 +1033,7 @@ impl Srmmu {
             return Ok(());
         }
         if self.config.reference_mmu && matches!(asi, 5 | 6) {
+            self.invalidate_diag_view();
             let table = if asi == 5 {
                 &mut self.itlb_diag
             } else {
@@ -1191,6 +1300,15 @@ impl Srmmu {
         let tag = access.address & 0xfffc_0000;
         let context = entry.context;
         let pte = (entry.pte & !0x40) | 0x20;
+        let values = [tag, context, pte];
+        let mut cached = self.diag_view_cache[index as usize];
+        if values
+            .iter()
+            .zip(cached.filled)
+            .all(|(value, filled)| *value == 0 || filled)
+        {
+            return;
+        }
         let table = &mut self.dtlb_diag;
         Self::diag_fill(table, index << 12, tag);
         Self::diag_fill(table, (index << 12) + 0x100, context);
@@ -1198,6 +1316,16 @@ impl Srmmu {
         Self::diag_fill(table, low, tag);
         Self::diag_fill(table, 0x100 + low, context);
         Self::diag_fill(table, 0x200 + low, pte);
+        // Zero values remain fillable, so only cache views whose fill cannot
+        // be changed by a future ordinary translation.
+        for (value, filled) in values.into_iter().zip(&mut cached.filled) {
+            *filled |= value != 0;
+        }
+        self.diag_view_cache[index as usize] = cached;
+        #[cfg(feature = "perf-counters")]
+        {
+            self.counters.diagnostic_updates += 1;
+        }
     }
 
     /// SuperSPARC II SEL 5/6 expose the cached level-2 PTP and its virtual
@@ -1462,6 +1590,14 @@ impl Srmmu {
                 cacheable: false,
             });
         }
+        #[cfg(feature = "perf-counters")]
+        {
+            if access.instruction() {
+                self.counters.instruction_requests += 1;
+            } else {
+                self.counters.data_requests += 1;
+            }
+        }
         self.check_tlb_diagnostic()?;
         let context = self.context;
         let supervisor = access.supervisor();
@@ -1480,6 +1616,10 @@ impl Srmmu {
                 supervisor,
                 self.config.context_mask,
             ) {
+                #[cfg(feature = "perf-counters")]
+                {
+                    self.counters.fast_hits += 1;
+                }
                 Self::permission(access, entry)?;
                 self.touch(bus, access, &mut entry)?;
                 self.tlb[index] = entry;
@@ -1503,8 +1643,16 @@ impl Srmmu {
             .min_by_key(|(_, entry)| entry.offset_mask)
             .map(|(index, _)| index);
         let mut entry = if let Some(index) = hit {
+            #[cfg(feature = "perf-counters")]
+            {
+                self.counters.tlb_hits += 1;
+            }
             self.tlb[index]
         } else {
+            #[cfg(feature = "perf-counters")]
+            {
+                self.counters.walks += 1;
+            }
             self.walk(bus, access)?
         };
         let ptp2_source = entry;

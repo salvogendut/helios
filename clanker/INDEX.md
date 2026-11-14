@@ -42,6 +42,7 @@
 - [Performance investigation and handoff](performance-plan.md) — measured idle execution, redundant CGsix/CG14 scanout, frontend redraw and MMU/IRQ/DMA costs; ordered optimization plan, correctness gates and artifact cleanup.
 - [First performance slice review](performance-slice-review.md) — confirmed fixed-work benchmark errors, mismatched scanout measurement phases, 59 focused tests and the next frontend acceptance work.
 - [Corrected performance and event-loop review](performance-event-loop-review.md) — three review findings resolved; 63 focused tests, benchmark boundaries and guest-visible OBP capture/release/focus-loss acceptance pass; first performance slice ready to commit.
+- [MMU performance review](performance-mmu-review.md) — diagnostic cache behavior checked against the previous core; eight regressions promoted, per-phase counters corrected and final 514/516-test validation complete.
 - [SS-20/Axil disk and CG14 review](ss20-axil-disk-cg14-review.md) — reproduced CPU identity boot blocker, native CG14 mapping failure and working prompt experiment, Heliacal selection, and remaining MMU/MXCC work.
 - [Solaris first-panic follow-up](ss20-solaris-panic.md) — confirmed wrong PFN from the segment-probe shortcut, MXCC completion wait, tested patches, and the next page-list alignment fault.
 - [Page-color MXCC alias](ss20-page-color-mxcc-alias.md) — physical MXCC control alias, shared ASI-2/physical state, userland checkpoint, and cloned-disk device migration.
@@ -50,6 +51,7 @@
 - [MXCC production follow-up](ss20-mxcc-production-review.md) — four isolated regressions expose recursive stream borrow panics, writable port identity and the missing architected MBus port address at 652d5df.
 - [Native CG14/Xsun review](ss20-sx-xsun-review.md) — SX/PLOT and display regressions, verified text/wrap/scroll, Solaris's mouse startup hold, corrected title-bar hit testing, and the captured packed-load/ROP/masked-store outline failure on a real olwm drag.
 - [SX doubleword queue panic](ss20-sx-std-panic.md) — first-fault correction to the ESP report: paired IQ writes generate a guest bus trap, with CPU/MMU reproduction, fault-atomicity, packed-tail and mask-selected ROP regressions.
+- [SS-5 TRCR investigation](ss5-trcr-investigation.md) — measured page-walk storms, documented WP=0 uncertainty and deliberately unchanged replacement semantics.
 - [Performance progress](performance-progress.md) — measured scanout invalidation and interrupt caching wins; fixed-work benchmark, corrected boot evidence and remaining performance plan items.
 - [SX funnel and move acceptance](ss20-sx-funnel-review.md) — funnel-left opcodes and aligned packed stores; calibrated TERM-A moves accepted at 20/1/2/3 pixels, with remaining resize and Heliacal checks.
 - [Unaligned SX load review](ss20-sx-unaligned-load-review.md) — packed-load lane/ninth-register fix independently verified; 20/1/2/3-pixel moves preserve text, visible window frames and the background, with remaining desktop/frontend/boot acceptance checks.

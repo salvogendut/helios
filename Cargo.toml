@@ -6,6 +6,10 @@ rust-version = "1.74"
 description = "A Sun SPARC workstation emulator, starting with SPARCstation 5"
 publish = false
 
+[features]
+default = []
+perf-counters = []
+
 [lints.rust]
 unsafe_code = "forbid"
 

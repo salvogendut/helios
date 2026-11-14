@@ -87,7 +87,7 @@ claim about a live GPU desktop.
 ## Validation and remaining work
 
 - Core formatting, Clippy with `-D warnings`, and all four demos pass.
-- Core test suite passes with **507 tests**, including the strengthened scanout regressions.
+- Core test suite passes with **514 tests** normally and **516 tests** with `perf-counters`, including the promoted diagnostic-cache regressions.
 - SS-5, SS-20 and Axil serial boot-to-shell, idle measurement and clean halt pass. Axil used its cloned disk and NVRAM.
 - Heliacal `cargo test` (29 tests), SDL smoke test and real-firmware
   `--boot-smoke-test` pass; the real-firmware screenshot was generated.
@@ -99,8 +99,8 @@ claim about a live GPU desktop.
   An actual SDL event run booted with Ctrl+P, captured/typed/clicked, released
   and recaptured with Ctrl+Enter, exercised a window unmap/map focus loss, and
   exited through F12/Left/Return with status 0.
-- Opt-in aggregated counters, a correct ESP/DMA readiness guard, MMU/TLB work,
-  idle parking and decoded execution/JIT evaluation remain.
+- A correct ESP/DMA readiness guard, further MMU/TLB work, idle parking and
+  decoded execution/JIT evaluation remain.
 - Independent review also verified guest-visible typing on diskless SS-20 OBP:
   captured calculations returned `5555`, `5678` and `6789`; released input was
   ignored, focus loss released capture, recapture worked and Quit exited 0.
@@ -108,3 +108,58 @@ claim about a live GPU desktop.
   run. See [the resolved event-loop review](performance-event-loop-review.md)
   and `local/review-performance-2026-11-14/guest-input/` for the asserted
   screenshots, script and output.
+
+## MMU counters and diagnostic-view hotspot
+
+Added the opt-in `perf-counters` feature. With it enabled, `Srmmu` counts
+instruction/data translation requests, fast-cache hits, architectural TLB hits,
+walks, replacements, flushes and diagnostic-view updates. The fields and every
+increment are absent unless the feature is enabled. Counters are plain
+single-owner `u64`s and are reported outside the execution loop by the local
+harness through `Machine::translation_counters()`.
+
+The SS-20/Axil diagnostic view now keeps a bounded 64-entry per-region cache
+for the six documented ASI 5/6 fill slots. A region is skipped only after each
+nonzero tag/context/PTE value has been installed; zero values remain fillable.
+Diagnostic writes, demux flushes and reset invalidate the cache, so guest-visible
+diagnostic state is unchanged.
+
+Counters are cumulative from MMU construction/reset. The following table uses
+fieldwise deltas for the second 204.8M-step `serial_idle_scanout` window, with
+equal instruction counts, traps and interrupts in both variants:
+
+| Counter, 204.8M steps | Cache disabled | Cache enabled | SS-5 |
+| --- | ---: | ---: | ---: |
+| Instruction requests | 204,797,882 | 204,797,882 | 204,797,643 |
+| Data requests | 43,977,446 | 43,977,446 | 45,337,026 |
+| Fast hits | 248,665,530 | 248,665,530 | 137,931,212 |
+| Architectural hits | 101,452 | 101,452 | 227,304 |
+| Walks | 8,346 | 8,346 | 111,976,153 |
+| Replacements | 8,500 | 8,500 | 112,008,165 |
+| Flushes | 154 | 154 | 3,362 |
+| Diagnostic fill-path executions | 43,977,446 | 1,101 | 0 |
+
+The second-window wall medians were 12.484 s before and 10.707 s after. The
+first idle-window medians were 12.464 s and 10.681 s; boot-to-settle medians
+were 68.311 s before and 58.034 s after (15.0% reduction). These figures are
+instrumented-run measurements, not cycle-accurate claims. The SS-5 row is a
+second-window delta; the earlier 768M figure was cumulative through boot and
+must not be used as an idle-walk rate.
+
+A feature-off build was also run three times for the first serial-idle phase:
+11.040, 11.034 and 11.020 s (median 11.034 s). The feature-on median was
+10.681 s under the same host conditions; no counter-overhead regression was
+observed, but this is a host-variable comparison rather than a cycle claim.
+
+Counter units documented on the public API: requests exclude boot-PROM,
+physical-bypass and disabled-MMU accesses; hits/walks combine instruction and
+data; replacements include empty-slot and I/O fills; diagnostic updates count
+fill-path executions, not map writes. Counter snapshots reset with the MMU and
+are excluded from MMU equality.
+
+Build the counters explicitly:
+
+```sh
+cargo build --release --features perf-counters
+cargo test --locked --offline --features perf-counters
+```

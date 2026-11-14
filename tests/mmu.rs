@@ -572,3 +572,25 @@ fn mxcc_stream_completion_reports_ready_and_preserves_36_bit_block_address() {
         0
     );
 }
+
+#[cfg(feature = "perf-counters")]
+#[test]
+fn opt_in_translation_counters_distinguish_walks_hits_and_replacements() {
+    let (mut mmu, mut bus) = fixture();
+    bus.write32(0x8000, 0x1122_3344).unwrap();
+    let before = mmu.translation_counters();
+    assert_eq!(
+        mmu.load(&mut bus, VA, 10, Width::Word).unwrap(),
+        0x1122_3344
+    );
+    let after = mmu.translation_counters();
+    assert_eq!(after.data_requests - before.data_requests, 1);
+    assert_eq!(after.walks - before.walks, 1);
+    assert_eq!(after.replacements - before.replacements, 1);
+    assert_eq!(after.fast_hits, before.fast_hits);
+    assert_eq!(mmu.load(&mut bus, VA + 4, 10, Width::Word).unwrap(), 0);
+    let hit = mmu.translation_counters();
+    assert_eq!(hit.data_requests - after.data_requests, 1);
+    assert_eq!(hit.fast_hits - after.fast_hits, 1);
+    assert_eq!(hit.walks, after.walks);
+}

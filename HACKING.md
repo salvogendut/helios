@@ -276,6 +276,23 @@ A completed reset store advances time before I/O reset and counts as an
 instruction. A request already on the bus is serviced before CPU execution
 without time advancement. Reset counts are additional to instruction totals.
 
+## Optional MMU profiling
+
+Build with `cargo build --release --locked --offline --features perf-counters`
+to expose `Machine::translation_counters()`. Normal builds contain no counter
+state or increments. Take snapshots before and after a measured interval and
+subtract each field; snapshots accumulate since MMU construction/reset, so an
+interval must not cross a reset. Keep reporting outside the execution loop.
+
+Instruction/data requests exclude boot-PROM, physical-bypass and disabled-MMU
+accesses. Hits and walks combine instruction and data accesses; replacements
+include empty-slot and I/O fills. Diagnostic updates count executions of the
+fill path, not changed words. See `TranslationCounters` for field definitions.
+These counters measure emulator work, not hardware cycles or retired guest
+instructions. Validate instrumentation with
+`cargo test --locked --offline --features perf-counters` as well as the normal
+test suite.
+
 ## Validation
 
 ```sh

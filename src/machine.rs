@@ -278,6 +278,13 @@ impl Machine {
         self.bus.remove_sx()
     }
 
+    /// Cumulative counters since MMU construction/reset. This is available
+    /// only with the opt-in `perf-counters` feature.
+    #[cfg(feature = "perf-counters")]
+    pub fn translation_counters(&self) -> crate::mmu::TranslationCounters {
+        self.cpu.mmu.translation_counters()
+    }
+
     pub fn framebuffer_pixels(&self, output: &mut [u32]) -> bool {
         if let Some(card) = self.bus.cgsix() {
             card.pixels(output);
