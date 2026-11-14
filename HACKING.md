@@ -70,12 +70,16 @@ Guest software reset is serviced by the machine owner at a step boundary;
 see [reset.md](docs/reset.md) for retained state, trace outcomes and watchdog limits.
 The machine also installs the microSPARC-II [I/O control subset](docs/io-control.md).
 Its SBus/IOMMU configuration resets with the rest of I/O. `Machine::dma_read`
-and `dma_write` provide aligned single-transfer access to RAM using the shared
-CPU/I/O TLB, without advancing CPU or device time. Ethernet and SCSI DMA use
-the onboard NCR89C100's master 5. Invalid mappings return an SBus error to the requesting
-device; they do not populate CPU fault registers or assert a CPU interrupt.
-The bus queues I/O flush commands for the MMU to consume before its next access,
-including diagnostics. This preserves single ownership without a second IOTLB.
+and `dma_write` provide aligned single-transfer access to RAM without advancing
+CPU or device time. SS-5 uses its integrated CPU/I/O TLB and CPU-derived
+initiator attributes. SS-20/Axil use a board-owned `StandaloneIommu` with its
+own 16-entry LRU cache and 36-bit IOPTE physical form; it does not use either
+CPU's SRMMU context, diagnostic state or translation cache. Ethernet and SCSI
+DMA use the onboard NCR89C100's master 5. Invalid mappings return an SBus error
+to the requesting device; they do not populate CPU fault registers or assert a
+CPU interrupt. SS-5 queues I/O flush commands for its shared MMU; MBus queues
+them for the standalone owner. CPU MMU accesses cannot consume standalone I/O
+invalidations.
 `Machine::ss5` and `ss5_with_nvram` install physical DSIMM banks and are used
 by CLI `boot`. The older `sun4m` constructors retain contiguous RAM for small
 synthetic tests. Firmware probes must use `ss5`; see [dram-tlb.md](docs/dram-tlb.md).

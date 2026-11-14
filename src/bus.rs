@@ -109,6 +109,14 @@ pub trait Bus {
         None
     }
 
+    /// Consume an invalidation intended for a standalone MBus IOMMU. The
+    /// integrated SS-5 CPU/I/O path keeps using `take_io_tlb_flush`; profiles
+    /// with a standalone controller return `None` there so CPU MMU accesses
+    /// cannot steal I/O invalidations.
+    fn take_standalone_io_tlb_flush(&mut self) -> Option<IoTlbFlush> {
+        None
+    }
+
     fn read32(&mut self, address: u64) -> Result<u32, BusError>;
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError>;
     /// The word at the lower address comes first, with no host endian conversion.

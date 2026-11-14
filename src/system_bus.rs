@@ -1172,6 +1172,16 @@ impl Bus for SystemBus {
         }
     }
     fn take_io_tlb_flush(&mut self) -> Option<IoTlbFlush> {
+        if !self.layout.ncr_windows {
+            return None;
+        }
+        self.devices.as_mut()?.io_control.take_flush()
+    }
+
+    fn take_standalone_io_tlb_flush(&mut self) -> Option<IoTlbFlush> {
+        if self.layout.ncr_windows {
+            return None;
+        }
         self.devices.as_mut()?.io_control.take_flush()
     }
 

@@ -1,19 +1,22 @@
 # microSPARC-II IOMMU and SBus DMA
 
-Helios implements IOMMU translation to RAM, shared CPU/I/O TLB entries, I/O
-flushes, SBus arbitration and slot bypass. `Machine::dma_read` and `dma_write`
+Helios implements IOMMU translation to RAM, SS-5 shared CPU/I/O TLB entries,
+SS-20/Axil standalone I/O translation, flushes, SBus arbitration and slot
+bypass. `Machine::dma_read` and `dma_write`
 accept a master number (0–5), a 32-bit DVMA address and byte/halfword/word width.
 Transfers must be naturally aligned. Values remain guest bit patterns; narrow
 accesses use big-endian lanes. These calls do not execute the CPU or advance time.
-The Ethernet engine uses these transfers; SCSI DMA and burst timing remain pending.
+The Ethernet and SCSI engines use these transfers; burst timing remains pending.
 
 The SS-20/Axil profiles map the standalone sun4m IOMMU at `0xfe0000000`
 instead, reporting implementation 1, version 3 (`0x13000000`) and exposing the
-Arbiter Enable Register at `+0x1008`; the register subset, translation and DMA
-rules are otherwise shared. AER bits 16:20 enable SBus slots 0:3 and the
-onboard-F slot; masters 4 and 5 use the onboard-F bit. The original Axil OBP
+Arbiter Enable Register at `+0x1008`. AER bits 16:20 enable SBus slots 0:3 and
+the onboard-F slot; masters 4 and 5 use the onboard-F bit. The original Axil OBP
 uses this register instead of the SS-5 MID/arbitration bits at `+0x2000`.
-See [machine profiles](machines.md).
+Unlike the SS-5 shared CPU/I/O TLB path, the MBus profiles use a dedicated
+`StandaloneIommu` owner with its own 16-entry LRU translation cache and
+invalidation queue. CPU 0 and CPU 2 do not translate or consume I/O entries
+through their SRMMU state. See [machine profiles](machines.md).
 
 The primary source is the microSPARC-II User's Manual revision 1.1, sections
 5.2.1–5.2.5, 5.6.6, 5.7.1–5.7.4, 5.7.7, 5.7.10, 5.8, 5.10, 9.1/9.4 and
@@ -26,9 +29,9 @@ generic sun4m model.
 | Physical address | Register | Implemented behavior |
 | --- | --- | --- |
 | `0x10000000` | I/O MMU control | IMPL=0, VER=4; RANGE bits 4:2 and EN bit 0 writable |
-| `0x10000004` | I/O page-table base | Bits 26:10 writable, representing physical base bits 30:14 |
+| `0x10000004` | I/O page-table base | SS-5: bits 26:10 writable, physical base bits 30:14. SS-20/Axil: bits 31:10 writable, physical base bits 35:14 |
 | `0x10000014` | I/O TLB flush all | Any word write invalidates all I/O entries |
-| `0x10000018` | I/O TLB page flush | Word write invalidates I/O entries matching value[31:12] |
+| `0x10000018` | I/O TLB page flush | SS-5: matching value[31:12]. SS-20/Axil: FA bits 30:12; bit 31 reserved |
 | `0x10001010`–`0x1000101c` | Slot configuration 0–3 | SA30 bit 16, BA8 bit 1, bypass bit 0 writable |
 | `0x10001020` | Shared slot configuration 4 | BA8 bit 1 writable; bypass and SA30 zero |
 | `0x10002000` | MID / SBus arbitration | MID reads 8; six enable bits at 21:16 writable |
@@ -44,12 +47,14 @@ RAM/ROM cannot overlap it. Wider control-space mirrors remain pending.
 ## Translation and ownership
 
 RANGE selects a window of `16 MiB << RANGE` ending at `0xffffffff`. All address
-bits above that window must be one, even on a TLB hit. An IOPTE is a big-endian
-word in a single-level table, with PPN at bits 26:8, writable at bit 2 and valid
-at bit 1. Other bits are ignored. Pages are 4 KiB; physical addresses are 31 bits.
-There are no CPU referenced/modified updates to IOPTEs. I/O translation masks
-PPN bits 26:8 independently of the reference-MMU CPU PTE mask, whose bits 31:28
-are CPU type/access state and would otherwise make a valid IOPTE look like an
+bits above that window must be one, even on a cache hit. An IOPTE is a
+big-endian word in a single-level table, with writable at bit 2 and valid at
+bit 1. Pages are 4 KiB. On SS-5, the microSPARC-II PPN is bits 26:8 and
+physical addresses are 31 bits; on SS-20/Axil, the standalone PPN is bits 31:8
+and physical addresses are 36 bits. Other bits are ignored. There are no CPU
+referenced/modified updates to IOPTEs. The SS-5 path masks PPN bits 26:8
+independently of the reference-MMU CPU PTE mask, whose bits 31:28 are CPU
+type/access state and would otherwise make a valid IOPTE look like an
 out-of-DRAM physical address.
 
 The table has `window_bytes / 1024` bytes. Its address concatenates the high
@@ -57,25 +62,42 @@ IBAR physical-base bits and the DVMA page index times four: base bits within
 the table size are ignored. This matters for larger windows with misaligned
 IBAR values; adding the index to an unmasked base is incorrect.
 
-The CPU's `Srmmu` owns the one 64-entry TLB. I/O entries match virtual page and
-I/O tag, ignoring CPU context and privilege. ASI `06` reads and edits these same
-entries. Normal I/O fills use diagnostic level `111`, upper tag level `000`,
-Valid=1, IO=1 and S=0. Writes require IOPTE.W, including on diagnostic entries.
-With TRCR.IL set, I/O fills use slots 48–63, indexed by the low four counter bits;
-CPU fills use 0–47. With IL clear they share the replacement range. TC freezes
-the counter. Counter advancement on fills is a functional convention, not CPU
-clock timing; [dram-tlb.md](dram-tlb.md) describes WP/PL and reset choices.
+On SS-5, the CPU's `Srmmu` owns one 64-entry integrated CPU/I/O TLB. I/O
+entries match virtual page and I/O tag, ignoring CPU context and privilege.
+ASI `06` reads and edits these same entries. Normal I/O fills use diagnostic
+level `111`, upper tag level `000`, Valid=1, IO=1 and S=0. Writes require
+IOPTE.W, including on diagnostic entries. With TRCR.IL set, I/O fills use slots
+48–63, indexed by the low four counter bits; CPU fills use 0–47. With IL clear
+they share the replacement range. TC freezes the counter. Counter advancement
+on fills is a functional convention, not CPU clock timing;
+[dram-tlb.md](dram-tlb.md) describes WP/PL and reset choices.
+
+On SS-20/Axil, `StandaloneIommu` owns the cache independently of either CPU
+module. Sun-4M section 7.2 specifies 4 KiB pages, IOPTE PPN bits 31:8 (physical
+PA 35:12), C bit 7, W bit 2 and V bit 1, one-level table lookup, 16 LRU
+translation entries and page/all invalidations. The cache has no CPU context,
+fast cache, diagnostic arrays, replacement pointer or referenced/modified
+updates. Bypass slot mappings return their physical address directly. The
+current model still rejects non-DRAM targets. Sun-4M section 5.8.1 defines
+disabled ME as physical pass-through; Helios currently preserves its earlier
+explicit unsupported host stop for disabled non-bypass translation as an
+unimplemented specified mode, not as evidence that pass-through is undefined.
 
 Page-table edits, IBAR/IOCR writes and CPU context changes do not automatically
-invalidate I/O entries. Software must flush stale mappings. I/O flushes clear
-Valid without touching CPU entries, retained tag/PTE contents or the counter.
-The existing conservative CPU flush implementation clears the whole shared TLB.
+invalidate I/O entries. Software must flush stale mappings. On SS-5, I/O flushes
+clear Valid without touching CPU entries, retained tag/PTE contents or the
+counter; the conservative CPU flush clears the whole shared TLB. On MBus, page
+and all invalidations affect only the standalone cache. CPU-local flushes never
+touch the standalone cache or the other CPU module.
 
-`IoControl` belongs to `SystemBus`; it queues flush commands. The bus exposes
-them through `Bus::take_io_tlb_flush`, and `Srmmu` consumes them before its next
-CPU, DMA or diagnostic access. Commands can be coalesced while no TLB access
-intervenes. There is no separate IOTLB or global lock. Machine reset clears
-configuration, pending commands and the shared TLB while retaining RAM.
+`IoControl` belongs to `SystemBus`; it queues flush commands. For SS-5,
+`Bus::take_io_tlb_flush` feeds the integrated `Srmmu`. For SS-20/Axil,
+`Bus::take_io_tlb_flush` deliberately returns nothing and
+`Bus::take_standalone_io_tlb_flush` feeds `StandaloneIommu`, so ordinary CPU
+MMU accesses cannot steal or discard an I/O invalidation. Commands can be
+coalesced while no TLB access intervenes. There is no global lock or shared
+I/O TLB on the MBus path. Machine reset clears IOMMU configuration, pending
+commands, the standalone cache and the SS-5 shared TLB while retaining RAM.
 
 ## Arbitration, bypass and failures
 
@@ -90,10 +112,12 @@ High addresses still use normal IOMMU translation despite slot bypass being set.
 Out-of-range addresses, invalid IOPTEs and write-protected stores return
 `DmaError::Fault` to the initiating device as an SBus error acknowledge. They
 leave target memory unchanged, do not populate CPU SFSR/SFAR and do not raise
-an interrupt themselves. CPU PCR.NF has no effect on DMA errors. A future
-master must report its completion/error status and generate its own interrupt.
-Physical table/target failures retain `BusError` and its physical address;
-`Unsupported` and `WouldBlock` remain emulator stops/backpressure.
+an interrupt themselves. CPU PCR.NF has no effect on DMA errors. Standalone
+I/O translations use explicit device initiator attributes: CPU=0, boot mode=0,
+cacheable=0 and supervisor=0; they do not inherit CPU 0 PSR privilege or boot
+mode. A future master must report its completion/error status and generate its
+own interrupt. Physical table/target failures retain `BusError` and its physical
+address; `Unsupported` and `WouldBlock` remain emulator stops/backpressure.
 
 Unlike QEMU's `iommu_bad_addr`, invalid/protected mappings do not synthesize an
 AFSR late error or a CPU level-15 interrupt. The manual's error table distinguishes
@@ -137,9 +161,14 @@ six-master arbiter description resolve the prose's SBAE reserved-bit typo.
 Tests cover all eight ranges, first/last pages, table-base alignment, lane order,
 permissions, arbitration, bypass, reserved bits, stale mappings, CPU/I/O
 partitioning, diagnostic injection, selective flushes, reset and error isolation.
+Standalone-IOMMU tests additionally cover independent CPU-0/CPU-2 state,
+processor-2 controller access, LRU/page/global stale mappings, CPU accesses
+between a flush and DMA, CPU-local flush isolation, invalid/write-protected
+PTEs, bypass/disabled/reset failures and device-fault separation.
 The original ROM now passes IOCR enable writes and both bus-error diagnostics
 without the previous warning/reset. It then passes floating-point transfers,
 comparisons and arithmetic, then reports a missing processor-timer interrupt.
 See [firmware.md](firmware.md).
 Subsequent auxiliary/floppy work reaches an OBP serial recovery prompt;
-The Ethernet engine is connected through master 5; SCSI DMA remains pending.
+The Ethernet and SCSI engines are connected through master 5. SCSI DMA is
+functional; burst timing remains pending.

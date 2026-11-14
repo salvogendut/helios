@@ -5,8 +5,9 @@ Branch: `feat/sun4m-smp`. This is a design and implementation work order;
 end-to-end SMP has not been implemented or accepted. Slices 1 and 2A are
 independently validated through core revision `a94f0aa` and approved by the
 user for an incremental foundation merge. Production machines remain
-single-CPU. Continue on this branch with [slice 2B](smp-slice2b.md), with
-review between slices; issue #2 remains open.
+single-CPU. Slice 2B's standalone-IOMMU ownership is now separately accepted
+on this branch; continue with [slice 2C](smp-slice2c.md), with review between
+slices. Issue #2 remains open.
 
 ## Scope and baseline
 

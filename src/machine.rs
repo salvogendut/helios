@@ -5,6 +5,7 @@ use crate::bus::{BusError, MapError};
 use crate::cpu::{Cpu, CpuConfig, CpuFault, FaultKind, Step};
 use crate::devices::{cgsix::Cgsix, mxcc::MxccState, nvram::Nvram, sx::Sx};
 use crate::dram::Ss5Dram;
+use crate::iommu::StandaloneIommu;
 use crate::mmu::MmuConfig;
 use crate::system_bus::{Sun4mLayout, SystemBus};
 use crate::topology::{ProcessorModule, ProcessorTopology};
@@ -183,6 +184,7 @@ pub struct Machine {
     pub cpu: Cpu,
     pub bus: SystemBus,
     topology: ProcessorTopology,
+    pub(crate) standalone_iommu: Option<StandaloneIommu>,
 }
 
 impl Machine {
@@ -239,6 +241,7 @@ impl Machine {
             cpu: Cpu::new(0),
             bus,
             topology: profile.processor_topology(1).unwrap(),
+            standalone_iommu: (!profile.layout().ncr_windows).then(StandaloneIommu::default),
         };
         machine.cpu.use_cpu_config(profile.cpu_config());
         machine.cpu.use_mmu_config(profile.mmu());
@@ -307,12 +310,20 @@ impl Machine {
         self.bus.install_processor_banks(processor)
     }
 
+    /// The standalone MBus I/O translation owner, when this profile has one.
+    pub fn standalone_iommu(&self) -> Option<&StandaloneIommu> {
+        self.standalone_iommu.as_ref()
+    }
+
     /// Apply the power-on reset baseline, clearing reset-cause status.
     /// Reset CPU/MMU, timers, interrupt controller and serial. Retain RAM, ROM, NVRAM/RTC and bytes
     /// already transmitted to the host endpoint.
     pub fn reset(&mut self) {
         self.cpu.reset_sun4m();
         self.bus.reset_devices();
+        if let Some(iommu) = &mut self.standalone_iommu {
+            iommu.reset();
+        }
     }
 
     pub fn bare_metal(ram_bytes: usize, entry: u32) -> Result<Self, MachineError> {
@@ -325,6 +336,7 @@ impl Machine {
             cpu: Cpu::new(entry),
             bus,
             topology: ProcessorTopology::empty(),
+            standalone_iommu: None,
         })
     }
 
