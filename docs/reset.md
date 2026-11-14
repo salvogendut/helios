@@ -23,9 +23,12 @@ before any side effect, consistently with other word-only device apertures.
 Adjacent reserved NCR addresses return an SBus error acknowledgement; wider
 register mirroring is not modeled. See [fault capture](fault-capture.md).
 
-`ResetControl` only records a request. `Machine::step` applies it after the
+`ResetControl` only records a request. `Machine::step` and `step_scheduled` apply it after the
 requesting store completes, before the next instruction or interrupt. The store
-advances the normal 100 ns quantum before reset clears timer state. A request
+advances its 100 ns quantum plus any PROM wait before reset clears timer state.
+In the scheduled path this is a whole-system boundary: both processors stop
+at the request, retained RTC/serial state receives the store's completion time,
+and then the CPUs, devices and scheduler reset. A request
 already pending on the physical bus is handled before CPU execution, even if
 the CPU is in error state, and consumes no instruction time. Reset pulse lengths
 and oscillator stabilization delays are not modeled.
@@ -49,10 +52,15 @@ physical reset timing are outside this functional model.
 
 `Machine::reset` applies the existing power-on baseline and clears both status
 latches, while retaining the same machine memory and nonvolatile state. It also
-resets the MBus AER, bus-installed MXCC state and the standalone IOMMU.
-`Machine::reset_processor_module(0)` is a narrower module-local reset: it
-resets only the owned boot CPU/MMU and its MXCC, leaving shared devices, the
-AER, the standalone IOMMU, RAM and independently constructed modules intact.
+resets the MBus AER, bus-installed MXCC state and the standalone IOMMU. A guest
+software reset likewise resets the standalone IOMMU, so an I/O translation
+cached before the restart cannot survive into the next system image.
+`Machine::reset_processor_module(processor)` is a narrower module-local reset:
+it resets only that CPU/MMU and its MXCC, leaving shared devices, the AER, the
+standalone IOMMU, RAM and the other independently constructed module intact.
+In a two-CPU machine, whole-machine reset resets both owned CPUs/MXCCs and the
+shared devices once; module-local reset does not reset the other CPU or the
+scheduler's shared clock.
 
 The NCR controller latches IU_ERROR without resetting SBus devices. Helios
 latches WD when a machine step first enters CPU error state. Repeated attempts

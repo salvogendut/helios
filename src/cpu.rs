@@ -311,6 +311,12 @@ impl Cpu {
     pub fn pc(&self) -> u32 {
         self.pc
     }
+
+    /// Synthetic-test setup only. Guest software changes PC through execution.
+    pub fn set_pc_npc(&mut self, pc: u32, npc: u32) {
+        self.pc = pc;
+        self.npc = npc;
+    }
     pub fn npc(&self) -> u32 {
         self.npc
     }

@@ -62,9 +62,11 @@ modules, low slots first.
   is explicitly configured, it has timer/interrupt banks at
   `0xff1302000`/`0xff1402000`; the Current Interrupt Target is
   `0xff1410010`. Default machines populate only slot 0, and SS-5 has no MBus
-  module entry. A second independent CPU, MMU and MXCC, plus processor-2
-  timer/interrupt banks, can be constructed for focused tests, but there is no
-  scheduler, startup protocol or two-CPU production boot yet.
+  module entry. `Machine::with_profile_processors` constructs one or two
+  independently owned modules for synthetic tests; the second module has its
+  own CPU, MMU, FPU and MXCC and starts arbitration-disabled. SS-5 rejects two
+  processors. Production constructors and firmware boots still use one CPU;
+  there is no original-OBP startup protocol or two-CPU OS boot yet.
 - Empty CPU timer/interrupt slots and unpopulated VSIMM probe windows return
   zero and discard writes, matching an unpopulated machine. The populated
   SS-20 SX/VSIMM windows route to the device before these empty-slot defaults.
@@ -164,7 +166,7 @@ The board exposes:
 - `ProcessorModuleState::arbitration` / `run_state` for a constructed module.
   `run_state` distinguishes `Ready`, `ArbitrationDenied`, `CpuError` and
   `Absent`. Arbitration denial is not a retired instruction, a synthetic trap
-  or CPU error mode; a future scheduler must leave the module unexecuted.
+  or CPU error mode; the deterministic scheduler leaves the module unexecuted.
   `ProcessorModuleState::reset` is an explicit module-local reset, not a run
   state. A guest firmware spin loop is ordinary guest code.
 
@@ -185,13 +187,16 @@ Functional enable/disable timing: an AER write takes effect at the store's
 completion. The next instruction boundary for the affected module observes the
 new eligibility; a transaction already started finishes. Sun-4M describes
 arbitration parking and an indeterminate hardware delay, which is not modeled.
-No device time or scheduler slot is advanced by these transitions in this
-slice. `Machine::reset_processor_module(0)` resets only the owned boot CPU/MMU
-and its MXCC; it retains RAM, shared devices, AER state, the standalone IOMMU
-and independently constructed modules. Whole-machine reset also clears shared
-devices, the AER and the standalone IOMMU. CPU-2 integer state is not yet
-Machine-owned, so only its bus-installed MXCC participates in a whole-machine
-reset; authoritative CPU storage is the next slice.
+AER changes are visible at the next scheduler boundary; no device time is
+consumed by the board-state transition itself. `Machine::step_scheduled`
+selects the earliest eligible CPU deadline, samples that CPU's interrupt bank,
+charges only that CPU for its quantum/wait and advances the shared device clock
+to the next eligible deadline without skipping another CPU's opportunity.
+`Machine::reset_processor_module(processor)` resets only that module's CPU/MMU
+and MXCC and preserves the other module, RAM, shared devices, AER state and the
+standalone IOMMU. Whole-machine reset resets every owned CPU/MXCC and clears
+shared devices, the AER and the standalone IOMMU. CPU-2 storage is
+Machine-owned in the explicit two-module construction.
 
 ## Evidence and limits
 
@@ -216,7 +221,7 @@ unverified. CPU
 identity is profile-specific: SS-5 reports the MB86904 microSPARC-II IU/FPU
 identity, while SS-20 and Axil report SuperSPARC-II IU version 3 and FPU
 version 0. The interpreter and reference MMU remain functional models; there is
-no SuperSPARC pipeline or cache-fill model, MBus SMP scheduling/startup, full
+no SuperSPARC pipeline or cache-fill model, original-OBP two-CPU startup, full
 PTP2 replacement policy, complete SX acceleration, DBRI audio, BPP or Axil
 custom-controller model. CG6/TurboGX cards can be attached through
 `--cgsix-rom`; SS-20/Axil place them in SBus slot 2 at physical

@@ -13,9 +13,11 @@ SS-20/Axil can install a second bank for hardware processor 2, which is the
 second MBus module. Hardware processor numbers are not compact vector indexes:
 processor 2 uses timer/interrupt offsets `+0x2000`, and its timer mode bit is
 bit 2. On SS-20/Axil, banks 1 and 3 remain absent zero windows. Production
-execution still uses processor 0; the second bank is addressable state for
-later SMP work. Standalone timer/controller helpers accept hardware numbers
-0–3; the machine installation API enforces the supported profile population.
+execution still uses one CPU. The explicit two-module scheduler feeds each CPU
+its own bank; each CPU has an independent deadline and the shared device clock
+advances to the earliest next eligible deadline, not once per CPU event.
+Standalone timer/controller helpers accept hardware numbers 0–3; the machine
+installation API enforces the supported profile population.
 
 ## CPU delivery
 
@@ -40,8 +42,11 @@ pipeline exception arbitration and interrupt latency are outside this model.
 
 `Step::InterruptTaken` carries the interrupted PC/nPC, level and vector;
 `Step::TrapTaken` continues to carry a synchronous fault. `Cpu::step` supplies no
-interrupt lines. `Machine::step` supplies the wired controller outputs. The CLI
-counts instructions, synchronous traps and interrupt entries separately.
+interrupt lines. `Machine::step` supplies CPU 0's wired controller outputs.
+For two-CPU synthetic execution, `Machine::step_scheduled` samples the selected
+processor's bank and reports `InterruptTaken` with that hardware processor
+number. The CLI counts instructions, synchronous traps and interrupt entries
+separately.
 
 ## Interrupt controller
 
@@ -222,10 +227,14 @@ and `u64::MAX` seconds.
 
 ## Time and ownership
 
-The machine services one pending Ethernet DMA transfer, samples interrupt lines,
-executes one CPU outcome, then advances devices by a base `STEP_NS = 100` ns
-plus physical PROM read service time. NCR89C105 table 6-10 specifies six SBus
-clocks per byte of the byte-wide PROM. The SS5/85 SBus runs at 21.25 MHz
+The single-CPU machine services one pending Ethernet DMA transfer, samples
+interrupt lines, executes one CPU outcome, then advances devices by a base
+`STEP_NS = 100` ns plus physical PROM read service time. The two-CPU scheduler
+gives each CPU an independent next-ready deadline, selects the earliest one and
+services devices once at that distinct boundary. Only the selected CPU is
+charged its quantum and PROM wait; the shared clock then moves to the earliest
+next eligible deadline, without passing another CPU's earlier opportunity.
+NCR89C105 table 6-10 specifies six SBus clocks per byte of the byte-wide PROM. The SS5/85 SBus runs at 21.25 MHz
 (CPU/4), so a word fetch adds 24 clocks, about 1129.41 ns. Instruction and data
 reads both count, including the reset boot alias; RAM execution adds no PROM
 wait. Fractional nanoseconds carry across accesses. Direct bus inspection does
@@ -283,5 +292,7 @@ phase, mode changes with pending interrupts, forbidden accesses, translated
 write protection and alternate-space doubleword transfers on both populated
 banks. Initial original OBP and OpenBIOS probes are recorded separately.
 Single-CPU original-OBP and Solaris boot evidence is recorded in
-[machines.md](machines.md). No differential reference execution, SMP scheduler
-or two-CPU firmware startup/prompt has been demonstrated.
+[machines.md](machines.md). Synthetic two-CPU scheduler tests cover progress,
+atomic locks, directed IPIs, independent TLB state, timer parity and reset
+isolation. No differential reference execution or two-CPU firmware
+startup/prompt has been demonstrated.

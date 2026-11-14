@@ -90,6 +90,10 @@ The implemented foundation includes:
   translation, access permissions, contexts, fault registers and TLB flush/probe.
 - CPU/MMU reset, boot-mode instruction mapping, SS-20/Axil high-address profiles,
   36-bit reference-MMU aliases, SMC ECC registers and a raw PROM runner.
+- Explicit two-module SS-20/Axil synthetic execution with independently owned
+  CPUs/MMUs/FPUs/MXCCs, deterministic processor-tagged scheduling, directed
+  IPIs, atomic guest locks and one shared device clock. Original-OBP two-CPU
+  startup and two-CPU OS boot remain future work.
 - Z8530 asynchronous polling and receive/transmit/BREAK interrupts, bounded byte queues,
   loopback telnet serial consoles for TTYA/TTYB, and an M48T08 NVRAM/RTC with SS-5
   IDPROM and explicit clock advancement.

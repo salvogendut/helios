@@ -4,6 +4,7 @@
 use crate::bus::{BusError, Initiator, MapError};
 use crate::cpu::{Cpu, CpuConfig, CpuFault, FaultKind, Step};
 use crate::devices::{cgsix::Cgsix, mxcc::MxccState, nvram::Nvram, sx::Sx};
+use crate::dma::DmaError;
 use crate::dram::Ss5Dram;
 use crate::iommu::StandaloneIommu;
 use crate::mmu::MmuConfig;
@@ -70,9 +71,9 @@ impl MachineProfile {
         matches!(self, Self::Ss20)
     }
 
-    /// Validate and select the explicit MBus processor topology. The default
-    /// constructors remain single-CPU; two-module construction is reserved for
-    /// the current topology tests and later scheduler work.
+    /// Validate and select an explicit MBus processor topology. The default
+    /// constructors remain single-CPU; two-module construction is the
+    /// synthetic-test path and does not imply firmware startup support.
     pub fn processor_topology(self, processors: usize) -> Option<ProcessorTopology> {
         match (self, processors) {
             (Self::Ss5, 1) => Some(ProcessorTopology::empty()),
@@ -121,6 +122,7 @@ pub enum MachineError {
     InvalidRamSize,
     InvalidDramSize,
     InvalidPromSize,
+    InvalidProcessorCount,
     Memory(MapError),
 }
 
@@ -132,6 +134,9 @@ impl fmt::Display for MachineError {
             }
             Self::InvalidDramSize => {
                 f.write_str("RAM must fit in eight 8 MiB or 32 MiB DSIMMs (8–256 MiB)")
+            }
+            Self::InvalidProcessorCount => {
+                f.write_str("processor count must be one for SS-5 or one/two for SS-20/Axil")
             }
             Self::Memory(error) => error.fmt(f),
             Self::InvalidPromSize => {
@@ -202,12 +207,220 @@ impl ProcessorModuleState {
     }
 }
 
+/// Per-hardware-processor scheduler accounting. `processor` is the hardware
+/// number (0 or 2), not a compact module-index.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcessorCounters {
+    pub processor: u8,
+    pub instructions: u64,
+    pub traps: u64,
+    pub interrupts: u64,
+    pub errors: u64,
+}
+
+impl ProcessorCounters {
+    const fn new(processor: u8) -> Self {
+        Self {
+            processor,
+            instructions: 0,
+            traps: 0,
+            interrupts: 0,
+            errors: 0,
+        }
+    }
+}
+
+/// Aggregate and per-processor scheduler counters plus shared virtual time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SchedulerStats {
+    pub virtual_ns: u64,
+    pub processor0: ProcessorCounters,
+    pub processor2: ProcessorCounters,
+}
+
+impl Default for SchedulerStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SchedulerStats {
+    fn new() -> Self {
+        Self {
+            virtual_ns: 0,
+            processor0: ProcessorCounters::new(0),
+            processor2: ProcessorCounters::new(2),
+        }
+    }
+
+    pub fn for_processor(&self, processor: u8) -> Option<&ProcessorCounters> {
+        match processor {
+            0 => Some(&self.processor0),
+            2 => Some(&self.processor2),
+            _ => None,
+        }
+    }
+
+    fn counters_mut(&mut self, processor: u8) -> Option<&mut ProcessorCounters> {
+        match processor {
+            0 => Some(&mut self.processor0),
+            2 => Some(&mut self.processor2),
+            _ => None,
+        }
+    }
+
+    pub fn total_instructions(&self) -> u64 {
+        self.processor0.instructions + self.processor2.instructions
+    }
+
+    pub fn total_traps(&self) -> u64 {
+        self.processor0.traps + self.processor2.traps
+    }
+
+    pub fn total_interrupts(&self) -> u64 {
+        self.processor0.interrupts + self.processor2.interrupts
+    }
+
+    pub fn total_errors(&self) -> u64 {
+        self.processor0.errors + self.processor2.errors
+    }
+}
+
+/// One tagged scheduler outcome. `virtual_ns` is the shared device clock at
+/// return, normally the earliest next eligible CPU deadline. It need not be
+/// the selected instruction's completion if another CPU has an earlier
+/// opportunity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScheduledStep {
+    pub processor: u8,
+    pub step: Step,
+    pub virtual_ns: u64,
+}
+
+/// Explicit scheduler failures. Device service failures are not CPU traps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchedulerError {
+    Cpu { processor: u8, fault: CpuFault },
+    Device(DmaError),
+    NoRunnable,
+}
+
+impl fmt::Display for SchedulerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cpu { processor, fault } => {
+                write!(f, "processor {processor} error: {fault}")
+            }
+            Self::Device(error) => write!(f, "device error: {error}"),
+            Self::NoRunnable => f.write_str("no processor is runnable"),
+        }
+    }
+}
+
+impl std::error::Error for SchedulerError {}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SchedulerState {
+    virtual_ns: u64,
+    next_ready0: u64,
+    next_ready2: u64,
+    eligible0: bool,
+    eligible2: bool,
+    last_service_ns: Option<u64>,
+    stats: SchedulerStats,
+}
+
+impl Default for SchedulerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SchedulerState {
+    fn new() -> Self {
+        Self {
+            virtual_ns: 0,
+            next_ready0: 0,
+            next_ready2: 0,
+            eligible0: true,
+            eligible2: false,
+            last_service_ns: None,
+            stats: SchedulerStats::new(),
+        }
+    }
+
+    fn set_next_ready(&mut self, processor: u8, value: u64) {
+        match processor {
+            0 => self.next_ready0 = value,
+            2 => self.next_ready2 = value,
+            _ => {}
+        }
+    }
+
+    fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    /// Reconcile eligibility without replaying old slots or cancelling a wait
+    /// already charged to an instruction before arbitration was withdrawn.
+    fn sync_eligibility(&mut self, eligible0: bool, eligible2: bool) {
+        if eligible0 && !self.eligible0 {
+            self.next_ready0 = self.next_ready0.max(self.virtual_ns);
+        }
+        if eligible2 && !self.eligible2 {
+            self.next_ready2 = self.next_ready2.max(self.virtual_ns);
+        }
+        self.eligible0 = eligible0;
+        self.eligible2 = eligible2;
+    }
+
+    fn advance_external(&mut self, ns: u64) {
+        self.virtual_ns = self.virtual_ns.saturating_add(ns);
+        self.next_ready0 = self.next_ready0.max(self.virtual_ns);
+        self.next_ready2 = self.next_ready2.max(self.virtual_ns);
+        self.last_service_ns = None;
+    }
+
+    fn earliest_ready(&self) -> Option<u64> {
+        let mut earliest = None;
+        if self.eligible0 {
+            earliest = Some(self.next_ready0);
+        }
+        if self.eligible2 {
+            earliest = Some(match earliest {
+                Some(value) => value.min(self.next_ready2),
+                None => self.next_ready2,
+            });
+        }
+        earliest
+    }
+
+    fn record(&mut self, processor: u8, step: Step) {
+        if let Some(counters) = self.stats.counters_mut(processor) {
+            match step {
+                Step::Executed { .. } => counters.instructions += 1,
+                Step::TrapTaken { .. } => counters.traps += 1,
+                Step::InterruptTaken { .. } => counters.interrupts += 1,
+                Step::SoftwareReset { .. } => {}
+            }
+        }
+    }
+
+    fn record_error(&mut self, processor: u8) {
+        if let Some(counters) = self.stats.counters_mut(processor) {
+            counters.errors += 1;
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Machine {
     pub cpu: Cpu,
     pub bus: SystemBus,
     topology: ProcessorTopology,
     pub(crate) standalone_iommu: Option<StandaloneIommu>,
+    secondary_cpu: Option<ProcessorModuleState>,
+    scheduler: SchedulerState,
 }
 
 impl Machine {
@@ -254,6 +467,22 @@ impl Machine {
         prom: &[u8],
         nvram: Nvram,
     ) -> Result<Self, MachineError> {
+        Self::with_profile_processors(profile, ram_bytes, prom, nvram, 1)
+    }
+
+    /// Explicit construction path for one or two independently owned processor
+    /// modules. SS-5 rejects two; SS-20/Axil accept one or two. The second
+    /// module starts arbitration-disabled.
+    pub fn with_profile_processors(
+        profile: MachineProfile,
+        ram_bytes: usize,
+        prom: &[u8],
+        nvram: Nvram,
+        processors: usize,
+    ) -> Result<Self, MachineError> {
+        let topology = profile
+            .processor_topology(processors)
+            .ok_or(MachineError::InvalidProcessorCount)?;
         let dram = profile.dram(ram_bytes).map_err(|error| match error {
             MapError::InvalidRange => MachineError::InvalidDramSize,
             error => MachineError::Memory(error),
@@ -263,8 +492,10 @@ impl Machine {
         let mut machine = Self {
             cpu: Cpu::new(0),
             bus,
-            topology: profile.processor_topology(1).unwrap(),
+            topology,
             standalone_iommu: (!profile.layout().ncr_windows).then(StandaloneIommu::default),
+            secondary_cpu: None,
+            scheduler: SchedulerState::default(),
         };
         machine.cpu.use_cpu_config(profile.cpu_config());
         machine.cpu.use_mmu_config(profile.mmu());
@@ -275,6 +506,12 @@ impl Machine {
         if profile.mmu().reference_mmu {
             machine.bus.install_mxcc(machine.cpu.mmu.mxcc_handle());
         }
+        let mut secondary = topology
+            .module_for_processor(2)
+            .and_then(|module| ProcessorModuleState::new(profile, module));
+        if let Some(secondary) = &secondary {
+            machine.bus.install_mxcc_module(secondary.mxcc.clone());
+        }
         machine.install_prom(prom, nvram)?;
         if profile.builtin_sx() {
             machine
@@ -283,7 +520,41 @@ impl Machine {
                 .map_err(MachineError::Memory)?;
             machine.reset();
         }
+        if let Some(secondary) = secondary.as_mut() {
+            machine.configure_processor(2);
+            machine.install_processor_banks(2);
+            secondary.reset();
+        }
+        machine.secondary_cpu = secondary;
         Ok(machine)
+    }
+
+    pub fn ss20_with_processors(
+        ram_bytes: usize,
+        prom: &[u8],
+        processors: usize,
+    ) -> Result<Self, MachineError> {
+        Self::with_profile_processors(
+            MachineProfile::Ss20,
+            ram_bytes,
+            prom,
+            MachineProfile::Ss20.default_nvram(),
+            processors,
+        )
+    }
+
+    pub fn axil320_with_processors(
+        ram_bytes: usize,
+        prom: &[u8],
+        processors: usize,
+    ) -> Result<Self, MachineError> {
+        Self::with_profile_processors(
+            MachineProfile::Axil320,
+            ram_bytes,
+            prom,
+            MachineProfile::Axil320.default_nvram(),
+            processors,
+        )
     }
 
     /// Load a raw PROM into the profile's read-only alias (padded with 0xff).
@@ -331,6 +602,75 @@ impl Machine {
         self.topology.modules()
     }
 
+    /// The independently owned second module, if explicitly constructed.
+    pub fn secondary_cpu(&self) -> Option<&ProcessorModuleState> {
+        self.secondary_cpu.as_ref()
+    }
+
+    pub fn secondary_cpu_mut(&mut self) -> Option<&mut ProcessorModuleState> {
+        self.secondary_cpu.as_mut()
+    }
+
+    /// Borrow the secondary module and the shared bus together for direct
+    /// guest-memory/MMU diagnostics; the two owners remain disjoint.
+    pub fn secondary_cpu_with_bus_mut(
+        &mut self,
+    ) -> Option<(&mut ProcessorModuleState, &mut SystemBus)> {
+        self.secondary_cpu
+            .as_mut()
+            .map(|secondary| (secondary, &mut self.bus))
+    }
+
+    pub fn processor_cpu(&self, processor: u8) -> Option<&Cpu> {
+        match processor {
+            0 => Some(&self.cpu),
+            2 => self.secondary_cpu.as_ref().map(|module| &module.cpu),
+            _ => None,
+        }
+    }
+
+    pub fn processor_cpu_mut(&mut self, processor: u8) -> Option<&mut Cpu> {
+        match processor {
+            0 => Some(&mut self.cpu),
+            2 => self.secondary_cpu.as_mut().map(|module| &mut module.cpu),
+            _ => None,
+        }
+    }
+
+    /// Synthetic-test setup: clear boot mode and set one processor's PC/nPC.
+    pub fn set_processor_entry(&mut self, processor: u8, pc: u32, npc: u32) -> bool {
+        match processor {
+            0 => {
+                if self
+                    .cpu
+                    .mmu
+                    .store(&mut self.bus, 0, 4, crate::mmu::Width::Word, 0)
+                    .is_err()
+                {
+                    return false;
+                }
+                self.cpu.set_pc_npc(pc, npc);
+                true
+            }
+            2 => {
+                let Some(secondary) = self.secondary_cpu.as_mut() else {
+                    return false;
+                };
+                if secondary
+                    .cpu
+                    .mmu
+                    .store(&mut self.bus, 0, 4, crate::mmu::Width::Word, 0)
+                    .is_err()
+                {
+                    return false;
+                }
+                secondary.cpu.set_pc_npc(pc, npc);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Install the addressable interrupt and timer banks for one hardware
     /// processor number. This does not schedule a second CPU and does not make
     /// an absent module present.
@@ -351,7 +691,14 @@ impl Machine {
     /// Host-side AER transition for an installed processor. See
     /// `SystemBus::set_processor_arbitration`.
     pub fn set_processor_arbitration(&mut self, processor: u8, enabled: bool) -> bool {
-        self.bus.set_processor_arbitration(processor, enabled)
+        let changed = self.bus.set_processor_arbitration(processor, enabled);
+        if changed {
+            let eligible0 = self.processor_arbitration(0).is_enabled();
+            let eligible2 =
+                self.secondary_cpu.is_some() && self.processor_arbitration(2).is_enabled();
+            self.scheduler.sync_eligibility(eligible0, eligible2);
+        }
+        changed
     }
 
     /// The standalone MBus I/O translation owner, when this profile has one.
@@ -364,26 +711,40 @@ impl Machine {
     /// already transmitted to the host endpoint.
     pub fn reset(&mut self) {
         self.cpu.reset_sun4m();
+        if let Some(secondary) = &mut self.secondary_cpu {
+            secondary.reset();
+        }
         self.bus.reset_devices();
         if let Some(iommu) = &mut self.standalone_iommu {
             iommu.reset();
         }
+        self.scheduler.reset();
     }
 
     /// Reset only the local CPU/MMU and MXCC of one processor module. Board
     /// devices, AER state, the standalone IOMMU, RAM and other modules are
-    /// retained. Only the boot module has Machine-owned CPU storage in this
-    /// slice; an independently constructed module resets through
-    /// `ProcessorModuleState::reset`.
+    /// retained. The module's scheduler readiness is moved to the current
+    /// shared virtual time; its counters and the other module's state remain.
     pub fn reset_processor_module(&mut self, processor: u8) -> bool {
         if !self.bus.processor_present(processor) {
             return false;
         }
-        if processor != 0 {
-            return false;
+        match processor {
+            0 => {
+                self.cpu.reset_sun4m();
+                self.scheduler.set_next_ready(0, self.scheduler.virtual_ns);
+                true
+            }
+            2 => {
+                let Some(secondary) = &mut self.secondary_cpu else {
+                    return false;
+                };
+                secondary.reset();
+                self.scheduler.set_next_ready(2, self.scheduler.virtual_ns);
+                true
+            }
+            _ => false,
         }
-        self.cpu.reset_sun4m();
-        true
     }
 
     pub fn bare_metal(ram_bytes: usize, entry: u32) -> Result<Self, MachineError> {
@@ -397,17 +758,22 @@ impl Machine {
             bus,
             topology: ProcessorTopology::empty(),
             standalone_iommu: None,
+            secondary_cpu: None,
+            scheduler: SchedulerState::default(),
         })
     }
 
     /// Advance all device clocks between steps without executing the CPU.
     pub fn advance_ns(&mut self, ns: u64) {
         self.bus.advance_ns(ns);
+        self.scheduler.advance_external(ns);
     }
 
     /// Whole-second advancement avoids overflow even for u64::MAX seconds.
     pub fn advance_seconds(&mut self, seconds: u64) {
         self.bus.advance_seconds(seconds);
+        self.scheduler
+            .advance_external(seconds.saturating_mul(1_000_000_000));
     }
 
     /// Attach an SBus CG6 (TurboGX) card at the profile's slot-2 aperture.
@@ -457,6 +823,169 @@ impl Machine {
         self.bus.load_image(u64::from(address), bytes)
     }
 
+    pub fn scheduler_stats(&self) -> SchedulerStats {
+        let mut stats = self.scheduler.stats;
+        stats.virtual_ns = self.scheduler.virtual_ns;
+        stats
+    }
+
+    /// Execute one deterministic processor event. Device service occurs once
+    /// per distinct deadline, then the earliest next-ready eligible hardware
+    /// processor runs. Ties use hardware processor order 0 before 2. Only the
+    /// selected CPU is charged its 100 ns base quantum plus PROM wait; devices
+    /// advance to the earliest next eligible deadline, never past another
+    /// CPU's earlier opportunity.
+    pub fn step_scheduled(&mut self) -> Result<ScheduledStep, SchedulerError> {
+        if self.software_reset_requested() {
+            let step = self.software_reset(self.cpu.pc(), self.cpu.npc(), None);
+            return Ok(ScheduledStep {
+                processor: 0,
+                step,
+                virtual_ns: self.scheduler.virtual_ns,
+            });
+        }
+
+        let eligible0 = self.processor_arbitration(0).is_enabled();
+        let eligible2 = self.secondary_cpu.is_some() && self.processor_arbitration(2).is_enabled();
+        self.scheduler.sync_eligibility(eligible0, eligible2);
+
+        let mut candidates = [(0u8, 0u64); 2];
+        let mut count = 0;
+        if eligible0 {
+            candidates[count] = (0, self.scheduler.next_ready0);
+            count += 1;
+        }
+        if eligible2 {
+            candidates[count] = (2, self.scheduler.next_ready2);
+            count += 1;
+        }
+        if count == 0 {
+            return Err(SchedulerError::NoRunnable);
+        }
+        let (processor, ready) = candidates[..count]
+            .iter()
+            .copied()
+            .min_by_key(|&(processor, ready)| (ready, processor))
+            .unwrap();
+        debug_assert!(ready >= self.scheduler.virtual_ns);
+        if ready > self.scheduler.virtual_ns {
+            let delta = ready - self.scheduler.virtual_ns;
+            self.bus.advance_ns_fast(delta);
+            self.scheduler.virtual_ns = ready;
+        }
+        // Service each distinct scheduling boundary once. Tied processors at
+        // the same deadline observe the same device snapshot.
+        if self.scheduler.last_service_ns != Some(ready) {
+            self.service_ethernet().map_err(SchedulerError::Device)?;
+            self.service_scsi_batch(16)
+                .map_err(SchedulerError::Device)?;
+            self.scheduler.last_service_ns = Some(ready);
+        }
+
+        if self
+            .processor_cpu(processor)
+            .is_some_and(|cpu| cpu.error_state().is_some())
+        {
+            // The original fault event was counted when it stopped the CPU.
+            // Re-selecting a latched stop is not another retired event.
+            let fault = self
+                .processor_cpu(processor)
+                .and_then(Cpu::error_state)
+                .expect("scheduler selected a faulted CPU");
+            return Err(SchedulerError::Cpu { processor, fault });
+        }
+
+        let was_error = self
+            .processor_cpu(processor)
+            .is_some_and(|cpu| cpu.error_state().is_some());
+        let pending = self.bus.interrupt_levels_for(processor);
+        self.bus.begin_cpu_step();
+        let result = match processor {
+            0 => self.cpu.step_with_interrupts(&mut self.bus, pending),
+            2 => self
+                .secondary_cpu
+                .as_mut()
+                .expect("secondary processor")
+                .cpu
+                .step_with_interrupts(&mut self.bus, pending),
+            _ => unreachable!("scheduler processor"),
+        };
+        let wait_ns = self.bus.finish_cpu_step(result.is_ok());
+        let newly_faulted = !was_error
+            && self
+                .processor_cpu(processor)
+                .is_some_and(|cpu| cpu.error_state().is_some());
+        if newly_faulted {
+            if let Some(devices) = self.bus.devices_mut() {
+                devices.reset.latch_watchdog();
+            }
+        }
+        let step = match result {
+            Ok(step) => step,
+            Err(fault) => {
+                self.scheduler.record_error(processor);
+                return Err(SchedulerError::Cpu { processor, fault });
+            }
+        };
+        let quantum = STEP_NS + wait_ns;
+        self.scheduler
+            .set_next_ready(processor, ready.saturating_add(quantum));
+        let executed_step = step;
+        let step = if self.software_reset_requested() {
+            if let Step::Executed {
+                pc,
+                npc,
+                instruction,
+            } = step
+            {
+                // Whole-system reset stops both processors at this store.
+                // Charge its completion time before clearing device state,
+                // preserving the UP path and retained RTC/serial progress.
+                self.bus.advance_ns_fast(quantum);
+                self.software_reset(pc, npc, Some(instruction))
+            } else {
+                step
+            }
+        } else {
+            step
+        };
+        // A completed reset store still retires as an instruction; the
+        // SoftwareReset outcome is additional trace information.
+        if matches!(step, Step::SoftwareReset { .. }) {
+            self.scheduler.record(processor, executed_step);
+        } else {
+            self.scheduler.record(processor, step);
+        }
+        if !matches!(step, Step::SoftwareReset { .. }) {
+            if let Some(next) = self.scheduler.earliest_ready() {
+                if next > self.scheduler.virtual_ns {
+                    let delta = next - self.scheduler.virtual_ns;
+                    self.bus.advance_ns_fast(delta);
+                    self.scheduler.virtual_ns = next;
+                }
+            }
+        }
+        Ok(ScheduledStep {
+            processor,
+            step,
+            virtual_ns: self.scheduler.virtual_ns,
+        })
+    }
+
+    /// Run at most `budget` scheduled processor events. Device-only and denied
+    /// processor opportunities are not counted as instructions/events.
+    pub fn run_scheduled(&mut self, budget: u64) -> Result<u64, SchedulerError> {
+        let mut completed = 0;
+        while completed < budget {
+            self.step_scheduled()?;
+            completed += 1;
+        }
+        Ok(completed)
+    }
+
+    /// Single-CPU compatibility path for processor 0. Two-CPU callers must use
+    /// `step_scheduled`, which tags outcomes and advances one shared device
+    /// clock across independent CPU deadlines. Do not mix the two step APIs.
     pub fn step(&mut self) -> Result<Step, CpuFault> {
         if self.software_reset_requested() {
             return Ok(self.software_reset(self.cpu.pc(), self.cpu.npc(), None));
@@ -506,7 +1035,14 @@ impl Machine {
 
     fn software_reset(&mut self, pc: u32, npc: u32, instruction: Option<u32>) -> Step {
         self.cpu.software_reset_sun4m();
+        if let Some(secondary) = &mut self.secondary_cpu {
+            secondary.cpu.software_reset_sun4m();
+        }
         self.bus.software_reset_devices();
+        if let Some(iommu) = &mut self.standalone_iommu {
+            iommu.reset();
+        }
+        self.scheduler.reset();
         Step::SoftwareReset {
             pc,
             npc,
