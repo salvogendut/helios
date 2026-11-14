@@ -40,6 +40,7 @@ or assume host scheduling is guest timing.
 | `src/cache.rs` | Cache diagnostic arrays and indexed invalidation; ordinary cache hits/fills pending |
 | `src/dram.rs` | SS-5 DSIMM layout, mirrors and empty-bank behavior |
 | `src/machine.rs` | Bare-metal/reset construction, SS-5/SS-20/Axil profiles, RAM/PROM limits and demo images |
+| `src/topology.rs` | MBus connector, hardware processor and module identities; independent module construction is testable, while production machines remain single-CPU |
 | `src/main.rs` | CLI parsing, image files, trace printing and CPU step budget |
 | `tests/` | Architectural and boundary behavior through the public library |
 

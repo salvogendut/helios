@@ -234,6 +234,12 @@ encoding; its configurable host geometry does not define Helios's raw target.
   bypass; section 3.2.1 allocates main memory, control space, and SBus slot
   `PA[35:28]=0xEn`; section 3.2.4 defines reserved-space timeouts. These define
   the SS-20/Axil layout and the implementation's high-address path.
+  Sections A.I.2/A.II.2 give connector/processor/MID numbering; B.III.5.4.7
+  defines the MXCC port identity and B.III.8 gives per-MID physical control
+  and port addresses. The two single-CPU-module topology uses processors
+  0/2 and MIDs 8/A. The absence and narrow-access policies in
+  [machines.md](machines.md#mbus-module-and-empty-window-access-widths) are
+  documented functional choices, not inferred hardware guarantees.
 - [SuperSPARC II Addendum, STP1021UG Rev. 1.3](https://www.ele.uva.es/~jesman/BigSeti/ftp/Microprocesadores/SPARC/STP1021UG.pdf):
   section A.4.3.3 defines ASI `0x5`/`0x6` I/D-TLB diagnostic access;
   sections A.6.2/A.6.4 define data-cache tag diagnostics; the MMU/MXCC and

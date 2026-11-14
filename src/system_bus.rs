@@ -24,6 +24,7 @@ use crate::devices::{
     timer::Timers,
 };
 use crate::dram::{Ss5Dram, APERTURE_BYTES};
+use crate::topology::ProcessorModule;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -75,8 +76,9 @@ pub struct Sun4mLayout {
     pub cpu_interrupt: u64,
     pub system_interrupt: u64,
     pub reset: u64,
-    /// Unpopulated CPU timer/interrupt slots (SS-20 CPU1..15 reads/writes).
-    pub zero_windows: [Option<(u64, u64)>; 22],
+    /// Unpopulated CPU timer/interrupt slots, absent MBus module windows and
+    /// their architected port words.
+    pub zero_windows: [Option<(u64, u64)>; 27],
     pub macio_id: u64,
     pub scsi_dma: u64,
     pub esp: u64,
@@ -112,7 +114,7 @@ impl Sun4mLayout {
             cpu_interrupt: CPU_INTERRUPT_BASE,
             system_interrupt: SYSTEM_INTERRUPT_BASE,
             reset: RESET_BASE,
-            zero_windows: [None; 22],
+            zero_windows: [None; 27],
             macio_id: MACIO_ID_BASE,
             scsi_dma: SCSI_DMA_BASE,
             esp: ESP_BASE,
@@ -156,6 +158,8 @@ impl Sun4mLayout {
                 Some((0x8800_0000, 0x8800_2000)),
                 Some((0x8400_0000, 0x8400_2000)),
                 Some((0x8000_0000, 0x8000_2000)),
+                Some((0xf_fbc0_0000, 0xf_fbc0_2000)),
+                Some((0xf_fac0_0000, 0xf_fac0_2000)),
                 Some((0xf_f9c0_0000, 0xf_f9c0_2000)),
                 Some((0xf_f900_0000, 0xf_f900_2000)),
                 Some((0xf_f940_0000, 0xf_f940_2000)),
@@ -165,6 +169,10 @@ impl Sun4mLayout {
                 Some((0xf_f840_0000, 0xf_f840_2000)),
                 Some((0xf_f800_0000, 0xf_f800_2000)),
                 Some((0xf_8000_0000, 0xf_8000_2000)),
+                // Architected MBus port words for unpopulated MIDs 9, A and B.
+                Some((0xf_f9ff_fffc, 0xf_fa00_0000)),
+                Some((0xf_faff_fffc, 0xf_fb00_0000)),
+                Some((0xf_fbff_fffc, 0xf_fc00_0000)),
                 Some((0xe_e000_1000, 0xe_e000_1030)),
                 Some((0xe_e001_0000, 0xe_e001_0100)),
                 Some((0xe_f480_0000, 0xe_f480_0020)),
@@ -198,7 +206,7 @@ impl Sun4mLayout {
         }
     }
 
-    pub const fn device_ranges(&self) -> [(u64, u64); 41] {
+    pub const fn device_ranges(&self) -> [(u64, u64); 46] {
         let cs4231 = match self.cs4231 {
             Some(base) => (base, base + 0x40),
             None => (0, 0),
@@ -319,6 +327,26 @@ impl Sun4mLayout {
                 Some(range) => range,
                 None => (0, 0),
             },
+            match self.zero_windows[22] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[23] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[24] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[25] {
+                Some(range) => range,
+                None => (0, 0),
+            },
+            match self.zero_windows[26] {
+                Some(range) => range,
+                None => (0, 0),
+            },
         ]
     }
 }
@@ -404,6 +432,12 @@ impl Sun4mDevices {
 }
 
 #[derive(Debug)]
+struct InstalledMxcc {
+    mid: u8,
+    state: Rc<RefCell<MxccState>>,
+}
+
+#[derive(Debug)]
 pub struct SystemBus {
     layout: Sun4mLayout,
     memory: MemoryBus,
@@ -414,7 +448,7 @@ pub struct SystemBus {
     prom_phase: u64,
     cgsix: Option<Cgsix>,
     sx: Option<Sx>,
-    mxcc: Option<Rc<RefCell<MxccState>>>,
+    mxccs: Vec<InstalledMxcc>,
     device_ns: u64,
 }
 
@@ -441,7 +475,7 @@ impl SystemBus {
             prom_phase: 0,
             cgsix: None,
             sx: None,
-            mxcc: None,
+            mxccs: Vec::new(),
             device_ns: 0,
         }
     }
@@ -497,13 +531,32 @@ impl SystemBus {
     pub fn sx(&self) -> Option<&Sx> {
         self.sx.as_ref()
     }
-    /// Share the CPU's MXCC state with the physical module-control window.
+    /// Install or replace the boot CPU's MXCC state.
     pub fn install_mxcc(&mut self, mxcc: Rc<RefCell<MxccState>>) {
-        self.mxcc = Some(mxcc);
+        self.install_mxcc_module(mxcc);
     }
-    fn mxcc_register(&self, address: u64) -> Option<u32> {
-        self.mxcc.as_ref()?;
-        MxccState::physical_register(address)
+
+    /// Install an independently addressed processor-module MXCC. MID 8 and
+    /// MID 10 are distinct physical windows; replacing the same MID updates
+    /// that module rather than creating an alias.
+    pub fn install_mxcc_module(&mut self, mxcc: Rc<RefCell<MxccState>>) {
+        let mid = mxcc.borrow().mid();
+        if let Some(slot) = self.mxccs.iter_mut().find(|slot| slot.mid == mid) {
+            slot.state = mxcc;
+        } else {
+            self.mxccs.push(InstalledMxcc { mid, state: mxcc });
+        }
+    }
+
+    /// Decode physical module addresses from install-time identity only. Do not
+    /// borrow live MXCC state here: a stream transfer may be running from a
+    /// snapshot while the guest also addresses ordinary RAM or another module.
+    fn mxcc_at(&self, address: u64) -> Option<(Rc<RefCell<MxccState>>, u32)> {
+        self.mxccs.iter().find_map(|slot| {
+            let module = ProcessorModule::from_mid(slot.mid)?;
+            let register = module.mxcc_register(address)?;
+            Some((slot.state.clone(), register))
+        })
     }
     fn sx_at(&mut self, address: u64) -> Option<&mut Sx> {
         if self.sx.as_ref().is_some_and(|card| card.contains(address)) {
@@ -737,8 +790,8 @@ impl SystemBus {
         if let Some(card) = &mut self.sx {
             card.reset();
         }
-        if let Some(mxcc) = &self.mxcc {
-            mxcc.borrow_mut().reset();
+        for mxcc in &self.mxccs {
+            mxcc.state.borrow_mut().reset();
         }
         self.cpu_user = false;
         self.prom_cycles = None;
@@ -845,6 +898,15 @@ impl SystemBus {
             .iter()
             .flatten()
             .any(|&(start, end)| (start..end).contains(&address))
+    }
+
+    fn zero_window_overlaps(&self, address: u64, size: u64) -> bool {
+        let end = address.saturating_add(size);
+        self.layout
+            .zero_windows
+            .iter()
+            .flatten()
+            .any(|&(start, window_end)| address < window_end && end > start)
     }
 
     fn word_device(&self, address: u64) -> Option<(WordDevice, u64)> {
@@ -1016,8 +1078,7 @@ impl Bus for SystemBus {
     }
 
     fn read8(&mut self, address: u64) -> Result<u8, BusError> {
-        if let Some(register) = self.mxcc_register(address) {
-            let mxcc = self.mxcc.as_ref().unwrap().clone();
+        if let Some((mxcc, register)) = self.mxcc_at(address) {
             let word = mxcc.borrow().read_word(register & !3);
             return Ok((word >> ((3 - (register & 3)) * 8)) as u8);
         }
@@ -1109,8 +1170,7 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write8(&mut self, address: u64, value: u8) -> Result<(), BusError> {
-        if let Some(register) = self.mxcc_register(address) {
-            let mxcc = self.mxcc.as_ref().unwrap().clone();
+        if let Some((mxcc, register)) = self.mxcc_at(address) {
             let shift = (3 - (register & 3)) * 8;
             let old = mxcc.borrow().read_word(register & !3);
             let merged = (old & !(0xff << shift)) | (u32::from(value) << shift);
@@ -1217,14 +1277,13 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read16(&mut self, address: u64) -> Result<u16, BusError> {
-        if let Some(register) = self.mxcc_register(address) {
+        if let Some((mxcc, register)) = self.mxcc_at(address) {
             if address & 1 != 0 {
                 return Err(BusError {
                     address,
                     kind: BusErrorKind::Misaligned,
                 });
             }
-            let mxcc = self.mxcc.as_ref().unwrap().clone();
             let word = mxcc.borrow().read_word(register & !3);
             return Ok((word >> ((2 - (register & 2)) * 8)) as u16);
         }
@@ -1264,6 +1323,15 @@ impl Bus for SystemBus {
         if let Some(dram) = self.dram_at(address) {
             return dram.read16(address);
         }
+        if self.zero_at(address) {
+            if address & 1 != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
+            return Ok(0);
+        }
         if let (Some(base), Some(devices)) = (self.layout.cs4231, self.devices.as_ref()) {
             if (base..base + 0x40).contains(&address) {
                 return devices
@@ -1280,14 +1348,13 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write16(&mut self, address: u64, value: u16) -> Result<(), BusError> {
-        if let Some(register) = self.mxcc_register(address) {
+        if let Some((mxcc, register)) = self.mxcc_at(address) {
             if address & 1 != 0 {
                 return Err(BusError {
                     address,
                     kind: BusErrorKind::Misaligned,
                 });
             }
-            let mxcc = self.mxcc.as_ref().unwrap().clone();
             let shift = (2 - (register & 2)) * 8;
             let old = mxcc.borrow().read_word(register & !3);
             let merged = (old & !(0xffff << shift)) | (u32::from(value) << shift);
@@ -1342,6 +1409,15 @@ impl Bus for SystemBus {
         if let Some(dram) = self.dram_at(address) {
             return dram.write16(address, value);
         }
+        if self.zero_at(address) {
+            if address & 1 != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
+            return Ok(());
+        }
         if let (Some(base), Some(devices)) = (self.layout.cs4231, self.devices.as_mut()) {
             if (base..base + 0x40).contains(&address) {
                 return devices
@@ -1356,14 +1432,14 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read32(&mut self, address: u64) -> Result<u32, BusError> {
-        if let Some(register) = self.mxcc_register(address) {
+        if let Some((mxcc, register)) = self.mxcc_at(address) {
             if address & 3 != 0 {
                 return Err(BusError {
                     address,
                     kind: BusErrorKind::Misaligned,
                 });
             }
-            return Ok(self.mxcc.as_ref().unwrap().borrow().read_word(register));
+            return Ok(mxcc.borrow().read_word(register));
         }
         if let Some(card) = self.sx_at(address) {
             return card
@@ -1383,6 +1459,12 @@ impl Bus for SystemBus {
             return dram.read32(address);
         }
         if self.zero_at(address) {
+            if address & 3 != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
             return Ok(0);
         }
         if address & 3 != 0 {
@@ -1428,14 +1510,13 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError> {
-        if let Some(register) = self.mxcc_register(address) {
+        if let Some((mxcc, register)) = self.mxcc_at(address) {
             if address & 3 != 0 {
                 return Err(BusError {
                     address,
                     kind: BusErrorKind::Misaligned,
                 });
             }
-            let mxcc = self.mxcc.as_ref().unwrap().clone();
             let merged = if mask == u32::MAX {
                 value
             } else {
@@ -1490,6 +1571,12 @@ impl Bus for SystemBus {
             return dram.write32_masked(address, value, mask);
         }
         if self.zero_at(address) {
+            if address & 3 != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
             return Ok(());
         }
         if address & 3 != 0 {
@@ -1563,14 +1650,14 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read_doubleword(&mut self, address: u64) -> Result<[u32; 2], BusError> {
-        if let Some(register) = self.mxcc_register(address) {
+        if let Some((mxcc, register)) = self.mxcc_at(address) {
             if address & 7 != 0 {
                 return Err(BusError {
                     address,
                     kind: BusErrorKind::Misaligned,
                 });
             }
-            let value = self.mxcc.as_ref().unwrap().borrow().read_u64(register);
+            let value = mxcc.borrow().read_u64(register);
             return Ok([(value >> 32) as u32, value as u32]);
         }
         if let Some(card) = self.sx_at(address) {
@@ -1619,8 +1706,15 @@ impl Bus for SystemBus {
         if let Some(dram) = self.dram_at(address) {
             return dram.read_doubleword(address);
         }
-        if self.zero_at(address) {
-            return Ok([0; 2]);
+        if self.zero_window_overlaps(address, 8) {
+            return Err(BusError {
+                address,
+                kind: if address & 7 != 0 {
+                    BusErrorKind::Misaligned
+                } else {
+                    BusErrorKind::Unmapped
+                },
+            });
         }
         if address == self.layout.cpu_timer {
             if let Some(devices) = &self.devices {
@@ -1638,14 +1732,13 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write_doubleword(&mut self, address: u64, words: [u32; 2]) -> Result<(), BusError> {
-        if let Some(register) = self.mxcc_register(address) {
+        if let Some((mxcc, register)) = self.mxcc_at(address) {
             if address & 7 != 0 {
                 return Err(BusError {
                     address,
                     kind: BusErrorKind::Misaligned,
                 });
             }
-            let mxcc = self.mxcc.as_ref().unwrap().clone();
             let value = (u64::from(words[0]) << 32) | u64::from(words[1]);
             let mut state = mxcc.borrow().clone();
             let result = state.write_u64(self, register, value);
@@ -1697,8 +1790,15 @@ impl Bus for SystemBus {
         if let Some(dram) = self.dram_at(address) {
             return dram.write_doubleword(address, words);
         }
-        if self.zero_at(address) {
-            return Ok(());
+        if self.zero_window_overlaps(address, 8) {
+            return Err(BusError {
+                address,
+                kind: if address & 7 != 0 {
+                    BusErrorKind::Misaligned
+                } else {
+                    BusErrorKind::Unmapped
+                },
+            });
         }
         if address == self.layout.cpu_timer {
             if let Some(devices) = &mut self.devices {
@@ -1724,6 +1824,12 @@ impl Bus for SystemBus {
             return dram.swap32(address, value);
         }
         if self.zero_at(address) {
+            if address & 3 != 0 {
+                return Err(BusError {
+                    address,
+                    kind: BusErrorKind::Misaligned,
+                });
+            }
             return Ok(0);
         }
         self.memory_only(address, 4)?;
