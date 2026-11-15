@@ -1,5 +1,7 @@
 # Agent notes
 
+- [Configurable RAM plan and handoff](ram-capacity-plan.md) — issue #3 work order for both repositories: shared topology, SS-20 VSIMM limits, high-RAM DMA, CLI/F9 settings, firmware acceptance and cleanup.
+
 - [SMP slice 4 review](smp-slice4-review.md) — CLI fixes, 605/607 tests, SS-20 SMP input and Axil CDE lifecycle/persistence accepted; independent Axil move/resize/expose/iconify/focus assertions complete; experimental slice ready for incremental merge, temporary clones/builds cleaned.
 
 - [SMP slice 4](smp-slice4.md) — original two-CPU SS-20/Axil OBP prompts, experimental Heliacal CPU selection, and the Solaris SMP work order.
