@@ -5,7 +5,7 @@ use crate::bus::{BusError, Initiator, MapError};
 use crate::cpu::{Cpu, CpuConfig, CpuFault, FaultKind, Step};
 use crate::devices::{cgsix::Cgsix, mxcc::MxccState, nvram::Nvram, sx::Sx};
 use crate::dma::DmaError;
-use crate::dram::Ss5Dram;
+use crate::dram::{DramLayout, Ss5Dram};
 use crate::iommu::StandaloneIommu;
 use crate::mmu::MmuConfig;
 use crate::system_bus::{Sun4mLayout, SystemBus};
@@ -15,6 +15,8 @@ use crate::topology::{
 use std::{cell::RefCell, fmt, rc::Rc};
 
 pub const TARGET: &str = "SPARCstation 5 (sun4m), SPARC V8 / microSPARC-II";
+/// Upper bound for the diagnostic bare-metal harness. Named profiles use their
+/// validated DSIMM topology instead.
 pub const MAX_RAM_BYTES: usize = 256 * 1024 * 1024;
 pub const DEFAULT_RAM_BYTES: usize = 128 * 1024 * 1024;
 /// Nominal SS5/85 hardware clock, independent of the interpreter's time quantum.
@@ -34,6 +36,24 @@ pub enum MachineProfile {
     Ss5,
     Ss20,
     Axil320,
+}
+
+/// Video device selected for a profile construction.
+///
+/// The SS-20 native SX is installed in the first VSIMM (`bank 7`) slot. The
+/// Axil 320 also has two VSIMM-capable RAM slots, but VSIMM construction is not
+/// part of the current configurable-RAM slice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InstalledVideo {
+    #[default]
+    None,
+    Sx,
+}
+
+impl InstalledVideo {
+    pub const fn has_vsimm(self) -> bool {
+        matches!(self, Self::Sx)
+    }
 }
 
 impl MachineProfile {
@@ -71,6 +91,75 @@ impl MachineProfile {
         matches!(self, Self::Ss20)
     }
 
+    pub const fn default_video(self) -> InstalledVideo {
+        match self {
+            Self::Ss5 | Self::Axil320 => InstalledVideo::None,
+            Self::Ss20 => InstalledVideo::Sx,
+        }
+    }
+
+    /// Validate and build a profile/video RAM layout before allocating guest
+    /// memory. SS-20 SX reserves bank 7; an SS-5 or Axil 320 has no VSIMM in
+    /// this implementation.
+    pub fn ram_layout(
+        self,
+        ram_bytes: usize,
+        video: InstalledVideo,
+    ) -> Result<DramLayout, MachineError> {
+        match (self, video) {
+            (Self::Ss5, InstalledVideo::Sx) | (Self::Axil320, InstalledVideo::Sx) => {
+                Err(MachineError::InvalidVideo {
+                    profile: self,
+                    video,
+                })
+            }
+            (Self::Ss5, InstalledVideo::None) => {
+                DramLayout::ss5_total(ram_bytes).map_err(|_| MachineError::InvalidRamCapacity {
+                    profile: self,
+                    video,
+                    requested: ram_bytes,
+                })
+            }
+            (Self::Ss20, InstalledVideo::Sx) => {
+                DramLayout::ss20_total(ram_bytes, 7).map_err(|_| MachineError::InvalidRamCapacity {
+                    profile: self,
+                    video,
+                    requested: ram_bytes,
+                })
+            }
+            (Self::Ss20, InstalledVideo::None) => {
+                DramLayout::ss20_total(ram_bytes, 8).map_err(|_| MachineError::InvalidRamCapacity {
+                    profile: self,
+                    video,
+                    requested: ram_bytes,
+                })
+            }
+            (Self::Axil320, InstalledVideo::None) => {
+                DramLayout::axil_total(ram_bytes).map_err(|_| MachineError::InvalidRamCapacity {
+                    profile: self,
+                    video,
+                    requested: ram_bytes,
+                })
+            }
+        }
+    }
+
+    /// Exact RAM totals representable by this profile and video configuration.
+    pub fn valid_ram_totals(self, video: InstalledVideo) -> Result<Vec<usize>, MachineError> {
+        match (self, video) {
+            (Self::Ss5, InstalledVideo::Sx) | (Self::Axil320, InstalledVideo::Sx) => {
+                Err(MachineError::InvalidVideo {
+                    profile: self,
+                    video,
+                })
+            }
+            (Self::Ss5, InstalledVideo::None) => Ok(DramLayout::valid_ss5_totals()),
+            (Self::Ss20, InstalledVideo::Sx) => Ok(DramLayout::valid_ss20_totals(7)),
+            (Self::Ss20, InstalledVideo::None) => Ok(DramLayout::valid_ss20_totals(8)),
+            (Self::Axil320, InstalledVideo::None) => Ok(DramLayout::valid_axil_totals()),
+        }
+    }
+
     /// Validate and select an explicit MBus processor topology. The default
     /// constructors remain single-CPU; two-module construction is the
     /// synthetic-test path and does not imply firmware startup support.
@@ -101,11 +190,14 @@ impl MachineProfile {
         [0xc0, 0xff, 0xee]
     }
 
+    /// Allocate DRAM using the profile's default video choice. Use
+    /// [`Self::ram_layout`] to validate or select another video configuration
+    /// without allocating guest memory.
     pub fn dram(self, ram_bytes: usize) -> Result<Ss5Dram, MapError> {
-        match self {
-            Self::Ss5 => Ss5Dram::from_total(ram_bytes),
-            Self::Ss20 | Self::Axil320 => Ss5Dram::from_ss20_total(ram_bytes),
-        }
+        let layout = self
+            .ram_layout(ram_bytes, self.default_video())
+            .map_err(|_| MapError::InvalidRange)?;
+        Ss5Dram::from_layout(layout)
     }
 
     pub fn default_nvram(self) -> Nvram {
@@ -120,7 +212,15 @@ impl MachineProfile {
 #[derive(Debug)]
 pub enum MachineError {
     InvalidRamSize,
-    InvalidDramSize,
+    InvalidRamCapacity {
+        profile: MachineProfile,
+        video: InstalledVideo,
+        requested: usize,
+    },
+    InvalidVideo {
+        profile: MachineProfile,
+        video: InstalledVideo,
+    },
     InvalidPromSize,
     InvalidProcessorCount,
     Memory(MapError),
@@ -132,9 +232,41 @@ impl fmt::Display for MachineError {
             Self::InvalidRamSize => {
                 f.write_str("RAM must be a nonzero multiple of 4 bytes, at most 256 MiB")
             }
-            Self::InvalidDramSize => {
-                f.write_str("RAM must fit in eight 8 MiB or 32 MiB DSIMMs (8–256 MiB)")
+            Self::InvalidRamCapacity {
+                profile,
+                video,
+                requested,
+            } => {
+                let sockets = if matches!(profile, MachineProfile::Ss5) {
+                    "eight 8/32 MiB DSIMMs, 8–256 MiB"
+                } else if video.has_vsimm() {
+                    "seven 16/32/64 MiB DSIMMs, 16–448 MiB (bank 7 is the VSIMM)"
+                } else if matches!(profile, MachineProfile::Axil320) {
+                    "eight 16/64 MiB DSIMMs, 16–512 MiB (Axil OBP 2.19 profile)"
+                } else {
+                    "eight 16/32/64 MiB DSIMMs, 16–512 MiB"
+                };
+                write!(
+                    f,
+                    "{} with {} video cannot use {requested} bytes; valid RAM is {sockets}",
+                    profile.target(),
+                    if video.has_vsimm() {
+                        "SX VSIMM"
+                    } else {
+                        "no VSIMM"
+                    }
+                )
             }
+            Self::InvalidVideo { profile, video } => write!(
+                f,
+                "{} construction does not implement {} video in this configuration",
+                profile.target(),
+                if video.has_vsimm() {
+                    "SX VSIMM"
+                } else {
+                    "no VSIMM"
+                }
+            ),
             Self::InvalidProcessorCount => {
                 f.write_str("processor count must be one for SS-5 or one/two for SS-20/Axil")
             }
@@ -449,6 +581,20 @@ impl Machine {
         Self::with_profile(MachineProfile::Ss20, ram_bytes, prom, nvram)
     }
 
+    pub fn ss20_without_sx(
+        ram_bytes: usize,
+        prom: &[u8],
+        nvram: Nvram,
+    ) -> Result<Self, MachineError> {
+        Self::with_profile_video(
+            MachineProfile::Ss20,
+            ram_bytes,
+            prom,
+            nvram,
+            InstalledVideo::None,
+        )
+    }
+
     pub fn axil320(ram_bytes: usize, prom: &[u8]) -> Result<Self, MachineError> {
         Self::axil320_with_nvram(ram_bytes, prom, MachineProfile::Axil320.default_nvram())
     }
@@ -467,7 +613,19 @@ impl Machine {
         prom: &[u8],
         nvram: Nvram,
     ) -> Result<Self, MachineError> {
-        Self::with_profile_processors(profile, ram_bytes, prom, nvram, 1)
+        Self::with_profile_video(profile, ram_bytes, prom, nvram, profile.default_video())
+    }
+
+    /// Construct a profile with an explicit video choice. This permits an
+    /// SS-20 without a VSIMM to use all eight DRAM banks, including 512 MiB.
+    pub fn with_profile_video(
+        profile: MachineProfile,
+        ram_bytes: usize,
+        prom: &[u8],
+        nvram: Nvram,
+        video: InstalledVideo,
+    ) -> Result<Self, MachineError> {
+        Self::with_profile_processors_video(profile, ram_bytes, prom, nvram, 1, video)
     }
 
     /// Explicit construction path for one or two independently owned processor
@@ -480,13 +638,34 @@ impl Machine {
         nvram: Nvram,
         processors: usize,
     ) -> Result<Self, MachineError> {
+        Self::with_profile_processors_video(
+            profile,
+            ram_bytes,
+            prom,
+            nvram,
+            processors,
+            profile.default_video(),
+        )
+    }
+
+    /// Processor-topology plus video construction path. RAM capacity and the
+    /// video/DSIMM combination are validated before any guest RAM allocation.
+    pub fn with_profile_processors_video(
+        profile: MachineProfile,
+        ram_bytes: usize,
+        prom: &[u8],
+        nvram: Nvram,
+        processors: usize,
+        video: InstalledVideo,
+    ) -> Result<Self, MachineError> {
         let topology = profile
             .processor_topology(processors)
             .ok_or(MachineError::InvalidProcessorCount)?;
-        let dram = profile.dram(ram_bytes).map_err(|error| match error {
-            MapError::InvalidRange => MachineError::InvalidDramSize,
-            error => MachineError::Memory(error),
-        })?;
+        let layout = profile.ram_layout(ram_bytes, video)?;
+        if prom.is_empty() || prom.len() > MAX_PROM_BYTES {
+            return Err(MachineError::InvalidPromSize);
+        }
+        let dram = Ss5Dram::from_layout(layout).map_err(MachineError::Memory)?;
         let mut bus = SystemBus::with_layout(profile.layout());
         bus.install_ss5_dram(dram).map_err(MachineError::Memory)?;
         let mut machine = Self {
@@ -513,7 +692,7 @@ impl Machine {
             machine.bus.install_mxcc_module(secondary.mxcc.clone());
         }
         machine.install_prom(prom, nvram)?;
-        if profile.builtin_sx() {
+        if video.has_vsimm() {
             machine
                 .bus
                 .install_sx(Sx::new())

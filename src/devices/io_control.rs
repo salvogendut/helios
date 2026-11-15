@@ -10,6 +10,10 @@ const STANDALONE_VERSION: u32 = 0x1300_0000;
 const BASE_MASK: u32 = 0x07ff_fc00;
 const MBUS_BASE_MASK: u32 = 0xffff_fc00;
 const ARBITRATION_MASK: u32 = 0x003f_0000;
+const SS5_SLOT_MASK: u32 = 0x0001_0003;
+// Standalone Sun-4M SEGA is bits 21:16. This model preserves all six selector
+// bits; the board aperture check rejects selectors outside the implemented RAM.
+const STANDALONE_SLOT_MASK: u32 = 0x003f_0003;
 /// Sun-4M 5.1.2 AER writable bits: processor enables 1:3, SBus slot/onboard
 /// enables 16:20 and bit 31 asynchronous writes. Bit 0 is read-only one;
 /// 15:4 and 30:21 are reserved and read zero.
@@ -178,7 +182,13 @@ impl IoControl {
             0x1010 | 0x1014 | 0x1018 | 0x101c | 0x1020 => {
                 let slot = ((offset - 0x1010) / 4) as usize;
                 // SSCR4 serves masters 4 and 5; both must use translation.
-                let mask = if slot == 4 { 2 } else { 0x0001_0003 };
+                let mask = if slot == 4 {
+                    2
+                } else if self.version == STANDALONE_VERSION {
+                    STANDALONE_SLOT_MASK
+                } else {
+                    SS5_SLOT_MASK
+                };
                 self.slots[slot] = value & mask;
             }
             // Figure 5.23 and the six-master arbiter description agree on
@@ -297,7 +307,12 @@ impl IoControl {
         self.async_locked = true;
     }
 
-    pub(crate) fn mapping(&self, master: u8, address: u32) -> Result<IoMapping, DmaError> {
+    pub(crate) fn mapping(
+        &self,
+        master: u8,
+        address: u32,
+        dram_aperture: u64,
+    ) -> Result<IoMapping, DmaError> {
         if master >= 6 {
             return Err(DmaError::Unsupported("SBus master index must be 0..5"));
         }
@@ -315,9 +330,16 @@ impl IoControl {
         }
         let slot = self.slots[usize::from(master.min(4))];
         if slot & 1 != 0 && address >> 30 == 0 {
-            let physical = u64::from(address) | (u64::from(slot & 0x10000) << 14);
-            // Section 5.8 restricts bypass to main memory (PA[30:28]=000).
-            if physical >= 0x1000_0000 {
+            let physical = if self.version == STANDALONE_VERSION {
+                // Sun-4M 5.9/7.2.5.1: SEGA<35:30> combines with DVMA<29:0>;
+                // SEGA31:30 comes from slot bits 17:16 on this model.
+                (u64::from(address) & 0x3fff_ffff) | (u64::from(slot & 0x003f_0000) << 14)
+            } else {
+                // microSPARC-II slot SA30 supplies PA30 only.
+                u64::from(address) | (u64::from(slot & 0x10000) << 14)
+            };
+            // Section 5.8/7.2.5 restricts bypass to the board's main memory.
+            if physical >= dram_aperture {
                 return Err(DmaError::Fault {
                     address,
                     kind: DmaFault::InvalidBypassAddress,

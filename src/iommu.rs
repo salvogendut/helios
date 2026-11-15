@@ -14,7 +14,6 @@ const CACHE_ENTRIES: usize = 16;
 const IOPTE_PPN: u32 = 0xffff_ff00;
 const IOPTE_WRITE: u32 = 1 << 2;
 const IOPTE_VALID: u32 = 1 << 1;
-const DRAM_LIMIT: u64 = 0x1000_0000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CacheEntry {
@@ -64,7 +63,7 @@ impl StandaloneIommu {
         let pte = if let Some(pte) = self.lookup(page) {
             pte
         } else {
-            if pte_address >= DRAM_LIMIT {
+            if !bus.dma_table_in_dram(pte_address) {
                 return Err(DmaError::Unsupported("I/O page table outside DRAM"));
             }
             bus.observe_memory_request(

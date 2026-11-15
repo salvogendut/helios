@@ -46,6 +46,15 @@ fn arbitration_has_six_independent_bits_and_an_immutable_mid() {
 }
 
 #[test]
+fn standalone_slot_registers_retain_sega_selectors() {
+    let mut io = IoControl::new(0x1300_0000);
+    io.write(0x1010, u32::MAX).unwrap();
+    assert_eq!(io.read(0x1010).unwrap(), 0x003f_0003);
+    io.write(0x1020, u32::MAX).unwrap();
+    assert_eq!(io.read(0x1020).unwrap(), 2);
+}
+
+#[test]
 fn five_slot_registers_are_independent_and_shared_slot_four_cannot_bypass() {
     let mut io = IoControl::default();
     for slot in 0..5u64 {

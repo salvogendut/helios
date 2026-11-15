@@ -340,7 +340,10 @@ fn cpu_tlbs_are_independent_and_flushing_one_cpu_preserves_the_other() {
     for profile in [MachineProfile::Ss20, MachineProfile::Axil320] {
         let mut m = Machine::with_profile_processors(
             profile,
-            0x0300_0000,
+            // Both mappings must have distinct backing storage. The Axil
+            // 48 MiB population is three 16 MiB banks, so +16/+32 MiB in
+            // bank 0 mirror its base instead of naming independent pages.
+            0x0400_0000,
             &0x0100_0000u32.to_be_bytes(),
             profile.default_nvram(),
             2,

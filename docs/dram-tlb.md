@@ -10,10 +10,40 @@ the CLI `boot` command. Eight 32 MiB apertures occupy physical `00000000` throug
 The size-based constructor fills low slots with 32 MiB modules, then 8 MiB
 modules. A 16 MiB configuration is two 8 MiB modules at `00000000` and
 `02000000`, rather than contiguous 16 MiB. Totals must be nonzero multiples of
-8 MiB that fit eight slots. For example, 240 MiB cannot be built with these
-module sizes. `Ss5Dram::new` accepts an explicit eight-slot layout for library
-users. The service manual's 16 MiB factory minimum is not a hardware restriction
-imposed by this model; a single 8 MiB module is allowed.
+8 MiB that fit eight slots. For example, 232 MiB fits seven 32 MiB and one 8 MiB
+module, while 240 MiB cannot be built. `Ss5Dram::new` accepts an explicit
+eight-slot layout for library users. The service manual's 16 MiB factory minimum
+is not a hardware restriction imposed by this model; a single 8 MiB module is
+allowed.
+
+`DramLayout` validates a DSIMM population without allocating guest storage.
+The `ss5_total`, `ss20_total`, `axil_total` and corresponding `valid_*_totals`
+methods expose exact representable sizes. SS-20 uses eight 64 MiB apertures
+with 16/32/64 MiB modules. With built-in SX, bank 7 holds the VSIMM, so seven
+banks hold DRAM and the maximum is 448 MiB. Without a VSIMM, all eight banks
+are available (512 MiB). The Axil also has eight RAM sockets, two capable of
+holding VSIMMs according to the owner; its current CGsix profile uses no VSIMM.
+`MachineProfile::ram_layout` applies these rules before
+`Ss5Dram::from_layout` allocates storage.
+
+The Axil profile uses **16/64 MiB modules** with the pinned original OBP 2.19.
+Instruction traces show that firmware testing the +16 MiB alias, without a
++32 MiB size probe in that pass: the former contiguous 32 MiB simulation was
+reported as 64 MiB. Therefore
+32 MiB total uses two 16 MiB modules, and 416 MiB uses six 64 MiB plus two
+16 MiB modules. Totals 432, 480 and 496 MiB do not fit eight such sockets and
+are rejected; 512 MiB remains supported. This is a limitation of the emulated
+profile and pinned firmware, not a physical module inventory for every Axil
+revision. Smaller Axil modules, including the owner's suggested 8 MiB size,
+need independent evidence and correct firmware discovery before being exposed.
+
+SS-20's 32 MiB DSIMM consists of two distinct 16 MiB regions at bank offsets
+0 and 32 MiB, with PA24 mirrored in each region. Original OBP 2.25R publishes
+the two ranges separately in `/memory`'s `reg` property. Treating this module
+as contiguous 32 MiB with modulo-32 addressing aliases the second published
+range onto the first and corrupts guest memory. CPU lanes, doublewords, atomics,
+IOMMU tables and DMA all use the same split mapping. Raw imports may address
+either real region but cannot cross into a mirror.
 
 An 8 MiB module mirrors four times within its aperture. All normal widths,
 doublewords and atomic exchanges use the same underlying words. Empty-bank

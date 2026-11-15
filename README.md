@@ -199,7 +199,10 @@ cargo run --release -- run local/program.bin --load-address 0x1000 --steps 1000 
 ```
 
 Entry defaults to the load address. `--entry` selects another address;
-`--ram-mib` changes the default 128 MiB allocation (maximum 256 MiB).
+`--ram-mib` changes the default 128 MiB allocation. The bare-metal harness is
+limited to 256 MiB; named `boot` profiles validate their DSIMM geometry (SS-5 up
+to 256 MiB, SS-20 with built-in SX up to 448 MiB, SS-20 without a VSIMM and Axil
+320 up to 512 MiB).
 The bare-metal harness maps only RAM at physical address zero, with translation
 and boot mode disabled. microSPARC-II physical addresses are 31 bits wide.
 `run` accepts raw bytes, not ELF executables or workstation firmware images.
@@ -246,7 +249,17 @@ cargo run --release -- boot local/firmware/ss10-20-v2.25r-rom \
 cargo run --release -- boot local/firmware/axil320-2-19.bin \
   --machine axil320 --cpus 2 --keyboard --cgsix-rom local/firmware/turbogx.bin \
   --nvram local/axil-ttya.nvram --steps 300000000
+cargo run --release -- boot local/firmware/ss10-20-v2.25r-rom \
+  --machine ss20 --display cgsix --cgsix-rom local/firmware/turbogx.bin \
+  --ram-mib 512 --steps 300000000
 ```
+
+RAM choices follow the installed bank layout: SS-5 supports up to 256 MiB,
+SS-20 with SX up to 448 MiB, and SS-20 without a VSIMM or Axil up to 512 MiB.
+The Axil OBP 2.19 profile uses 16/64 MiB banks; totals that need more than eight
+banks are rejected. SS-20/CGsix Solaris console boot also requires excluding
+the unimplemented DBRI slot with `setenv sbus-probe-list f0123` in OBP. See
+[machine configuration](docs/machines.md#ss-20-cgsix-console-configuration).
 
 TCP NAT and host port forwards are not implemented yet. See
 [host networking](docs/networking.md).
@@ -264,10 +277,26 @@ functional scheduling convention, not full CPU cycle timing. The library also
 exposes explicit time advancement and a decoded serial BREAK input. See [Memory and reset](docs/memory.md),
 [Devices](docs/devices.md) and [Interrupts and timers](docs/interrupts-timers.md).
 Guest reset behavior and current watchdog limits are in [System reset](docs/reset.md).
-For `boot`, RAM must fit eight 8 MiB or 32 MiB DSIMMs; larger modules occupy
-low slots first. The default is four 32 MiB modules and four empty slots.
-See [DRAM and TLB diagnostics](docs/dram-tlb.md) for mirrors, empty-bank reads
-and the distinction from the contiguous RAM used by synthetic harnesses.
+For `boot`, RAM must fit the selected profile's DSIMM sockets and module
+sizes; larger modules occupy low slots first. The default is 128 MiB. SS-5 uses
+8/32 MiB modules in eight sockets (maximum 256 MiB). SS-20 with built-in SX
+reserves bank 7 for the VSIMM (maximum 448 MiB); the Axil OBP 2.19 profile uses
+eight 16/64 MiB banks (maximum 512 MiB). The eight Axil RAM sockets and two
+VSIMM-capable sockets are owner-confirmed. Physical support for 8/32 MiB Axil
+modules remains unverified; the profile uses the bank sizes recognized by its
+pinned firmware. `--display none`
+or `--display cgsix` leaves the SS-20 VSIMM slot empty, allowing all eight DRAM
+banks and 512 MiB. See [DRAM and TLB diagnostics](docs/dram-tlb.md) for
+mirrors, empty-bank reads and the distinction from the contiguous RAM used by
+synthetic harnesses; [references](docs/references.md) records the Axil
+module-size evidence gap.
+
+Original-firmware Solaris 2.6 checks cover SS-5/CGsix at 256 MiB, SS-20/SX at
+448 MiB, and SS-20/CGsix and Axil at 512 MiB. These include bounded memory
+verification, nonzero disk I/O, clean halt and reboot checksum checks, with
+one and two CPUs on the MBus profiles. Heliacal also reaches usable graphical
+consoles at those maxima. See [machine profiles](docs/machines.md) for setup
+requirements and the limits of this acceptance.
 
 ## Development
 

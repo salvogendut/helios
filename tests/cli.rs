@@ -469,6 +469,199 @@ fn boot_cpu_count_is_validated_and_reports_both_processors() {
     }
 }
 
+#[test]
+fn boot_display_selection_validates_the_final_ram_and_rom_combination() {
+    let prom = Image::new(&[1, 0, 0, 0]);
+    let cgsix = Image::new(&vec![0; 32768]);
+    let cg = cgsix.path();
+
+    for args in [
+        vec![
+            "boot",
+            prom.path(),
+            "--machine",
+            "ss20",
+            "--ram-mib",
+            "512",
+            "--display",
+            "cgsix",
+            "--cgsix-rom",
+            cg,
+            "--steps",
+            "1",
+        ],
+        vec![
+            "boot",
+            prom.path(),
+            "--cgsix-rom",
+            cg,
+            "--ram-mib",
+            "512",
+            "--steps",
+            "1",
+            "--machine",
+            "ss20",
+            "--display",
+            "cgsix",
+        ],
+        vec![
+            "boot",
+            prom.path(),
+            "--machine",
+            "ss20",
+            "--ram-mib",
+            "512",
+            "--display",
+            "none",
+            "--steps",
+            "1",
+        ],
+        vec![
+            "boot",
+            prom.path(),
+            "--machine",
+            "ss20",
+            "--ram-mib",
+            "512",
+            "--cgsix-rom",
+            cg,
+            "--steps",
+            "1",
+        ],
+        vec![
+            "boot",
+            prom.path(),
+            "--machine",
+            "ss20",
+            "--ram-mib",
+            "448",
+            "--display",
+            "sx",
+            "--steps",
+            "1",
+        ],
+        vec![
+            "boot",
+            prom.path(),
+            "--machine",
+            "axil320",
+            "--ram-mib",
+            "512",
+            "--display",
+            "none",
+            "--steps",
+            "1",
+        ],
+    ] {
+        let output = helios(&args);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    for args in [
+        vec![
+            "boot",
+            prom.path(),
+            "--machine",
+            "ss20",
+            "--ram-mib",
+            "512",
+            "--steps",
+            "1",
+        ],
+        vec![
+            "boot",
+            prom.path(),
+            "--machine",
+            "ss20",
+            "--ram-mib",
+            "512",
+            "--display",
+            "sx",
+            "--steps",
+            "1",
+        ],
+        vec![
+            "boot",
+            prom.path(),
+            "--machine",
+            "ss20",
+            "--ram-mib",
+            "512",
+            "--display",
+            "cgsix",
+            "--steps",
+            "1",
+        ],
+        vec![
+            "boot",
+            prom.path(),
+            "--machine",
+            "ss20",
+            "--ram-mib",
+            "512",
+            "--display",
+            "none",
+            "--cgsix-rom",
+            cg,
+            "--steps",
+            "1",
+        ],
+        vec![
+            "boot",
+            prom.path(),
+            "--machine",
+            "ss20",
+            "--ram-mib",
+            "512",
+            "--display",
+            "sx",
+            "--cgsix-rom",
+            cg,
+            "--steps",
+            "1",
+        ],
+        vec![
+            "boot",
+            prom.path(),
+            "--machine",
+            "ss5",
+            "--display",
+            "sx",
+            "--steps",
+            "1",
+        ],
+        vec![
+            "boot",
+            prom.path(),
+            "--machine",
+            "axil320",
+            "--display",
+            "sx",
+            "--steps",
+            "1",
+        ],
+        vec!["boot", prom.path(), "--display", "bogus", "--steps", "1"],
+        vec!["boot", prom.path(), "--display", "--steps", "1"],
+        vec![
+            "boot",
+            prom.path(),
+            "--display",
+            "none",
+            "--display",
+            "none",
+            "--steps",
+            "1",
+        ],
+        vec!["run", prom.path(), "--display", "none", "--steps", "1"],
+    ] {
+        assert!(!helios(&args).status.success(), "{args:?}");
+    }
+}
+
 fn review_imm(rd: u32, op3: u32, rs1: u32, value: u32) -> u32 {
     2 << 30 | rd << 25 | op3 << 19 | rs1 << 14 | 1 << 13 | value & 0x1fff
 }

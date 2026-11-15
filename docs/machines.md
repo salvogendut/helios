@@ -19,10 +19,64 @@ cargo run --release -- boot local/firmware/axil320-2-19.bin \
   --nvram local/axil-ttya.nvram --steps 300000000
 ```
 
-`--nvram FILE` overrides the profile's default identity. The initial RAM
-configuration is the SS-5-style 128 MiB unless `--ram-mib` is supplied; the
-SS-20 profile lays RAM out in eight 64 MiB DSIMM banks with 16/32/64 MiB
-modules, low slots first.
+`--nvram FILE` overrides the profile's default identity. `--display sx|cgsix|none`
+selects installed video independently of the serial console: SS-20 defaults to
+SX, while SS-5/Axil default to no framebuffer. `--cgsix-rom` supplies the card
+ROM and infers CGsix when `--display` is omitted. Explicit options are validated
+after parsing, so their order does not matter. The initial RAM configuration is
+128 MiB unless `--ram-mib` is supplied. The core validates eight 8/32 MiB
+SS-5 banks (maximum 256 MiB), seven 16/32/64 MiB SS-20 banks with SX
+(maximum 448 MiB), or eight SS-20 banks without a VSIMM (maximum 512 MiB).
+`--machine ss20 --display cgsix --cgsix-rom FILE --ram-mib 512` installs a
+CGsix card without SX/VSIMM. `--display none` also leaves all eight DRAM
+sockets available, independently of the serial console selection.
+
+Axil has eight RAM sockets, two VSIMM-capable according to the owner. Its
+current CGsix profile has no VSIMM and supports 512 MiB. The pinned Axil OBP
+2.19 recognizes the model's 16/64 MiB banks; the former contiguous 32 MiB bank
+simulation was misidentified as 64 MiB. Consequently, 32 MiB total uses two
+16 MiB banks, 416 MiB fits eight banks, and 432/480/496 MiB are rejected. This firmware
+compatibility restriction does not establish which modules every physical
+Axil supports. See [DRAM layout](dram-tlb.md) and [sources](references.md).
+
+Solaris 2.6 acceptance with the original firmware covers these maxima:
+
+| Configuration | Installed RAM | Validated CPU counts |
+| --- | --- | --- |
+| SS-5 / CGsix | 256 MiB | 1 |
+| SS-20 / native SX | 448 MiB | 1 and 2 |
+| SS-20 / CGsix, no VSIMM | 512 MiB | 1 and 2 |
+| Axil / CGsix | 512 MiB | 1 and 2 |
+
+The checks reach a root shell, report memory and online CPUs, verify at least
+64 MiB of distinct allocated data, write nonzero disk data, and reread its
+checksum after a clean halt and reboot. Physical accesses and DMA above
+256 MiB are tested independently; the allocation workload alone does not
+establish where Solaris placed those pages. Heliacal also accepts typing and
+capture/release at each graphical maximum. These are bounded console checks,
+not full POST or exhaustive desktop compatibility tests. SS-20 with a mixed
+416 MiB population additionally validates the split 32 MiB DSIMM mapping.
+
+### SS-20 CGsix console configuration
+
+With original SS-20 OBP 2.25R, exclude the unimplemented DBRI audio slot from
+firmware probing before booting Solaris with CGsix as the console:
+
+```text
+ok setenv sbus-probe-list f0123
+ok setenv input-device keyboard
+ok setenv output-device screen
+ok reset
+```
+
+The default `fe0123` probes slot `e`, whose placeholder produces a nameless
+DBRI node before CGsix. Solaris 2.6 stops copying those sibling nodes and later
+panics in `ddi_binding_name()` while resolving its console. This reproduces at
+128 MiB as well as 512 MiB. The setting retains the onboard SCSI/Ethernet slot
+`f` and external slots 0–3; it disables probing the unsupported audio slot.
+It is stored in the machine's NVRAM through normal firmware commands, with no
+ROM or guest-kernel patches. Native SX does not need this workaround. Full
+DBRI identity/audio emulation remains outside the current device subset.
 
 ## SS-20/Axil implementation
 
