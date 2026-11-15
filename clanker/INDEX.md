@@ -1,5 +1,10 @@
 # Agent notes
 
+- [SMP slice 4 review](smp-slice4-review.md) — CLI fixes, 605/607 tests, SS-20 SMP input and Axil CDE lifecycle/persistence accepted; independent Axil move/resize/expose/iconify/focus assertions complete; experimental slice ready for incremental merge, temporary clones/builds cleaned.
+
+- [SMP slice 4](smp-slice4.md) — original two-CPU SS-20/Axil OBP prompts, experimental Heliacal CPU selection, and the Solaris SMP work order.
+- [Solaris SMP progress](smp-progress.md) — corrected CLI power-off/hot path, two-CPU OBP/Solaris work and persistence, UP regressions, 605/607 tests and 5/5 CLI fixtures; SS-20 input and Axil CDE lifecycle/window/focus checkpoints accepted for experimental integration.
+
 - [build-environment.md](build-environment.md) — howto: reuse the local Prismatic Rust toolchain.
 - [trap-state.md](trap-state.md) — rule: follow V8 state-register and error-mode rules when references differ.
 - [memory-system.md](memory-system.md) — reference: microSPARC-II ASI/SRMMU rules and QEMU differences.

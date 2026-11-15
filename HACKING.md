@@ -40,7 +40,7 @@ or assume host scheduling is guest timing.
 | `src/cache.rs` | Cache diagnostic arrays and indexed invalidation; ordinary cache hits/fills pending |
 | `src/dram.rs` | SS-5 DSIMM layout, mirrors and empty-bank behavior |
 | `src/machine.rs` | Bare-metal/reset construction, SS-5/SS-20/Axil profiles, processor modules, deterministic scheduler, RAM/PROM limits and demo images |
-| `src/topology.rs` | MBus connector, hardware processor/module identities, arbitration and run-state enums; production constructors remain single-CPU |
+| `src/topology.rs` | MBus connector, hardware processor/module identities, arbitration and run-state enums; default constructors remain single-CPU, while the validated `--cpus 2` path selects two single-CPU modules |
 | `src/main.rs` | CLI parsing, image files, trace printing and CPU step budget |
 | `tests/` | Architectural and boundary behavior through the public library |
 
@@ -48,10 +48,10 @@ or assume host scheduling is guest timing.
 bank geometry. SS-20/Axil keep the same device models but use the high physical
 map, a 36-bit reference-MMU mode and SuperSPARC-II boot/TLB register behavior.
 They are functional profiles: there is no SuperSPARC pipeline or full
-ECC/parity model, and production constructors still select one CPU. An explicit
-two-module SS-20/Axil harness provides deterministic synthetic SMP; original-OBP
-secondary startup and two-CPU OS boot remain out of scope. SS-20 installs a
-native SX/CG14
+ECC/parity model. The default constructors select one CPU; the validated CLI
+`--cpus 2` path constructs the two single-CPU SS-20/Axil modules and runs the
+deterministic scheduler. Original OBP and Solaris 2.6 recognize both CPUs;
+four-CPU dual-CPU modules remain out of scope. SS-20 installs a native SX/CG14
 and VSIMM subset; Axil uses a CGsix SBus card. Both profiles have reached
 Solaris 2.6 userland, and the native SS-20 graphics tests exercise Xsun/olwm
 window operations. Heliacal also validates graphical-console startup, xterm

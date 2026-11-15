@@ -5,7 +5,7 @@ use helios::devices::{
 };
 use helios::machine::{
     demo_image, serial_demo_image, timer_demo_image, trap_demo_image, Machine, MachineProfile,
-    CPU_CLOCK_HZ, DEFAULT_RAM_BYTES, TARGET,
+    SchedulerError, CPU_CLOCK_HZ, DEFAULT_RAM_BYTES, TARGET,
 };
 use helios::net::{NatConfig, NatEngine, DNS_PORT};
 use helios::serial_host::TcpSerial;
@@ -24,7 +24,7 @@ Usage:
   helios serial-demo [--trace]
   helios timer-demo [--trace]
   helios run FILE [--load-address N] [--entry N] [--steps N] [--ram-mib N] [--trace]
-  helios boot PROM [--machine ss5|ss20|axil320] [--steps N] [--ram-mib N] [--trace]
+  helios boot PROM [--machine ss5|ss20|axil320] [--cpus 1|2] [--steps N] [--ram-mib N] [--trace]
                    [--serial-in FILE] [--serial-port-a PORT] [--serial-port-b PORT]
                    [--keyboard] [--cgsix-rom FILE] [--nvram FILE] [--nvram-out NEW_FILE]
                    [--disk RAW_IMAGE | --disk-rw RAW_IMAGE] [--cdrom ISO_IMAGE]
@@ -34,15 +34,17 @@ Usage:
 FILE is a raw big-endian SPARC instruction/data image, loaded into RAM.
 Addresses accept decimal or 0x-prefixed hexadecimal. Entry defaults to the load
 address (default 0). Defaults: 1000 CPU steps, 128 MiB RAM. Each completed
-instruction, synchronous trap or interrupt entry counts as one step. --trace
-prints all three separately. Software resets have their own trace/count; their
+instruction, synchronous trap or interrupt entry counts as one step; dual-CPU
+execution reports one selected processor event per budget unit and tagged
+per-CPU counters. --trace prints all three separately. Software resets have their own trace/count; their
 triggering stores also count as instructions. Unsupported behavior and CPU error
 state exit with status 1.
 Reaching the step budget exits successfully; it does not mean guest halt.
 
 boot loads a raw PROM (up to 1 MiB) and starts the CPU/MMU at reset.
 --machine selects the initial profile (default ss5): SS-5, single-processor
-SS-20 or the Axil 320 clone. SS-20/Axil use the high sun4m device map and a
+SS-20 or the Axil 320 clone. --cpus selects one or two single-CPU MBus modules;
+SS-5 accepts only one. The default is one. SS-20/Axil use the high sun4m device map and a
 36-bit boot window but the same device models and 128 MiB default RAM.
 Its RAM must fit eight 8 MiB or 32 MiB DSIMMs; low slots receive larger modules first.
 boot and serial-demo send TTYA bytes to stdout and diagnostics to stderr.
@@ -62,8 +64,10 @@ Neither disk option creates or truncates an image; choose only one.
 mask 255.255.255.0, DHCP/RARP, DNS relay and UDP). --net-gateway, --net-client,
 --net-mask and --net-dns override its addresses. --tftp-dir adds the read-only
 TFTP server for network boot. TCP NAT is not implemented yet.
-sun4m clocks advance 100 ns per completed step, a functional scheduling convention.
-The library can also advance device time explicitly. Polled serial, NVRAM/RTC,
+Single-CPU sun4m clocks advance 100 ns per completed step, a functional scheduling
+convention. With --cpus 2, one budget unit is one selected processor event; each
+CPU has an independent deadline and the shared device clock does not add another
+100 ns for a tied CPU event. The library can also advance device time explicitly. Polled serial, NVRAM/RTC,
 both SCCs, counter timers, interrupt control and reset/status are installed;
 original OBP and Solaris 2.6/7 serial installer prompts have been verified.";
 
@@ -97,6 +101,9 @@ fn execute(
     ports: &mut SerialPorts,
     mut network: Option<&mut NatEngine>,
 ) -> Result<(), Box<dyn Error>> {
+    if machine.secondary_cpu().is_some() {
+        return execute_scheduled(machine, steps, trace, console_input, ports, network);
+    }
     let mut instructions = 0u64;
     let mut traps = 0u64;
     let mut interrupts = 0u64;
@@ -273,6 +280,216 @@ fn execute(
     Ok(())
 }
 
+#[cold]
+#[inline(never)]
+fn execute_scheduled(
+    machine: &mut Machine,
+    steps: u64,
+    trace: bool,
+    console_input: Option<&[u8]>,
+    ports: &mut SerialPorts,
+    mut network: Option<&mut NatEngine>,
+) -> Result<(), Box<dyn Error>> {
+    let mut instructions = 0u64;
+    let mut traps = 0u64;
+    let mut interrupts = 0u64;
+    let mut resets = 0u64;
+    let mut per_cpu_instructions = [0u64; 2];
+    let mut per_cpu_traps = [0u64; 2];
+    let mut per_cpu_interrupts = [0u64; 2];
+    let mut per_cpu_resets = [0u64; 2];
+    let mut input_position = 0;
+    let console = console_input.is_some();
+    for _ in 0..steps {
+        if let Some(devices) = machine.bus.devices_mut() {
+            if let Some(input) = console_input {
+                while let Some(&byte) = input.get(input_position) {
+                    if !devices.serial.receive(Channel::A, byte) {
+                        break;
+                    }
+                    input_position += 1;
+                }
+            }
+            if let Some(host) = ports.a.as_mut() {
+                while let Some(byte) = host.receive() {
+                    if !devices.serial.receive(Channel::A, byte) {
+                        break;
+                    }
+                }
+            }
+            if let Some(host) = ports.b.as_mut() {
+                while let Some(byte) = host.receive() {
+                    if !devices.serial.receive(Channel::B, byte) {
+                        break;
+                    }
+                }
+            }
+        }
+        let stepped = machine.step_scheduled();
+        if console || ports.a.is_some() || ports.b.is_some() {
+            if let Some(devices) = machine.bus.devices_mut() {
+                let bytes = devices.serial.take_output(Channel::A);
+                if !bytes.is_empty() {
+                    if let Some(host) = ports.a.as_mut() {
+                        host.send(&bytes);
+                    }
+                    if console {
+                        let mut stdout = std::io::stdout().lock();
+                        stdout.write_all(&bytes)?;
+                        stdout.flush()?;
+                    }
+                }
+                if ports.b.is_some() {
+                    let bytes = devices.serial.take_output(Channel::B);
+                    if !bytes.is_empty() {
+                        if let Some(host) = ports.b.as_mut() {
+                            host.send(&bytes);
+                        }
+                    }
+                }
+            }
+        }
+        if stepped.is_ok() {
+            if let Some(net) = network.as_mut() {
+                if let Some(devices) = machine.bus.devices_mut() {
+                    let now = std::time::Instant::now();
+                    while let Some(frame) = devices.ethernet.take_frame() {
+                        net.input(&frame, now);
+                    }
+                    net.poll(now);
+                    while let Some(frame) = net.output() {
+                        if !devices.ethernet.receive_frame(&frame) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let (processor, step) = match stepped {
+            Ok(outcome) => (outcome.processor, outcome.step),
+            Err(SchedulerError::Cpu { fault, .. }) if fault.is_power_off() => {
+                report(console, format_args!("System powered off."));
+                return Ok(());
+            }
+            Err(error) => return Err(error.to_string().into()),
+        };
+        let cpu_index = usize::from(processor) / 2;
+        match step {
+            Step::SoftwareReset {
+                pc,
+                npc,
+                instruction,
+            } => {
+                resets += 1;
+                per_cpu_resets[cpu_index] += 1;
+                if instruction.is_some() {
+                    instructions += 1;
+                    per_cpu_instructions[cpu_index] += 1;
+                }
+                if trace {
+                    let trigger = instruction.map_or_else(
+                        || "bus-request".to_owned(),
+                        |word| format!("instruction={word:08x}"),
+                    );
+                    report(
+                        console,
+                        format_args!(
+                            "reset=software cpu={processor} pc={pc:08x} npc={npc:08x} {trigger}"
+                        ),
+                    );
+                }
+            }
+            Step::Executed {
+                pc,
+                npc,
+                instruction,
+            } => {
+                instructions += 1;
+                per_cpu_instructions[cpu_index] += 1;
+                if trace {
+                    report(
+                        console,
+                        format_args!(
+                            "pc={pc:08x} npc={npc:08x} instruction={instruction:08x} cpu={processor}"
+                        ),
+                    );
+                }
+            }
+            Step::TrapTaken {
+                fault,
+                trap_type,
+                vector,
+            } => {
+                traps += 1;
+                per_cpu_traps[cpu_index] += 1;
+                if trace {
+                    report(
+                        console,
+                        format_args!(
+                            "trap={trap_type:02x} vector={vector:08x} cpu={processor} {fault}"
+                        ),
+                    );
+                }
+            }
+            Step::InterruptTaken {
+                pc,
+                npc,
+                level,
+                vector,
+            } => {
+                interrupts += 1;
+                per_cpu_interrupts[cpu_index] += 1;
+                if trace {
+                    report(
+                        console,
+                        format_args!(
+                            "interrupt={level} vector={vector:08x} pc={pc:08x} npc={npc:08x} cpu={processor}"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    report(console, format_args!(
+        "Step budget reached ({steps}: {instructions} instructions, {traps} traps, {interrupts} interrupts, {resets} resets); CPU0 PC={:#010x}, nPC={:#010x}, CPU0 counters={:?}",
+        machine.cpu.pc(),
+        machine.cpu.npc(),
+        (per_cpu_instructions[0], per_cpu_traps[0], per_cpu_interrupts[0], per_cpu_resets[0])
+    ));
+    report(
+        console,
+        format_args!(
+            "CPU2 PC={:#010x}, nPC={:#010x}, CPU2 counters={:?}",
+            machine.secondary_cpu().map_or(0, |cpu| cpu.cpu.pc()),
+            machine.secondary_cpu().map_or(0, |cpu| cpu.cpu.npc()),
+            (
+                per_cpu_instructions[1],
+                per_cpu_traps[1],
+                per_cpu_interrupts[1],
+                per_cpu_resets[1]
+            )
+        ),
+    );
+    if let Some(net) = network {
+        let stats = net.stats();
+        eprintln!(
+            "Host NAT: {} guest frames, {} host frames, {} ARP, {} RARP, {} BOOTP, {} ICMP, {} UDP, {} DNS, {} TFTP, {} dropped, {} unsupported TCP",
+            stats.guest_frames,
+            stats.host_frames,
+            stats.arp_requests,
+            stats.rarp_requests,
+            stats.bootp_requests,
+            stats.icmp_echoes,
+            stats.udp_requests,
+            stats.dns_queries,
+            stats.tftp_datagrams,
+            stats.dropped,
+            stats.unsupported_tcp
+        );
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
@@ -281,7 +498,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             if args.next().is_some() {
                 return Err("info takes no options".into());
             }
-            println!("Helios {}\nTarget: {TARGET}\nMachine profiles: ss5 (default), ss20, axil320\nStatus: integer subset, SRMMU, reset/PROM, polled serial, NVRAM/RTC, interrupts and counter timers; original SS-5/SS-20/Axil firmware prompts verified, no OS boot", env!("CARGO_PKG_VERSION"));
+            println!("Helios {}\nTarget: {TARGET}\nMachine profiles: ss5 (default), ss20, axil320\nStatus: integer subset, SRMMU, reset/PROM, polled serial, NVRAM/RTC, interrupts and counter timers; original SS-5/SS-20/Axil firmware prompts and single/two-CPU Solaris 2.6 boots verified", env!("CARGO_PKG_VERSION"));
             println!("Profile: {} MHz microSPARC-II, {} MiB RAM, TTYA/TTYB\nPlanned devices: CGsix (TurboGX), SCSI disk and CD-ROM, LANCE Ethernet", CPU_CLOCK_HZ / 1_000_000, DEFAULT_RAM_BYTES / (1024 * 1024));
         }
         Some("demo") => {
@@ -402,6 +619,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             let mut ram_bytes = DEFAULT_RAM_BYTES;
             let mut trace = false;
             let mut profile = MachineProfile::Ss5;
+            let mut cpus = 1usize;
             let mut serial_in = None;
             let mut serial_port_a = None;
             let mut serial_port_b = None;
@@ -476,6 +694,18 @@ fn run() -> Result<(), Box<dyn Error>> {
                         "axil320" => MachineProfile::Axil320,
                         _ => return Err(format!("unknown machine profile: {value}").into()),
                     };
+                    continue;
+                }
+                if boot && option == "--cpus" {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "--cpus requires 1 or 2".to_owned())?;
+                    cpus = value
+                        .parse::<usize>()
+                        .map_err(|_| "--cpus requires 1 or 2".to_owned())?;
+                    if !matches!(cpus, 1 | 2) {
+                        return Err("--cpus requires 1 or 2".into());
+                    }
                     continue;
                 }
                 if boot && option == "--net" {
@@ -559,7 +789,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 } else {
                     profile.default_nvram()
                 };
-                Machine::with_profile(profile, ram_bytes, &bytes, nvram)?
+                Machine::with_profile_processors(profile, ram_bytes, &bytes, nvram, cpus)?
             } else {
                 let mut machine = Machine::bare_metal(ram_bytes, entry)?;
                 machine.load_image(load, &bytes)?;

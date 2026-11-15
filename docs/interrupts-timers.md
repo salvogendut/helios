@@ -43,7 +43,7 @@ pipeline exception arbitration and interrupt latency are outside this model.
 `Step::InterruptTaken` carries the interrupted PC/nPC, level and vector;
 `Step::TrapTaken` continues to carry a synchronous fault. `Cpu::step` supplies no
 interrupt lines. `Machine::step` supplies CPU 0's wired controller outputs.
-For two-CPU synthetic execution, `Machine::step_scheduled` samples the selected
+For two-CPU execution, `Machine::step_scheduled` samples the selected
 processor's bank and reports `InterruptTaken` with that hardware processor
 number. The CLI counts instructions, synchronous traps and interrupt entries
 separately.
@@ -291,8 +291,7 @@ work. User-timer tests cover both word carries, overflow clear, start/stop
 phase, mode changes with pending interrupts, forbidden accesses, translated
 write protection and alternate-space doubleword transfers on both populated
 banks. Initial original OBP and OpenBIOS probes are recorded separately.
-Single-CPU original-OBP and Solaris boot evidence is recorded in
-[machines.md](machines.md). Synthetic two-CPU scheduler tests cover progress,
-atomic locks, directed IPIs, independent TLB state, timer parity and reset
-isolation. No differential reference execution or two-CPU firmware
-startup/prompt has been demonstrated.
+Single-CPU and two-CPU original-OBP/Solaris boot evidence is recorded in
+[machines.md](machines.md). Scheduler tests cover atomics, directed IPIs,
+independent TLB state, timer parity and reset isolation. No differential
+reference execution has been demonstrated.
