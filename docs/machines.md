@@ -74,12 +74,13 @@ increasing a frontend count alone would not model that hardware. See
   module entry. `Machine::with_profile_processors` constructs one or two
   independently owned modules; the second module has its
   own CPU, MMU, FPU and MXCC and starts arbitration-disabled. SS-5 rejects two
-  processors. Default constructors and the core CLI still use one CPU.
-  Original SS-20 2.25R and Axil 2.19 ROMs identify both CPUs and reach a
-  responsive serial `ok` with `step_scheduled`, including the firmware's
-  startup reset. Two-CPU Solaris boot is not yet accepted. Heliacal's
-  experimental CPU selection uses this scheduler on one worker; changing
-  count requires cold replacement, not live insertion.
+  processors. Default constructors and the CLI default to one CPU; `--cpus 2`
+  selects the two single-CPU modules. Original SS-20 2.25R and Axil 2.19 ROMs
+  identify both CPUs, reach a responsive serial `ok` with `step_scheduled`,
+  and include the firmware's startup reset. Solaris 2.6 boots with CPUs 0 and
+  2 online on both profiles. Four CPUs require dual-CPU modules and are not
+  implemented. Heliacal's experimental CPU selection uses this scheduler on
+  one worker; changing count requires cold replacement, not live insertion.
 - Empty CPU timer/interrupt slots and unpopulated VSIMM probe windows return
   zero and discard writes, matching an unpopulated machine. The populated
   SS-20 SX/VSIMM windows route to the device before these empty-slot defaults.
@@ -234,8 +235,8 @@ unverified. CPU
 identity is profile-specific: SS-5 reports the MB86904 microSPARC-II IU/FPU
 identity, while SS-20 and Axil report SuperSPARC-II IU version 3 and FPU
 version 0. The interpreter and reference MMU remain functional models; there is
-no SuperSPARC pipeline or cache-fill model, original-OBP two-CPU startup, full
-PTP2 replacement policy, complete SX acceleration, DBRI audio, BPP or Axil
+no SuperSPARC pipeline or cache-fill model, four-CPU dual-module configurations,
+full PTP2 replacement policy, complete SX acceleration, DBRI audio, BPP or Axil
 custom-controller model. CG6/TurboGX cards can be attached through
 `--cgsix-rom`; SS-20/Axil place them in SBus slot 2 at physical
 `0xe_2000_0000`, matching the Sun-4M slot map. The Axil 320 uses a CG6 as its
@@ -259,3 +260,11 @@ startup, xterm typing, mouse dragging with an unchanged translated client,
 and capture/release checks on Linux/X11. Fresh SS-5 and Axil disk clones reach
 login and return to OBP after a clean halt. See [graphics](graphics.md) for the
 current device subset.
+
+The experimental two-CPU Heliacal checkpoints include SS-20 native-SX terminal
+typing, capture/release, pause/resume and window dragging. Axil/CGsix CDE also
+passes movement, maximize/restore, expose, iconify/restore and focus-loss key
+release. Guest geometry and native-frame comparisons verify these operations.
+Axil CPU-bound work overlaps filesystem allocation/I/O; checksum markers
+survive clean halt and confirmed frontend reset/reboot. These are bounded
+Solaris 2.6 workloads, not exhaustive SMP or operating-system compatibility.

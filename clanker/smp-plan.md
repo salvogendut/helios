@@ -4,10 +4,14 @@
 Branch: `feat/sun4m-smp-startup`, from `4e6ab81`. Slices 1 through 3 are
 reviewed, merged and pushed to `main`. The accepted slice-3 tree has 601
 normal / 603 feature tests and retains single-CPU Solaris boot compatibility.
-Original SS-20 and Axil firmware now identifies two CPUs and reaches a
-responsive serial prompt in a disk-free probe on that unchanged core.
-Continue with [slice 4](smp-slice4.md); two-CPU Solaris and desktop acceptance
-remain open. Issue #2 remains open.
+Original SS-20 and Axil firmware identifies two CPUs and reaches a responsive
+serial prompt. Slice 4 now also boots Solaris 2.6 with CPUs 0 and 2 online on
+both profiles, including per-CPU guest work and disk persistence; see
+[smp-progress.md](smp-progress.md). The recorded Heliacal SMP desktop/lifecycle
+checkpoints and the remaining Axil window/focus checks are accepted; slice 4
+is recommended for incremental merge with the experimental label retained.
+Dedicated allocation/mapping stress and broader compatibility remain outside
+the verified evidence. Issue #2 has not been closed by this review.
 
 ## Scope and baseline
 

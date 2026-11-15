@@ -26,8 +26,8 @@ parallel-port DMA register. Installed Solaris boot checkpoints are described
 below. See the
 [latest firmware checkpoint](docs/firmware.md#timer-and-ethernet-bring-up).
 
-Single-processor **SPARCstation 20** and **Axil 320** profiles boot their original
-firmware to the serial `ok` prompt. They reuse the SS-5 device models on the
+**SPARCstation 20** and **Axil 320** profiles boot their original firmware to
+the serial `ok` prompt with either one CPU or two single-CPU MBus modules. They reuse the SS-5 device models on the
 high sun4m address map with 36-bit reference-MMU behavior, SMC ECC register
 access and IDPROM machine type `0x72`; the Axil profile uses its own MAC and
 host ID. Both profiles have booted installed Solaris 2.6 disks to a console
@@ -36,16 +36,17 @@ native SX/CG14 subset also runs Xsun with olwm and xterm; window movement,
 Full Size/Normal Size, uncover and iconify/restore have been exercised through
 the headless core. Heliacal also boots the graphical Solaris console and runs
 Xsun/olwm/xterm with verified typing, mouse dragging and input capture/release.
-Fresh SS-5 and Axil disk clones reach login and shut down cleanly. Full
-POST/cache accuracy, a SuperSPARC pipeline model and multiprocessor MBus
-remain incomplete. See
-[machine profiles](docs/machines.md).
-
-The deterministic two-CPU scheduler now runs both original SS-20 and Axil
-ROMs to a responsive serial `ok`; their banners identify two processors.
-Heliacal's experimental CPU selector preserves one or two CPUs in named
-machines. These results establish firmware startup, not two-CPU Solaris
-support. Four CPUs require dual-CPU MBus modules, which are not implemented.
+Fresh SS-5 and Axil disk clones reach login and shut down cleanly. The
+deterministic two-CPU scheduler runs both original SS-20 and Axil ROMs to a
+responsive serial `ok`; their banners identify two processors. Solaris 2.6
+also boots on disposable SS-20 and Axil disk clones with CPUs 0 and 2 online,
+processor-bound guest work, disk I/O, checksum persistence across reboot and
+clean halts. Heliacal's experimental CPU selector preserves one or two CPUs in
+named machines. Recorded two-CPU Heliacal checkpoints include native-SX
+terminal input and dragging, plus Axil CDE window operations, focus/capture,
+disk activity and clean reset/reboot persistence. SMP remains experimental;
+full POST/cache accuracy, a SuperSPARC pipeline model and four-CPU dual-module
+MBus configurations remain incomplete. See [machine profiles](docs/machines.md).
 
 The optional **graphical console** runs the original TurboGX FCode ROM and
 Sun Type 5 keyboard protocol. SS-20 can also use its native SX/CG14 console.
@@ -96,10 +97,11 @@ The implemented foundation includes:
   translation, access permissions, contexts, fault registers and TLB flush/probe.
 - CPU/MMU reset, boot-mode instruction mapping, SS-20/Axil high-address profiles,
   36-bit reference-MMU aliases, SMC ECC registers and a raw PROM runner.
-- Explicit two-module SS-20/Axil synthetic execution with independently owned
+- Explicit two-module SS-20/Axil execution with independently owned
   CPUs/MMUs/FPUs/MXCCs, deterministic processor-tagged scheduling, directed
-  IPIs, atomic guest locks and one shared device clock. Original-OBP two-CPU
-  startup and two-CPU OS boot remain future work.
+  IPIs, atomic guest locks and one shared device clock. Original OBP and
+  Solaris 2.6 recognize CPUs 0 and 2; four-CPU dual-module configurations and
+  complete desktop SMP acceptance remain future work.
 - Z8530 asynchronous polling and receive/transmit/BREAK interrupts, bounded byte queues,
   loopback telnet serial consoles for TTYA/TTYB, and an M48T08 NVRAM/RTC with SS-5
   IDPROM and explicit clock advancement.
@@ -240,9 +242,9 @@ Select an SS-20 or Axil 320 profile with its high-address firmware:
 
 ```sh
 cargo run --release -- boot local/firmware/ss10-20-v2.25r-rom \
-  --machine ss20 --keyboard --nvram local/ss20-ttya.nvram --steps 300000000
+  --machine ss20 --cpus 2 --keyboard --nvram local/ss20-ttya.nvram --steps 300000000
 cargo run --release -- boot local/firmware/axil320-2-19.bin \
-  --machine axil320 --keyboard --cgsix-rom local/firmware/turbogx.bin \
+  --machine axil320 --cpus 2 --keyboard --cgsix-rom local/firmware/turbogx.bin \
   --nvram local/axil-ttya.nvram --steps 300000000
 ```
 

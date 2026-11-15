@@ -395,3 +395,269 @@ fn boot_saves_guest_nvram_changes_on_error_and_rejects_invalid_input_before_crea
     assert!(String::from_utf8_lossy(&output.stderr).contains("exactly 8192 bytes"));
     assert!(!saved.0.exists());
 }
+
+#[test]
+fn boot_cpu_count_is_validated_and_reports_both_processors() {
+    let prom = Image::new(&[1, 0, 0, 0]);
+    let dual = helios(&[
+        "boot",
+        prom.path(),
+        "--machine",
+        "ss20",
+        "--cpus",
+        "2",
+        "--steps",
+        "1",
+        "--ram-mib",
+        "16",
+    ]);
+    assert!(
+        dual.status.success(),
+        "{}",
+        String::from_utf8_lossy(&dual.stderr)
+    );
+    assert!(String::from_utf8_lossy(&dual.stderr).contains("CPU2 counters"));
+    let single = helios(&[
+        "boot",
+        prom.path(),
+        "--machine",
+        "ss20",
+        "--steps",
+        "1",
+        "--ram-mib",
+        "16",
+    ]);
+    assert!(single.status.success());
+    assert!(!String::from_utf8_lossy(&single.stderr).contains("CPU2 counters"));
+    for args in [
+        vec![
+            "boot",
+            prom.path(),
+            "--machine",
+            "ss5",
+            "--cpus",
+            "2",
+            "--steps",
+            "1",
+            "--ram-mib",
+            "16",
+        ],
+        vec![
+            "boot",
+            prom.path(),
+            "--machine",
+            "ss20",
+            "--cpus",
+            "3",
+            "--steps",
+            "1",
+            "--ram-mib",
+            "16",
+        ],
+        vec![
+            "run",
+            prom.path(),
+            "--cpus",
+            "2",
+            "--steps",
+            "1",
+            "--ram-mib",
+            "16",
+        ],
+    ] {
+        assert!(!helios(&args).status.success(), "{args:?}");
+    }
+}
+
+fn review_imm(rd: u32, op3: u32, rs1: u32, value: u32) -> u32 {
+    2 << 30 | rd << 25 | op3 << 19 | rs1 << 14 | 1 << 13 | value & 0x1fff
+}
+
+fn review_set32(rd: u32, value: u32) -> Vec<u32> {
+    vec![
+        rd << 25 | 4 << 22 | value >> 10,
+        review_imm(rd, 2, rd, value & 0x3ff),
+    ]
+}
+
+fn review_alt(rd: u32, op3: u32, rs1: u32, asi: u32) -> u32 {
+    3 << 30 | rd << 25 | op3 << 19 | rs1 << 14 | asi << 5
+}
+
+fn review_poweroff() -> Vec<u32> {
+    // AUXIO2 power-off byte store at PA 0xff1a01000 via ASI 0x2f.
+    let mut words = review_set32(1, 0xf1a01000);
+    words.push(review_imm(2, 2, 0, 1));
+    words.push(review_alt(2, 0x15, 1, 0x2f));
+    words
+}
+
+fn review_secondary(action: &[u32]) -> (Vec<u32>, usize) {
+    let mut words = review_set32(1, 0x01c00f04);
+    words.push(review_alt(3, 0x10, 1, 2));
+    words.push(review_imm(3, 0x26, 3, 24));
+    words.push(review_imm(0, 0x14, 3, 10));
+    let branch = words.len();
+    words.extend([0, 0x0100_0000]);
+    words.extend(review_set32(1, 0xe0001008));
+    words.extend([review_imm(2, 2, 0, 4), review_alt(2, 0x14, 1, 0x2f)]);
+    words.extend([0x1080_0000, 0x0100_0000]);
+    words[branch] = 1 << 25 | 2 << 22 | (words.len() - branch) as u32;
+    let entry = words.len() * 4;
+    words.extend(action);
+    (words, entry)
+}
+
+fn review_run(model: &str, cpus: usize, words: &[u32], trace: bool) -> Output {
+    let image = Image::new(
+        &words
+            .iter()
+            .flat_map(|word| word.to_be_bytes())
+            .collect::<Vec<_>>(),
+    );
+    let cpu_text = cpus.to_string();
+    let mut args = vec![
+        "boot",
+        image.path(),
+        "--machine",
+        model,
+        "--cpus",
+        &cpu_text,
+        "--steps",
+        "100",
+        "--ram-mib",
+        "16",
+    ];
+    if trace {
+        args.push("--trace");
+    }
+    helios(&args)
+}
+
+#[test]
+fn guest_power_off_is_successful_through_the_scheduled_cli_path() {
+    for model in ["ss20", "axil320"] {
+        let up = review_run(model, 1, &review_poweroff(), false);
+        assert!(
+            up.status.success(),
+            "{model} UP: {}",
+            String::from_utf8_lossy(&up.stderr)
+        );
+        assert!(String::from_utf8_lossy(&up.stderr).contains("System powered off."));
+        let cpu0 = review_run(model, 2, &review_poweroff(), false);
+        assert!(
+            cpu0.status.success(),
+            "{model} CPU0: {}",
+            String::from_utf8_lossy(&cpu0.stderr)
+        );
+        assert!(String::from_utf8_lossy(&cpu0.stderr).contains("System powered off."));
+        let (program, _) = review_secondary(&review_poweroff());
+        let cpu2 = review_run(model, 2, &program, false);
+        assert!(
+            cpu2.status.success(),
+            "{model} CPU2: {}",
+            String::from_utf8_lossy(&cpu2.stderr)
+        );
+        assert!(String::from_utf8_lossy(&cpu2.stderr).contains("System powered off."));
+    }
+    let prom = Image::new(
+        &review_poweroff()
+            .iter()
+            .flat_map(|word| word.to_be_bytes())
+            .collect::<Vec<_>>(),
+    );
+    let nvram = std::env::temp_dir().join(format!("helios-poweroff-{}.nvram", std::process::id()));
+    let _ = std::fs::remove_file(&nvram);
+    let output = helios(&[
+        "boot",
+        prom.path(),
+        "--machine",
+        "ss20",
+        "--cpus",
+        "2",
+        "--steps",
+        "100",
+        "--ram-mib",
+        "16",
+        "--nvram-out",
+        nvram.to_str().unwrap(),
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(std::fs::read(&nvram).unwrap().len(), 8192);
+    let _ = std::fs::remove_file(nvram);
+}
+
+#[test]
+fn scheduled_guest_aer_counts_match_trace_and_secondary_error_is_tagged() {
+    let (program, _) = review_secondary(&[0x1080_0000, 0x0100_0000]);
+    for model in ["ss20", "axil320"] {
+        let output = review_run(model, 2, &program, true);
+        assert!(
+            output.status.success(),
+            "{model}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let mut total = 0;
+        for processor in [0, 2] {
+            let retired = stderr
+                .lines()
+                .filter(|line| {
+                    line.starts_with("pc=") && line.ends_with(&format!("cpu={processor}"))
+                })
+                .count();
+            assert!(retired > 0, "{model} CPU{processor}: {stderr}");
+            assert!(
+                stderr.contains(&format!("CPU{processor} counters=({retired}, 0, 0, 0)")),
+                "{model} CPU{processor}: {stderr}"
+            );
+            total += retired;
+        }
+        assert_eq!(total, 100, "both CPUs must share the CLI step budget");
+
+        let (error_program, pc) = review_secondary(&[0]);
+        let error = review_run(model, 2, &error_program, false);
+        assert!(!error.status.success(), "{model}");
+        let stderr = String::from_utf8_lossy(&error.stderr);
+        assert!(stderr.contains("processor 2"), "{stderr}");
+        assert!(stderr.contains("IllegalInstruction"), "{stderr}");
+        assert!(stderr.contains(&format!("PC=0x{pc:08x}")), "{stderr}");
+    }
+}
+
+#[test]
+fn boot_cpu_count_rejects_missing_zero_four_and_malformed_values_in_any_order() {
+    let prom = Image::new(&[1, 0, 0, 0]);
+    for args in [
+        vec!["boot", prom.path(), "--cpus"],
+        vec!["boot", prom.path(), "--cpus", "0", "--steps", "1"],
+        vec!["boot", prom.path(), "--cpus", "3", "--steps", "1"],
+        vec!["boot", prom.path(), "--cpus", "4", "--steps", "1"],
+        vec!["boot", prom.path(), "--cpus", "two", "--steps", "1"],
+        vec!["boot", prom.path(), "--cpus", "2", "--machine", "ss5"],
+    ] {
+        let output = helios(&args);
+        assert!(!output.status.success(), "{args:?}");
+    }
+    let output = helios(&[
+        "boot",
+        prom.path(),
+        "--cpus",
+        "2",
+        "--machine",
+        "axil320",
+        "--steps",
+        "1",
+        "--ram-mib",
+        "16",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

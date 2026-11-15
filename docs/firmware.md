@@ -842,9 +842,9 @@ external networking or audio streaming is established by this evidence.
 
 ## SPARCstation 20 and Axil 320 profiles
 
-The SS-20/Axil machine profiles are bring-up targets for their original firmware
-under the high sun4m address map. They do not yet reach a stable `ok` prompt.
-Images remain under ignored `local/`:
+The SS-20/Axil machine profiles run their original firmware under the high
+sun4m address map and reach a stable serial `ok` prompt. Images remain under
+ignored `local/`:
 
 | Image | Size | SHA-256 |
 | --- | ---: | --- |
@@ -936,9 +936,16 @@ Target 3
 ok
 ```
 
-The serial `ok` path is usable, and SS-20's native CG14 console now opens with
-the 8 MiB VSIMM model. Solaris reaches its banner; the reference segment-probe
-and MXCC completion fixes move it past `kmem_getpages` to a new alignment
-panic in `page_add()` (`pc=f0076508`). Full Solaris boot remains unresolved.
-No complete SuperSPARC CPU/MBus, SX acceleration, DBRI or BPP claim is made; see
-[machine profiles](machines.md).
+The serial `ok` path is usable, and SS-20's native CG14 console opens with the
+8 MiB VSIMM model. With `--cpus 2` the SS-20 `module-info` reports `CPU#0` and
+`CPU#2` as 10 MHz SuperSPARC-II/SuperCache modules; Axil reports both as 9 MHz
+SuperSPARC/SuperCache modules. Both boards enable CPU 2 through the guest AER,
+run the secondary through startup, and allow it to be parked at `ok`.
+
+Solaris 2.6 SMP boot now reaches a console shell on disposable SS-20 and Axil
+clones. `psrinfo -v` reports processors 0 and 2 online on both. `pbind`-bound
+guest loops drive both CPUs to 100% user in `mpstat`; `dd` disk I/O, checksum
+files, `sync` and clean halt/reboot persistence also pass. Four-CPU dual-module
+configurations, full POST/cache accuracy and complete SX/desktop SMP acceptance
+remain unresolved; no complete SuperSPARC CPU/MBus, DBRI or BPP claim is made.
+See [machine profiles](machines.md) and [the progress note](../clanker/smp-progress.md).

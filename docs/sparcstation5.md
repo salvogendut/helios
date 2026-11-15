@@ -72,6 +72,7 @@ Original Sun OBP is the primary firmware for development and hardware accuracy.
 OpenBIOS remains a separate compatibility test until proved working. QEMU
 supplies it with interfaces such as `fw_cfg`; those must not redefine SS-5
 hardware behavior. [firmware.md](firmware.md) records the pinned images and
-bounded probe results. Original OBP reaches responsive serial and graphical prompts;
-OpenBIOS remains unproven, and no OS boot is supported.
+bounded probe results. Original OBP reaches responsive serial and graphical prompts, and installed
+Solaris 2.6 checkpoints are documented; OpenBIOS remains unproven. This is not
+a general OS-compatibility claim.
 
