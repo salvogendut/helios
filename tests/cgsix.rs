@@ -10,6 +10,52 @@ const FBC: u64 = BASE + 0x700000;
 const DAC: u64 = BASE + 0x200000;
 const THC: u64 = BASE + 0x301000;
 
+#[test]
+fn incompatible_plus_roms_fail_before_card_construction() {
+    // Synthetic zero-filled images with CRC suffixes calculated independently
+    // using Python zlib.crc32 and a GF(2) solve. No firmware bytes are embedded.
+    for suffix in [[0x2c, 0x1d, 0x32, 0x02], [0x22, 0x79, 0x6d, 0x26]] {
+        let mut rom = vec![0; 32768];
+        rom[32764..].copy_from_slice(&suffix);
+        let expected = BusErrorKind::Unsupported(
+            "4 MiB TurboGX+ ROM is incompatible with the 1 MiB TurboGX; select turbogx.bin",
+        );
+        assert_eq!(Cgsix::validate_rom(&rom), Err(expected));
+        assert_eq!(Cgsix::new(&rom).unwrap_err(), expected);
+        rom[0] = 1;
+        assert!(Cgsix::validate_rom(&rom).is_ok());
+    }
+    assert!(Cgsix::validate_rom(&[0; 32767]).is_err());
+    assert!(Cgsix::validate_rom(&[0; 32769]).is_err());
+}
+
+#[test]
+fn plus_vram_is_reported_as_missing_memory_without_aliasing() {
+    let mut b = bus();
+    // Captured Solaris CDE LDSB at PC eeee3364: PA 30ba8400. This is
+    // TurboGX+ framebuffer memory, not a narrow MMIO register access.
+    let address = 0x30ba8400;
+    let alias = VRAM + 0xa8400;
+    b.write32(alias, 0x12345678).unwrap();
+    let key = b.cgsix().unwrap().scanout_key();
+    let expected = BusErrorKind::Unsupported(
+        "address exceeds 1 MiB TurboGX VRAM; 4 MiB TurboGX+ is not implemented",
+    );
+    for error in [
+        b.read8(address).unwrap_err(),
+        b.read16(address).unwrap_err(),
+        b.read32(address).unwrap_err(),
+        b.write8(address, 0xff).unwrap_err(),
+        b.write16(address, 0xffff).unwrap_err(),
+        b.write32(address, u32::MAX).unwrap_err(),
+    ] {
+        assert_eq!(error.address, address);
+        assert_eq!(error.kind, expected);
+    }
+    assert_eq!(b.read32(alias).unwrap(), 0x12345678);
+    assert_eq!(b.cgsix().unwrap().scanout_key(), key);
+}
+
 fn bus() -> SystemBus {
     let mut bus = SystemBus::default();
     bus.install_sun4m(Nvram::default()).unwrap();

@@ -159,7 +159,7 @@ fn replacement_control_wrap_freeze_ptp_slots_and_io_partition_affect_real_fills(
     }
     let (mut m, mut b) = fixture();
     put(&mut m, &mut b, 0x1000, 4, u32::MAX);
-    assert_eq!(get(&mut m, &mut b, 0x10fc, 4), 0x01f1_ffff);
+    assert_eq!(get(&mut m, &mut b, 0x10fc, 4), 0x0131_ffff);
 }
 
 #[test]

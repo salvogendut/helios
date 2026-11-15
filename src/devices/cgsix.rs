@@ -8,6 +8,9 @@ pub const VRAM_BYTES: usize = 1024 * 1024;
 pub const VRAM_OFFSET: u64 = 0x800000;
 const FRAME_UNITS: u128 = 1472 * 943 * 1_000_000_000;
 const VBLANK_UNITS: u128 = 1472 * HEIGHT as u128 * 1_000_000_000;
+const PLUS_VRAM_ERROR: BusErrorKind = BusErrorKind::Unsupported(
+    "address exceeds 1 MiB TurboGX VRAM; 4 MiB TurboGX+ is not implemented",
+);
 
 #[derive(Debug)]
 pub struct Cgsix {
@@ -34,12 +37,33 @@ pub struct Cgsix {
 }
 
 impl Cgsix {
-    pub fn new(rom: &[u8]) -> Result<Self, BusErrorKind> {
+    /// Check ROM compatibility before allocating a framebuffer or guest RAM.
+    /// Unknown 32 KiB ROMs remain usable for development; this is not a whitelist.
+    pub fn validate_rom(rom: &[u8]) -> Result<(), BusErrorKind> {
         if rom.len() != 32768 {
             return Err(BusErrorKind::Unsupported(
                 "CGsix requires a 32 KiB FCode ROM",
             ));
         }
+        // CRC-32/ISO-HDLC identifies two known 4 MiB TurboGX+ images. Those
+        // cards also have a different DAC and drawing geometry; accepting the
+        // ROM on this 1 MiB TurboGX model fails later in Xsun. See graphics.md.
+        let mut crc = u32::MAX;
+        for byte in rom {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ if crc & 1 != 0 { 0xedb8_8320 } else { 0 };
+            }
+        }
+        if matches!(!crc, 0xfc7b_e95e | 0x525a_58db) {
+            return Err(BusErrorKind::Unsupported(
+                "4 MiB TurboGX+ ROM is incompatible with the 1 MiB TurboGX; select turbogx.bin",
+            ));
+        }
+        Ok(())
+    }
+    pub fn new(rom: &[u8]) -> Result<Self, BusErrorKind> {
+        Self::validate_rom(rom)?;
         Ok(Self {
             rom: rom
                 .chunks_exact(4)
@@ -179,6 +203,8 @@ impl Cgsix {
             self.rom[offset as usize / 4]
         } else if (VRAM_OFFSET..VRAM_OFFSET + VRAM_BYTES as u64).contains(&offset) {
             self.vram[(offset - VRAM_OFFSET) as usize / 4]
+        } else if (0x900000..0xc00000).contains(&offset) {
+            return Err(PLUS_VRAM_ERROR);
         } else if offset & !3 == 0x300000 {
             self.fhc
         } else {
@@ -209,6 +235,9 @@ impl Cgsix {
         }
         if offset < 32768 {
             return Err(BusErrorKind::ReadOnly);
+        }
+        if (0x900000..0xc00000).contains(&offset) {
+            return Err(PLUS_VRAM_ERROR);
         }
         if mask != u32::MAX {
             return Err(BusErrorKind::Unsupported("masked CGsix register access"));

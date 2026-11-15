@@ -24,7 +24,7 @@ Usage:
   helios serial-demo [--trace]
   helios timer-demo [--trace]
   helios run FILE [--load-address N] [--entry N] [--steps N] [--ram-mib N] [--trace]
-  helios boot PROM [--machine ss5|ss20|axil320] [--cpus 1|2] [--steps N] [--ram-mib N] [--trace]
+  helios boot PROM [--machine ss5|ss20|axil320] [--cpus 1|2] [--accurate-clocks] [--steps N] [--ram-mib N] [--trace]
                    [--display sx|cgsix|none] [--serial-in FILE]
                    [--serial-port-a PORT] [--serial-port-b PORT] [--keyboard]
                    [--cgsix-rom FILE] [--nvram FILE] [--nvram-out NEW_FILE]
@@ -69,10 +69,13 @@ Neither disk option creates or truncates an image; choose only one.
 mask 255.255.255.0, DHCP/RARP, DNS relay and UDP). --net-gateway, --net-client,
 --net-mask and --net-dns override its addresses. --tftp-dir adds the read-only
 TFTP server for network boot. TCP NAT is not implemented yet.
-Single-CPU sun4m clocks advance 100 ns per completed step, a functional scheduling
-convention. With --cpus 2, one budget unit is one selected processor event; each
-CPU has an independent deadline and the shared device clock does not add another
-100 ns for a tied CPU event. The library can also advance device time explicitly. Polled serial, NVRAM/RTC,
+Fast clocks are the default: 100 ns per completed step (10 MHz functional
+timebase), reducing interpreted work during guest timer waits. --accurate-clocks
+selects profile rates: SS-5 85 MHz, SS-20/Axil 75 MHz per CPU, with fractional
+nanoseconds retained. This is not full pipeline/cache timing.
+With --cpus 2, each CPU has an independent deadline; tied events share device
+time. Bare-metal/demo harnesses retain 100 ns per step. The library can also
+advance device time explicitly. Polled serial, NVRAM/RTC,
 both SCCs, counter timers, interrupt control and reset/status are installed;
 original OBP and Solaris 2.6/7 serial installer prompts have been verified.";
 
@@ -659,6 +662,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             let mut steps = 1000;
             let mut ram_bytes = DEFAULT_RAM_BYTES;
             let mut trace = false;
+            let mut accurate_clocks = false;
             let mut profile = MachineProfile::Ss5;
             let mut cpus = 1usize;
             let mut serial_in = None;
@@ -679,6 +683,10 @@ fn run() -> Result<(), Box<dyn Error>> {
             let mut disk_writable = false;
             let mut cdrom = None;
             while let Some(option) = args.next() {
+                if boot && option == "--accurate-clocks" {
+                    accurate_clocks = true;
+                    continue;
+                }
                 if option == "--trace" {
                     trace = true;
                     continue;
@@ -889,6 +897,20 @@ fn run() -> Result<(), Box<dyn Error>> {
                 machine.load_image(load, &bytes)?;
                 machine
             };
+            if boot && accurate_clocks {
+                machine.reset_with_clock_mode(helios::machine::CpuClockMode::Hardware);
+            }
+            if boot {
+                eprintln!(
+                    "CPU clock: {} MHz ({})",
+                    machine.cpu_clock_hz() / 1_000_000,
+                    if accurate_clocks {
+                        "profile rates"
+                    } else {
+                        "fast mode"
+                    }
+                );
+            }
             if boot && keyboard {
                 machine.bus.devices_mut().expect("boot devices").keyboard =
                     Some(Keyboard::default());

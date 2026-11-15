@@ -388,7 +388,6 @@ pub struct Sun4mDevices {
     pub ethernet_dma: EthernetDma,
     pub ethernet: Ethernet,
     rtc_phase_ns: u32,
-    timer_ns: u64,
 }
 
 impl Sun4mDevices {
@@ -438,11 +437,9 @@ impl Sun4mDevices {
         self.ethernet.advance_ns(ns);
         self.esp.advance_ns(ns);
         self.floppy.advance_ns(ns);
-        self.timer_ns += ns;
-        if self.timer_ns >= 500 {
-            self.timers.advance_ns(self.timer_ns);
-            self.timer_ns = 0;
-        }
+        // Timers owns the fractional 500 ns phase. A second accumulator here
+        // could hide a due tick from an MMIO read (e.g. 505 ns then 495 ns).
+        self.timers.advance_ns(ns);
         let remainder = ns % 1_000_000_000 + u64::from(self.rtc_phase_ns);
         self.nvram
             .advance_seconds(ns / 1_000_000_000 + remainder / 1_000_000_000);
@@ -910,7 +907,6 @@ impl SystemBus {
             ethernet_dma: EthernetDma::default(),
             ethernet: Ethernet::default(),
             rtc_phase_ns: 0,
-            timer_ns: 0,
         };
         devices
             .esp
@@ -1007,7 +1003,6 @@ impl SystemBus {
             devices.mouse.reset();
             devices.interrupts.reset();
             devices.timers.reset();
-            devices.timer_ns = 0;
         }
     }
     pub fn advance_ns(&mut self, ns: u64) {

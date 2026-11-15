@@ -227,13 +227,24 @@ and `u64::MAX` seconds.
 
 ## Time and ownership
 
-The single-CPU machine services one pending Ethernet DMA transfer, samples
-interrupt lines, executes one CPU outcome, then advances devices by a base
-`STEP_NS = 100` ns plus physical PROM read service time. The two-CPU scheduler
+The single-CPU machine services pending DMA, samples interrupt lines, executes
+one CPU outcome, then advances devices by one functional CPU cycle plus physical
+PROM read service time. Fast mode is the default 100 ns quantum. Hardware
+mode (`boot --accurate-clocks`) selects 85 MHz for SS-5 or 75 MHz for
+SS-20/Axil SuperSPARC-II modules. Each CPU retains its fractional nanosecond remainder:
+85 SS-5 RAM outcomes or 75 MBus-CPU RAM outcomes take exactly 1 microsecond.
+The bare-metal and contiguous-RAM `sun4m` diagnostic harnesses retain
+`STEP_NS = 100` ns. The two-CPU scheduler
 gives each CPU an independent next-ready deadline, selects the earliest one and
 services devices once at that distinct boundary. Only the selected CPU is
 charged its quantum and PROM wait; the shared clock then moves to the earliest
 next eligible deadline, without passing another CPU's earlier opportunity.
+
+The selected frequency changes the ratio of virtual time to CPU outcomes.
+Timer-based guest waits consequently require more interpreted outcomes than
+with the default Fast-mode 100 ns quantum. Hardware mode adds neither host throttling
+nor idle-loop parking; interpreter throughput remains a separate concern.
+
 NCR89C105 table 6-10 specifies six SBus clocks per byte of the byte-wide PROM. The SS5/85 SBus runs at 21.25 MHz
 (CPU/4), so a word fetch adds 24 clocks, about 1129.41 ns. Instruction and data
 reads both count, including the reset boot alias; RAM execution adds no PROM
@@ -241,8 +252,14 @@ wait. Fractional nanoseconds carry across accesses. Direct bus inspection does
 not advance time. An error or unsupported stop
 does not advance time. A timer expiring during advancement is visible at the
 next boundary. Host wall time, terminal I/O and scheduling have no influence.
-The base quantum and serialized DMA are functional conventions. This is not a
+Cycle accounting and serialized DMA are functional conventions. This is not a
 cycle-accurate pipeline, ordinary cache, SBus arbitration or burst timing model.
+Device work is coalesced up to 2 microseconds and flushed before word-device
+MMIO. Timer tick fractions have a single owner in `Timers`; a separate
+500 ns accumulator must not delay a tick after a fractional boundary (such as
+505 ns followed by 495 ns). CPU clock phases reset with their owning module;
+whole-system and software resets reset all CPU phases. Failed CPU outcomes
+consume neither a cycle nor its fractional remainder.
 
 `Machine::advance_ns` and `advance_seconds` advance all devices between CPU steps.
 They do not execute the CPU or auto-enter handlers. Every installed processor

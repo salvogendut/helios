@@ -1,5 +1,13 @@
 # SS-5 DRAM and TLB diagnostics
 
+The microSPARC-II TRCR reports the SS5/85 board's speed pins: SBSP[24:23]=2
+(CPU/4, 21.25 MHz SBus) and MEMSP[22:21]=1 (85 MHz memory timing). These fields
+are read-only, survive reset and are independent of the writable replacement
+controls. Firmware previously saw zero and incorrectly advertised divide-by-2.
+Figure 5.15 and tables 29/30 of the microSPARC-II manual define these fields;
+the figure and field descriptions override the stale reserved-bits sentence
+which overlaps them. The SS-20/Axil reference-MMU path has no such SS-5 pins.
+
 ## DRAM bank map
 
 `Machine::ss5` and `ss5_with_nvram` construct the hardware memory layout used by

@@ -6,6 +6,18 @@ TurboGX (CGsix) and a Sun Type 5 US keyboard. The selected display is
 original SBus FCode ROM; Helios does not draw firmware text or substitute a
 host terminal for the display.
 
+Use the **1 MiB TurboGX** ROM (`turbogx.bin`, CRC-32 `bbdc45f8`). A 32 KiB
+file size alone does not identify the card: **TurboGX+** has 4 MiB VRAM and a
+different RAMDAC and is not implemented. Known TurboGX+ images (CRC-32
+`fc7be95e`, including `sun-tgx+-vesa.bin`, and `525a58db`) are rejected before
+machine startup, regardless of their filename. Other ROMs are not automatically
+certified as compatible. In particular, a Solaris CDE byte read at SS-5 PA
+`0x30ba8400` accesses the extra TurboGX+ memory; it is not a narrow register
+access. Select the matching TurboGX ROM and cold-reset before booting again.
+The distinction follows Sun's [TurboGX/TurboGXplus Hardware Installation
+Guide, table 1-1](https://docs.oracle.com/cd/E19957-01/801-5399-10/801-5399-10.pdf)
+and the separate card maps in the pinned MAME CGsix reference.
+
 ## Running
 
 From the repository root:
@@ -30,6 +42,11 @@ network boot and returning to `ok`. Hosts providing F13 can use it as Stop too.
 Type `1 2 + .` and Enter: OBP prints `3`. Escape is a guest key; close the window
 to exit. Input uses a US Sun keyboard layout, including modifier, function,
 cursor, navigation and numeric-keypad stations. Menu maps to Compose.
+The keyboard sends its `ff 04 7f` identity on power-on and command 1 (reset).
+Reprogramming the host SCC receiver does not reset the keyboard or generate
+an unsolicited identity. This avoids interleaving two reset prefixes during
+Solaris keyboard initialization.
+
 Sun Mouse Systems input is provided by the frontend through SCC channel B at
 1200 baud. It uses the five-byte ``0x80 | (~buttons)``, dx, dy, dx, dy packet;
 left/middle/right map to button bits 4/2/1. Clipboard paste and audible

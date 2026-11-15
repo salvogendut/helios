@@ -63,21 +63,22 @@ fn identification_obeys_1200_baud_and_layout_command() {
 }
 
 #[test]
-fn receiver_enable_resends_identification_when_fifo_is_empty() {
+fn receiver_reconfiguration_does_not_send_an_unsolicited_keyboard_id() {
     let mut b = bus();
-    b.advance_ns(8_333_333);
+    boot(&mut b);
+    for value in [0xc1, 0xc0, 0xc1] {
+        let s = &mut b.devices_mut().unwrap().keyboard_serial;
+        s.write(4, 3).unwrap();
+        s.write(4, value).unwrap();
+        b.advance_ns(25_000_000);
+        no_data(&mut b);
+    }
+    // Captured Solaris sequence: re-enable WR3, wait a byte time, then
+    // transmit reset. The host must receive exactly one ff/04/7f reply.
+    command(&mut b, 1);
     assert_eq!([read(&mut b), read(&mut b), read(&mut b)], [0xff, 4, 0x7f]);
-    b.devices_mut()
-        .unwrap()
-        .keyboard_serial
-        .write(4, 3)
-        .unwrap();
-    b.devices_mut()
-        .unwrap()
-        .keyboard_serial
-        .write(4, 0xc1)
-        .unwrap();
-    assert_eq!([read(&mut b), read(&mut b), read(&mut b)], [0xff, 4, 0x7f]);
+    b.advance_ns(100_000_000);
+    no_data(&mut b);
 }
 
 #[test]
