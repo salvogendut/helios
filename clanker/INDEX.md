@@ -1,5 +1,7 @@
 # Agent notes
 
+- [Clock, serial boot and CDE follow-up](clock-serial-cde-followup.md) — profile clocks, keyboard reset collision, recovered Axil disk and incompatible TurboGX+ ROM diagnosis.
+
 - [Configurable RAM completion](ram-capacity-completion.md) — Axil firmware-compatible populations, SS-20 split 32 MiB bank fix, CGsix console configuration, tracked frontend lifecycle tests and final acceptance evidence.
 
 - [Configurable RAM slice D interim review](ram-capacity-slice-d-interim-review.md) — completed maximum-size serial evidence checked; Axil 416→448 MiB discrepancy independently reproduced; SS-20/CGsix 512 MiB guest panic confirmed in UP and SMP captures; focused handover and remaining acceptance checks.

@@ -55,6 +55,37 @@ fn demo_exits_successfully_with_43_trace_records() {
 }
 
 #[test]
+fn boot_clock_mode_defaults_fast_and_profile_rates_are_opt_in() {
+    let image = Image::new(&[0x10, 0x80, 0, 0, 1, 0, 0, 0]);
+    for (profile, mhz) in [("ss5", 85), ("ss20", 75), ("axil320", 75)] {
+        for accurate in [false, true] {
+            let mut args = vec![
+                "boot",
+                image.path(),
+                "--machine",
+                profile,
+                "--ram-mib",
+                "16",
+                "--steps",
+                "2",
+            ];
+            if accurate {
+                args.push("--accurate-clocks");
+            }
+            let output = helios(&args);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "{stderr}");
+            let clock = if accurate {
+                format!("{mhz} MHz (profile rates)")
+            } else {
+                "10 MHz (fast mode)".into()
+            };
+            assert!(stderr.contains(&format!("CPU clock: {clock}")), "{stderr}");
+        }
+    }
+}
+
+#[test]
 fn raw_runner_uses_load_address_as_entry_and_stops_at_budget() {
     let image = Image::new(&[1, 0, 0, 0, 1, 0, 0, 0]); // two NOPs
     let output = helios(&[

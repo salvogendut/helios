@@ -19,12 +19,74 @@ pub const TARGET: &str = "SPARCstation 5 (sun4m), SPARC V8 / microSPARC-II";
 /// validated DSIMM topology instead.
 pub const MAX_RAM_BYTES: usize = 256 * 1024 * 1024;
 pub const DEFAULT_RAM_BYTES: usize = 128 * 1024 * 1024;
-/// Nominal SS5/85 hardware clock, independent of the interpreter's time quantum.
+/// SS5/85 processor clock.
 pub const CPU_CLOCK_HZ: u64 = 85_000_000;
 pub const MAX_PROM_BYTES: usize = 1024 * 1024;
-/// Base functional quantum; physical PROM reads add documented EBus wait time.
-/// This is not a cycle-accurate microSPARC pipeline model.
+/// Default fast-mode quantum. Hardware mode selects the profile oscillator
+/// with fractional nanoseconds retained across outcomes.
 pub const STEP_NS: u64 = 100;
+
+/// Fast mode retains the historical 100 ns quantum so guest timer waits need
+/// fewer interpreted instructions. Hardware mode uses the profile oscillator;
+/// neither mode models pipeline/cache latency or host wall-clock throttling.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CpuClockMode {
+    #[default]
+    Fast,
+    Hardware,
+}
+
+/// One functional CPU cycle per completed outcome. Division happens only at
+/// construction; the step path carries the fractional part using addition.
+/// This does not model pipeline stalls, superscalar issue or ordinary caches.
+#[derive(Debug)]
+struct CycleClock {
+    hardware_hz: u64,
+    mode: CpuClockMode,
+    hz: u64,
+    whole_ns: u64,
+    remainder: u64,
+    phase: u64,
+}
+
+impl CycleClock {
+    const fn new(hardware_hz: u64) -> Self {
+        Self::with_mode(hardware_hz, CpuClockMode::Fast)
+    }
+
+    const fn with_mode(hardware_hz: u64, mode: CpuClockMode) -> Self {
+        let hz = match mode {
+            CpuClockMode::Fast => 1_000_000_000 / STEP_NS,
+            CpuClockMode::Hardware => hardware_hz,
+        };
+        Self {
+            hardware_hz,
+            mode,
+            hz,
+            whole_ns: 1_000_000_000 / hz,
+            remainder: 1_000_000_000 % hz,
+            phase: 0,
+        }
+    }
+
+    fn next_ns(&mut self) -> u64 {
+        self.phase += self.remainder;
+        if self.phase >= self.hz {
+            self.phase -= self.hz;
+            self.whole_ns + 1
+        } else {
+            self.whole_ns
+        }
+    }
+
+    fn reset(&mut self) {
+        self.phase = 0;
+    }
+
+    fn select(&mut self, mode: CpuClockMode) {
+        *self = Self::with_mode(self.hardware_hz, mode);
+    }
+}
 
 /// Initial full-system profiles. All three run the same device models; the
 /// SS-20/Axil profiles use the high sun4m physical map, a 36-bit reference MMU
@@ -57,6 +119,15 @@ impl InstalledVideo {
 }
 
 impl MachineProfile {
+    /// Selected processor oscillator: SS5/85 or a 75 MHz SuperSPARC-II
+    /// module on either MBus board. Independent of host execution speed.
+    pub const fn cpu_clock_hz(self) -> u64 {
+        match self {
+            Self::Ss5 => CPU_CLOCK_HZ,
+            Self::Ss20 | Self::Axil320 => 75_000_000,
+        }
+    }
+
     pub const fn target(self) -> &'static str {
         match self {
             Self::Ss5 => TARGET,
@@ -287,6 +358,7 @@ pub struct ProcessorModuleState {
     pub module: ProcessorModule,
     pub cpu: Cpu,
     pub mxcc: Rc<RefCell<MxccState>>,
+    clock: CycleClock,
 }
 
 impl ProcessorModuleState {
@@ -304,12 +376,18 @@ impl ProcessorModuleState {
         cpu.mmu.set_initiator(Initiator::Cpu(module));
         let mxcc = Rc::new(RefCell::new(MxccState::for_module(module)));
         cpu.mmu.set_mxcc(mxcc.clone());
-        Some(Self { module, cpu, mxcc })
+        Some(Self {
+            module,
+            cpu,
+            mxcc,
+            clock: CycleClock::new(profile.cpu_clock_hz()),
+        })
     }
 
     pub fn reset(&mut self) {
         self.cpu.reset_sun4m();
         self.mxcc.borrow_mut().reset();
+        self.clock.reset();
     }
 
     /// Install this module's interrupt and timer bank by its hardware
@@ -553,6 +631,7 @@ pub struct Machine {
     pub(crate) standalone_iommu: Option<StandaloneIommu>,
     secondary_cpu: Option<ProcessorModuleState>,
     scheduler: SchedulerState,
+    clock: CycleClock,
 }
 
 impl Machine {
@@ -675,6 +754,7 @@ impl Machine {
             standalone_iommu: (!profile.layout().ncr_windows).then(StandaloneIommu::default),
             secondary_cpu: None,
             scheduler: SchedulerState::default(),
+            clock: CycleClock::new(profile.cpu_clock_hz()),
         };
         machine.cpu.use_cpu_config(profile.cpu_config());
         machine.cpu.use_mmu_config(profile.mmu());
@@ -890,6 +970,7 @@ impl Machine {
     /// already transmitted to the host endpoint.
     pub fn reset(&mut self) {
         self.cpu.reset_sun4m();
+        self.clock.reset();
         if let Some(secondary) = &mut self.secondary_cpu {
             secondary.reset();
         }
@@ -911,6 +992,7 @@ impl Machine {
         match processor {
             0 => {
                 self.cpu.reset_sun4m();
+                self.clock.reset();
                 self.scheduler.set_next_ready(0, self.scheduler.virtual_ns);
                 true
             }
@@ -939,6 +1021,7 @@ impl Machine {
             standalone_iommu: None,
             secondary_cpu: None,
             scheduler: SchedulerState::default(),
+            clock: CycleClock::new(1_000_000_000 / STEP_NS),
         })
     }
 
@@ -1008,10 +1091,32 @@ impl Machine {
         stats
     }
 
+    /// Selected functional timebase: 10 MHz in Fast mode; profile oscillator
+    /// (85/75 MHz) in Hardware mode. Diagnostic harnesses always use 10 MHz.
+    pub fn cpu_clock_hz(&self) -> u64 {
+        self.clock.hz
+    }
+
+    pub fn clock_mode(&self) -> CpuClockMode {
+        self.clock.mode
+    }
+
+    /// Select the functional clock policy and perform a whole-machine reset.
+    /// Both CPUs use the same policy. Firmware/OS clock calibration must rerun;
+    /// changing only the running timebase would leave stale guest calibration.
+    /// RAM, ROM and NVRAM retain the same contents as with `reset()`.
+    pub fn reset_with_clock_mode(&mut self, mode: CpuClockMode) {
+        self.clock.select(mode);
+        if let Some(secondary) = &mut self.secondary_cpu {
+            secondary.clock.select(mode);
+        }
+        self.reset();
+    }
+
     /// Execute one deterministic processor event. Device service occurs once
     /// per distinct deadline, then the earliest next-ready eligible hardware
     /// processor runs. Ties use hardware processor order 0 before 2. Only the
-    /// selected CPU is charged its 100 ns base quantum plus PROM wait; devices
+    /// selected CPU is charged one oscillator cycle plus PROM wait; devices
     /// advance to the earliest next eligible deadline, never past another
     /// CPU's earlier opportunity.
     pub fn step_scheduled(&mut self) -> Result<ScheduledStep, SchedulerError> {
@@ -1106,7 +1211,12 @@ impl Machine {
                 return Err(SchedulerError::Cpu { processor, fault });
             }
         };
-        let quantum = STEP_NS + wait_ns;
+        let cycle_ns = match processor {
+            0 => self.clock.next_ns(),
+            2 => self.secondary_cpu.as_mut().unwrap().clock.next_ns(),
+            _ => unreachable!("scheduler processor"),
+        };
+        let quantum = cycle_ns + wait_ns;
         self.scheduler
             .set_next_ready(processor, ready.saturating_add(quantum));
         let executed_step = step;
@@ -1192,7 +1302,7 @@ impl Machine {
             }
         }
         let step = result?;
-        self.bus.advance_ns_fast(STEP_NS + wait_ns);
+        self.bus.advance_ns_fast(self.clock.next_ns() + wait_ns);
         if self.software_reset_requested() {
             if let Step::Executed {
                 pc,
@@ -1214,8 +1324,10 @@ impl Machine {
 
     fn software_reset(&mut self, pc: u32, npc: u32, instruction: Option<u32>) -> Step {
         self.cpu.software_reset_sun4m();
+        self.clock.reset();
         if let Some(secondary) = &mut self.secondary_cpu {
             secondary.cpu.software_reset_sun4m();
+            secondary.clock.reset();
         }
         self.bus.software_reset_devices();
         if let Some(iommu) = &mut self.standalone_iommu {

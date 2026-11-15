@@ -27,7 +27,10 @@ below. See the
 [latest firmware checkpoint](docs/firmware.md#timer-and-ethernet-bring-up).
 
 **SPARCstation 20** and **Axil 320** profiles boot their original firmware to
-the serial `ok` prompt with either one CPU or two single-CPU MBus modules. They reuse the SS-5 device models on the
+the serial `ok` prompt with either one CPU or two 75 MHz SuperSPARC-II modules.
+Fast clocks (100 ns per outcome) remain the default for quicker boots.
+`--accurate-clocks` selects the nominal 85/75 MHz timebase; full pipeline and
+cache timing remain unmodeled. They reuse the SS-5 device models on the
 high sun4m address map with 36-bit reference-MMU behavior, SMC ECC register
 access and IDPROM machine type `0x72`; the Axil profile uses its own MAC and
 host ID. Both profiles have booted installed Solaris 2.6 disks to a console
@@ -273,7 +276,9 @@ for `boot`, a loopback telnet console. NVRAM uses an 8192-byte raw image and is
 saved at the step limit or an execution error when `--nvram-out` is supplied.
 The sun4m harness advances device time by a 100 ns base per completed step,
 including trap/interrupt entry, plus physical PROM read wait states. This is a
-functional scheduling convention, not full CPU cycle timing. The library also
+functional scheduling convention, not full CPU cycle timing. `--accurate-clocks`
+selects nominal profile rates, at the cost of more interpreted work during
+guest timer waits. The library also
 exposes explicit time advancement and a decoded serial BREAK input. See [Memory and reset](docs/memory.md),
 [Devices](docs/devices.md) and [Interrupts and timers](docs/interrupts-timers.md).
 Guest reset behavior and current watchdog limits are in [System reset](docs/reset.md).

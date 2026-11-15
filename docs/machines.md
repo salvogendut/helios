@@ -5,6 +5,19 @@ interpreter. A profile selects its physical address map, PROM aperture, IDPROM
 identity, MMU address width and DRAM bank layout. The default remains the
 SPARCstation 5.
 
+Named profiles use an 85 MHz microSPARC-II on SS-5 and a 75 MHz SuperSPARC-II
+per installed module on SS-20/Axil. By default `CpuClockMode::Fast` retains
+the 100 ns timebase for faster guest timer waits; firmware measures roughly
+9–10 MHz in this mode. `boot --accurate-clocks` selects
+`CpuClockMode::Hardware`, accounting one nominal cycle per completed outcome
+with fractional nanoseconds retained per CPU. The library switches policy with
+`reset_with_clock_mode`, which performs a whole-machine reset so firmware and
+Solaris recalibrate. Heliacal exposes it as **Advanced > Accurate CPU clocks**,
+off by default and applied through Save and confirmed F5.
+This establishes a deterministic timebase, not cycle-accurate throughput.
+Original firmware measures this timebase; its rounding can differ from the
+selected oscillator. See [timers](interrupts-timers.md).
+
 | CLI name | Machine | PROM base | IDPROM type | Default identity |
 | --- | --- | --- | --- | --- |
 | `ss5` | SPARCstation 5 | `0x70000000` | `0x80` | MAC `08:00:20:c0:ff:ee`, hostid `80c0ffee` |

@@ -48,7 +48,13 @@ or assume host scheduling is guest timing.
 bank geometry. SS-20/Axil keep the same device models but use the high physical
 map, a 36-bit reference-MMU mode and SuperSPARC-II boot/TLB register behavior.
 They are functional profiles: there is no SuperSPARC pipeline or full
-ECC/parity model. The default constructors select one CPU; the validated CLI
+ECC/parity model. `CpuClockMode::Fast` is the default 100 ns quantum.
+`reset_with_clock_mode(CpuClockMode::Hardware)` cold-resets the machine and
+accounts one cycle at 85 MHz (SS-5) or 75 MHz (SS-20/Axil) per completed
+CPU outcome. The CLI exposes this as `--accurate-clocks`. Retain fractional time per CPU,
+add PROM waits separately and never charge shared device time twice for tied
+SMP deadlines. The bare-metal/contiguous `sun4m` harness keeps its legacy 100 ns
+quantum. The default constructors select one CPU; the validated CLI
 `--cpus 2` path constructs the two single-CPU SS-20/Axil modules and runs the
 deterministic scheduler. Original OBP and Solaris 2.6 recognize both CPUs;
 four-CPU dual-CPU modules remain out of scope. SS-20 installs a native SX/CG14

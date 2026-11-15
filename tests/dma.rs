@@ -254,7 +254,7 @@ fn cpu_and_io_fills_use_separate_partitions_with_the_same_frozen_counter() {
     assert_eq!(m.dma_read(5, 0xff00_0000, Width::Word), Ok(0x1234_5678));
     assert_eq!(get(&mut m, 0x314, 6), 0x4008); // CPU slot 5
     assert_eq!(get(&mut m, 0x3d4, 6), 0xff00_0008); // I/O slot 53
-    assert_eq!(get(&mut m, 0x1000, 4), trcr);
+    assert_eq!(get(&mut m, 0x1000, 4), trcr | 0x0120_0000);
     m.bus.write32(0x4010, 0).unwrap();
     m.bus.write32(0x10000, 0).unwrap();
     assert_eq!(get(&mut m, 0x4000, 11), 0x2468_ace0);

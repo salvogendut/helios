@@ -835,10 +835,14 @@ motion and buttons. A headless probe reached `Starting Desktop Login on
 display :0...` and produced a nonblank framebuffer, but did not interact with
 the login screen. See `clanker/x-windows.md` for the local evidence and limits.
 
-The default profile remains SS5/85, but the functional 100 ns instruction
-quantum makes these kernels measure the CPU as 10 MHz and report an SBus clock
-warning. Normal CPU/cache timing is not yet an 85 MHz timing model. No
-external networking or audio streaming is established by this evidence.
+That earlier checkpoint used a 100 ns instruction quantum, so the kernel
+measured 10 MHz and warned about the SBus clock. The opt-in hardware clock mode now advances
+one nominal CPU cycle per completed outcome, retaining fractional
+nanoseconds (`--accurate-clocks`, or Heliacal Advanced). Fast mode remains
+the default 100 ns timebase. SS5/85 firmware measures 85.0 MHz and reads the speed pins as
+SBus divide-by-four (21.2 MHz displayed). This is a functional timebase, not a
+pipeline/cache latency model. No external networking or audio streaming is
+established by this evidence.
 
 ## SPARCstation 20 and Axil 320 profiles
 
@@ -937,9 +941,13 @@ ok
 ```
 
 The serial `ok` path is usable, and SS-20's native CG14 console opens with the
-8 MiB VSIMM model. With `--cpus 2` the SS-20 `module-info` reports `CPU#0` and
-`CPU#2` as 10 MHz SuperSPARC-II/SuperCache modules; Axil reports both as 9 MHz
-SuperSPARC/SuperCache modules. Both boards enable CPU 2 through the guest AER,
+8 MiB VSIMM model. With `--cpus 2 --accurate-clocks` the SS-20 `module-info` reports `CPU#0` and
+`CPU#2` as 75 MHz SuperSPARC-II/SuperCache modules. Both profiles use a 75 MHz
+functional clock in this opt-in mode. Axil OBP 2.19 displays 74 MHz: its integer calibration
+truncates `ms-factor * 40 / 20000` before multiplying by one million, and the
+observed `ms-factor` is 37499 (an estimate of 74.998 MHz). The earlier 100 ns
+timebase produced 10 MHz on SS-20 and 9 MHz on Axil. No firmware code is patched
+to adjust this reporting. Both boards enable CPU 2 through the guest AER,
 run the secondary through startup, and allow it to be parked at `ok`.
 
 Solaris 2.6 SMP boot now reaches a console shell on disposable SS-20 and Axil

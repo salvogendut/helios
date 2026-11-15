@@ -38,6 +38,8 @@ pub struct MmuConfig {
     pub context_mask: u32,
     pub fault_status_mask: u32,
     pub replacement_mask: u32,
+    /// Board speed-select pins reported through the microSPARC-II TRCR.
+    pub replacement_readonly: u32,
     pub mmu_version: u32,
 }
 
@@ -55,7 +57,10 @@ impl MmuConfig {
             context_table_mask: 0x00ff_ffc0,
             context_mask: 0x0000_00ff,
             fault_status_mask: 0x0001_6fff,
-            replacement_mask: 0x01f1_ffff,
+            replacement_mask: 0x0011_ffff,
+            // SBSP[24:23] = 2 (CPU/4), MEMSP[22:21] = 1 (85 MHz).
+            // microSPARC-II figure 5.15 and tables 29/30; SS5/85 wiring.
+            replacement_readonly: 0x0120_0000,
             mmu_version: PCR_VERSION,
         }
     }
@@ -75,6 +80,7 @@ impl MmuConfig {
             context_mask: 0x0000_ffff,
             fault_status_mask: 0xffff_ffff,
             replacement_mask: 0xffff_ffff,
+            replacement_readonly: 0,
             mmu_version: 0x0800_0000,
         }
     }
@@ -1568,7 +1574,7 @@ impl Srmmu {
             2 => self.context,
             3 => std::mem::take(&mut self.fault_status),
             4 => std::mem::take(&mut self.fault_address),
-            0x10 => self.trcr,
+            0x10 => self.trcr | self.config.replacement_readonly,
             0x13 => self.fault_status,
             0x14 => self.fault_address,
             _ => return Err(MemoryError::UnsupportedRegister(address)),

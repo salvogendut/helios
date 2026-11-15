@@ -53,6 +53,10 @@ test rather than assuming either emulator defines the hardware.
   breakpoint logic from CPU traps. Sections 8.2.1–8.2.2
   define the DRAM bank map, mirrors and empty-bank completion; sections 5.2,
   5.6.6 and 5.14.1 define TLB diagnostic data/tags and replacement controls.
+  Figure 5.15 and tables 29/30 (printed pages 88–89, figure inspected visually)
+  define SBSP and MEMSP speed-select pin readback in TRCR. SS5/85 selects
+  CPU/4 SBus and the 85 MHz memory-speed setting; these readbacks do not change
+  replacement/WP semantics.
   Figures 5.15/5.35/5.36 and table 41 were inspected visually. Sections 5.2.5,
   5.7.1–5.7.4, 5.8, 5.10, 9.1 and chapter 11 table 50 define IOPTEs,
   table indexing, selective I/O flushes, bypass and device-facing DMA errors.
@@ -131,6 +135,17 @@ test rather than assuming either emulator defines the hardware.
   register layout, BCD calendar, R/W transfer latches and oscillator stop.
   The model follows the hardware latch behavior rather than QEMU's simpler
   host-clock-backed register handling.
+- [Sun TurboGX/TurboGXplus Hardware Installation Guide](https://docs.oracle.com/cd/E19957-01/801-5399-10/801-5399-10.pdf),
+  801-5399-10, table 1-1 distinguishes the 1 MiB TurboGX from the 4 MiB
+  TurboGXplus. The pinned MAME `cgsix.cpp` gives separate VRAM apertures, DACs
+  and ROM identities. Known Plus ROMs are rejected on the 1 MiB model;
+  [graphics.md](graphics.md) records the captured CDE failure and checksums.
+- [MAME Sun serial keyboard protocol and HLE implementation](https://github.com/mamedev/mame/blob/ed59c15fe78596ec6ff8fe04482ede78e6122e34/src/devices/bus/sunkbd/hlekbd.cpp)
+  describes the 1200-baud reset command/reply and power-on identification.
+  SCC receiver reconfiguration is host-local, not a keyboard-reset command.
+  Original Solaris 2.6 `uts/common/io/kbd.c` confirms that a second `ff` while
+  expecting the ID selects its unknown-keyboard fallback; `uts/sun/io/zs_async.c`
+  maps `zs3` to the mouse and distinguishes software-buffer from silo overflow.
 - [Zilog SCC User's Manual, 1992](https://bitsavers.trailing-edge.com/components/zilog/_dataBooks/SCC_Users_Manual_1992.pdf),
   primary manual archived by Bitsavers: section 2.3.4 and tables 2-5/2-7 define
   Z85X30 register addressing, aliases and reset state; chapter 5 defines the

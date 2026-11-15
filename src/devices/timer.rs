@@ -178,6 +178,9 @@ impl Timers {
     }
 
     fn advance_ticks(&mut self, ticks: u128) {
+        if ticks == 0 {
+            return;
+        }
         self.system.advance(ticks);
         for bank in self.processors.values_mut() {
             if bank.user_mode {
