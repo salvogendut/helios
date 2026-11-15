@@ -40,8 +40,8 @@ generic sun4m model.
 | `0x10000004` | I/O page-table base | SS-5: bits 26:10 writable, physical base bits 30:14. SS-20/Axil: bits 31:10 writable, physical base bits 35:14 |
 | `0x10000014` | I/O TLB flush all | Any word write invalidates all I/O entries |
 | `0x10000018` | I/O TLB page flush | SS-5: matching value[31:12]. SS-20/Axil: FA bits 30:12; bit 31 reserved |
-| `0x10001010`–`0x1000101c` | Slot configuration 0–3 | SA30 bit 16, BA8 bit 1, bypass bit 0 writable |
-| `0x10001020` | Shared slot configuration 4 | BA8 bit 1 writable; bypass and SA30 zero |
+| `0x10001010`–`0x1000101c` | Slot configuration 0–3 | SS-5: SA30 bit 16, BA8 bit 1, bypass bit 0 writable. SS-20/Axil: SEGA bits 21:16, BA8 bit 1, bypass bit 0 writable |
+| `0x10001020` | Shared slot configuration 4 | BA8 bit 1 writable; bypass and address selector zero |
 | `0x10002000` | SS-5 MID / SBus arbitration | MID reads 8; six enable bits at 21:16 writable |
 | `0x10003018` | Mask ID / virtual-address mask | ID `0x30` at 31:24; compare enables/inversions at 10:0 writable |
 | `0x1000301c` | Virtual-address compare | Full word readable/writable |
@@ -109,11 +109,17 @@ module. Sun-4M section 7.2 specifies 4 KiB pages, IOPTE PPN bits 31:8 (physical
 PA 35:12), C bit 7, W bit 2 and V bit 1, one-level table lookup, 16 LRU
 translation entries and page/all invalidations. The cache has no CPU context,
 fast cache, diagnostic arrays, replacement pointer or referenced/modified
-updates. Bypass slot mappings return their physical address directly. The
-current model still rejects non-DRAM targets. Sun-4M section 5.8.1 defines
-disabled ME as physical pass-through; Helios currently preserves its earlier
-explicit unsupported host stop for disabled non-bypass translation as an
-unimplemented specified mode, not as evidence that pass-through is undefined.
+updates. Bypass slot mappings return their physical address directly. Page-table
+fetches and translated targets are checked against the board's actual DRAM
+aperture: a table must be in installed DSIMM storage (a small-module mirror
+counts), while a translated target may use any DRAM bank in the aperture. Empty
+DSIMM banks retain the bus's zero-read/discard-write completion, except the
+SS-20 SX bank 7, which is video rather than DMA RAM. MMIO windows, the SX/VSIMM
+apertures, the exclusive aperture end and arbitrary 36-bit addresses are
+rejected. Sun-4M section 5.8.1 defines disabled
+ME as physical pass-through; Helios currently preserves its earlier explicit
+unsupported host stop for disabled non-bypass translation as an unimplemented
+specified mode, not as evidence that pass-through is undefined.
 
 Page-table edits, IBAR/IOCR writes and CPU context changes do not automatically
 invalidate I/O entries. Software must flush stale mappings. On SS-5, I/O flushes
@@ -139,8 +145,21 @@ Each master needs its SBAE bit before a transfer. A disabled master gets
 master, and pending interrupts never change either field. Masters 4 and 5 share
 slot register 4 and cannot bypass; master 5 serves the on-board SCSI/Ethernet
 DMA block. Slots 0–3 may bypass only for DVMA addresses with bits 31:30 zero.
-In that case PA[29:0] comes from DVMA and PA[30] from SA30. Section 5.8 restricts
-bypass to the main-memory aperture; addresses outside it return an error.
+
+The bypass encoding is profile-specific. The integrated microSPARC-II uses
+slot-register SA30 at bit 16: PA[29:0] comes from DVMA and PA[30] from SA30;
+slot bit 17 is reserved and reads zero. The standalone Sun-4M controller follows
+sections 5.9 and 7.2.5.1: expansion-slot SEGA bits 21:16 combine with DVMA<29:0>
+as PA<35:30>, so slot bit 17 supplies PA31 (and bit 16 supplies PA30). This
+implementation preserves all six SEGA selector bits in the slot register and
+applies the board aperture check after constructing the complete physical
+address. Selectors that place the transfer outside the board's DRAM fail before
+the target access; they must not alias low RAM. The optional Campus-2
+hardwired-SEGA35:32 behavior and any narrower SS-20/Axil board-specific rule are
+not independently established here.
+
+The bypass main-memory check uses the profile aperture: 256 MiB on SS-5 and
+512 MiB on SS-20/Axil. A physical address at the exclusive end is rejected.
 High addresses still use normal IOMMU translation despite slot bypass being set.
 
 Out-of-range addresses, invalid IOPTEs and write-protected stores return
@@ -176,11 +195,15 @@ late-error, RMW, burst-size and VME write-buffer behavior remains unsupported.
 
 ## Limits and validation
 
-This API currently supports RAM targets and page tables in the DRAM aperture.
-Non-DRAM targets/tables, DMA with EN=0 and no qualifying slot bypass, and
-unsupported active diagnostic I/O tag formats stop explicitly. The disabled
-non-bypass case deliberately has no invented identity mapping. There are no
-bursts, DMA atomics, concurrent owners, device engines, cache snooping, bus-cycle
+This API supports RAM targets throughout the profile's DRAM aperture, including
+the upper 256 MiB on SS-20/Axil, and page tables in installed DSIMM storage.
+Empty-bank targets retain zero-read/discard-write behavior except for the SS-20
+SX's bank 7; a table in an empty bank or outside the aperture stops explicitly.
+Non-DRAM targets, DMA with EN=0 and no qualifying slot bypass, and unsupported
+active diagnostic I/O tag formats stop explicitly. The separate bypass
+slot-register-access mode and wider SBus slot-register forms remain unmodeled.
+The disabled non-bypass case deliberately has no invented identity mapping.
+There are no bursts, DMA atomics, concurrent owners, cache snooping, bus-cycle
 timing or parity injection. Single-transfer failures do not partially write RAM;
 future multi-transfer engines must track partial completion themselves.
 

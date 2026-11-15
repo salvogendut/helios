@@ -234,7 +234,10 @@ encoding; its configurable host geometry does not define Helios's raw target.
   bypass; section 3.2.1 allocates main memory, control space, and SBus slot
   `PA[35:28]=0xEn`; section 3.2.4 defines reserved-space timeouts. These define
   the SS-20/Axil layout and the implementation's high-address path.
-  Sections A.I.2/A.II.2 give connector/processor/MID numbering; B.III.5.4.7
+  Sections 5.9 and 7.2.5.1 define standalone SEGA slot-register bits 21:16
+  and their combination with DVMA for bypass; Appendix A.II.4.1.6 documents the
+  optional Campus-2 hardwired-SEGA behavior. Sections A.I.2/A.II.2 give
+  connector/processor/MID numbering; B.III.5.4.7
   defines the MXCC port identity and B.III.8 gives per-MID physical control
   and port addresses. Section 5.1.2, printed page 22 (inspected visually),
   defines the Arbiter Enable Register at `0xFE0001008`: bit 0 reads one, the
@@ -255,6 +258,12 @@ encoding; its configurable host geometry does not define Helios's raw target.
   VSIMM locations and POST test list. The [System Handbook memory
   page](https://dogemicrosystems.ca/pub/Sun/System_Handbook/Sun_syshbk_V3.4/Devices/Memory/MEM_SS20.html)
   independently lists the same bank ranges.
+  Original OBP 2.25R `cd /memory .attributes` independently identifies each
+  32 MiB DSIMM as two 16 MiB physical regions at bank offsets 0 and 32 MiB.
+  Helios models PA24 mirrors and distinct backing for those two regions;
+  a 48 MiB firmware fixture verifies the published ranges alongside a 16 MiB
+  bank, with CPU/DMA non-alias regressions. This is observed firmware evidence
+  for the mapping, separate from the manual's socket capacity table.
 - The same service manual, table 12-1 (printed page 184), lists SM52 dual
   SuperSPARC and HS12 dual hyperSPARC modules; appendix B lists two MBus
   slots. [Sun's MBus module installation guide](https://docs.oracle.com/cd/E19957-01/802-2566-11/install.chapter3.html),
@@ -274,9 +283,17 @@ encoding; its configurable host geometry does not define Helios's raw target.
   ROM `axil320-2-19.bin` was supplied by the user and is not bundled.
 - [The Rough Guide to MBus Modules: Axil 320](https://mbus.sunhelp.org/systems/axil/320.htm)
   and the [Axil 320 memory listing](http://satech.com/ax320sup1hme.html): the
-  clone has two MBus slots and eight 512 MiB-class DSIMM sockets. Its physical
-  banner (ROM 2.19, MAC `00:00:3c:13:de:ad`, host ID `72c0ffee`) is the source
-  for the default Axil IDPROM identity.
+  clone has two MBus slots and eight DRAM sockets for up to 512 MiB total. The project
+  owner confirmed on 2026-11-15 that two of those eight RAM slots may hold
+  VSIMMs; this is user-supplied hardware evidence. Its physical banner (ROM
+  2.19, MAC `00:00:3c:13:de:ad`, host ID `72c0ffee`) is the source for the
+  default Axil IDPROM identity. Helios currently models the Axil without a
+  VSIMM, leaving all eight sockets available for DRAM. Tracing the pinned
+  original Axil OBP 2.19 shows a +16 MiB mirror test distinguishing 16/64 MiB
+  banks, without the SS-20's additional 32 MiB test. The Axil profile therefore
+  populates 16/64 MiB banks, with firmware-confirmed 32/416/512 MiB totals.
+  This is observed firmware behavior, not a primary hardware module inventory;
+  support for physical 8/32 MiB Axil modules remains unverified.
 - [Wikipedia: SPARCstation 20](https://en.wikipedia.org/wiki/SPARCstation_20)
   (user-provided): the target's single/dual SuperSPARC or hyperSPARC MBus
   modules, 64–512 MiB RAM and optional SX/VSIMM graphics. It is background, not

@@ -6,6 +6,45 @@ use helios::system_bus::SystemBus;
 const MIB: usize = 1024 * 1024;
 
 #[test]
+fn ss20_32_mib_dsimm_has_two_distinct_16_mib_regions_and_pa24_mirrors() {
+    let mut memory = Ss5Dram::ss20([32 * MIB, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+    // Original OBP 2.25R /memory/reg lists [0, 16 MiB) and
+    // [32 MiB, 48 MiB). These must not alias, despite a 32 MiB total.
+    memory.write32(0, 0x1234_5678).unwrap();
+    memory.write32(32 * MIB as u64, 0xaabb_ccdd).unwrap();
+    for (base, expected) in [(0, 0x1234_5678), (32 * MIB as u64, 0xaabb_ccdd)] {
+        assert_eq!(memory.read32(base).unwrap(), expected);
+        assert_eq!(memory.read32(base + 16 * MIB as u64).unwrap(), expected);
+        memory.write8(base + 16 * MIB as u64 + 1, 0x99).unwrap();
+        assert_eq!(
+            memory.read32(base).unwrap(),
+            (expected & !0x00ff_0000) | 0x0099_0000
+        );
+    }
+    assert_eq!(memory.swap32(48 * MIB as u64, 7).unwrap(), 0xaa99_ccdd);
+    assert_eq!(memory.read32(32 * MIB as u64).unwrap(), 7);
+    assert_eq!(memory.read32(0).unwrap(), 0x1299_5678);
+    memory
+        .write_doubleword(48 * MIB as u64 - 8, [0x1122_3344, 0x5566_7788])
+        .unwrap();
+    assert_eq!(
+        memory.read_doubleword(64 * MIB as u64 - 8).unwrap(),
+        [0x1122_3344, 0x5566_7788]
+    );
+    memory
+        .load_image(32 * MIB as u64 + 4, &[0x12, 0x34])
+        .unwrap();
+    assert_eq!(memory.read16(48 * MIB as u64 + 4).unwrap(), 0x1234);
+    for (address, bytes) in [
+        (16 * MIB as u64, &[1][..]),
+        (16 * MIB as u64 - 1, &[1, 2][..]),
+    ] {
+        assert!(memory.load_image(address, bytes).is_err());
+    }
+    assert_eq!(memory.read32(0).unwrap(), 0x1299_5678);
+}
+
+#[test]
 fn dsimm_layouts_reject_impossible_totals_and_preserve_slot_order() {
     for total in [0, 1, 12 * MIB, 240 * MIB, 248 * MIB, 257 * MIB, usize::MAX] {
         assert!(matches!(
@@ -134,6 +173,29 @@ fn dram_aperture_is_reserved_and_installation_rejects_overlap_atomically() {
     );
     assert!(bus.dram().is_none());
     assert_eq!(bus.read32(0).unwrap_err().kind, BusErrorKind::Unmapped);
+}
+
+#[test]
+fn full_high_aperture_is_reserved_in_both_installation_orders() {
+    // A zero-storage SS-20 layout still reserves all eight 64 MiB banks.
+    let empty_high_layout = || Ss5Dram::ss20([0; 8]).unwrap();
+    let high = 0x1fff_0000;
+
+    let mut before = SystemBus::default();
+    before.map_ram(high, 4).unwrap();
+    assert_eq!(
+        before.install_ss5_dram(empty_high_layout()),
+        Err(MapError::Overlap)
+    );
+    assert!(before.dram().is_none());
+    assert_eq!(before.read32(high).unwrap(), 0);
+
+    let mut after = SystemBus::default();
+    after.install_ss5_dram(empty_high_layout()).unwrap();
+    assert_eq!(after.map_ram(high, 4), Err(MapError::Overlap));
+    assert_eq!(after.map_rom(high, &[0; 4]), Err(MapError::Overlap));
+    after.map_ram(0x2000_0000, 4).unwrap();
+    assert_eq!(after.read32(0x2000_0000).unwrap(), 0);
 }
 
 #[test]

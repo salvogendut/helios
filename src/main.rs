@@ -4,8 +4,8 @@ use helios::devices::{
     cgsix::Cgsix, keyboard::Keyboard, nvram::Nvram, scsi::MediaKind, serial::Channel,
 };
 use helios::machine::{
-    demo_image, serial_demo_image, timer_demo_image, trap_demo_image, Machine, MachineProfile,
-    SchedulerError, CPU_CLOCK_HZ, DEFAULT_RAM_BYTES, TARGET,
+    demo_image, serial_demo_image, timer_demo_image, trap_demo_image, InstalledVideo, Machine,
+    MachineProfile, SchedulerError, CPU_CLOCK_HZ, DEFAULT_RAM_BYTES, TARGET,
 };
 use helios::net::{NatConfig, NatEngine, DNS_PORT};
 use helios::serial_host::TcpSerial;
@@ -25,8 +25,9 @@ Usage:
   helios timer-demo [--trace]
   helios run FILE [--load-address N] [--entry N] [--steps N] [--ram-mib N] [--trace]
   helios boot PROM [--machine ss5|ss20|axil320] [--cpus 1|2] [--steps N] [--ram-mib N] [--trace]
-                   [--serial-in FILE] [--serial-port-a PORT] [--serial-port-b PORT]
-                   [--keyboard] [--cgsix-rom FILE] [--nvram FILE] [--nvram-out NEW_FILE]
+                   [--display sx|cgsix|none] [--serial-in FILE]
+                   [--serial-port-a PORT] [--serial-port-b PORT] [--keyboard]
+                   [--cgsix-rom FILE] [--nvram FILE] [--nvram-out NEW_FILE]
                    [--disk RAW_IMAGE | --disk-rw RAW_IMAGE] [--cdrom ISO_IMAGE]
                    [--net] [--net-gateway IP] [--net-client IP] [--net-mask IP]
                    [--net-dns IP] [--tftp-dir DIR]
@@ -46,11 +47,15 @@ boot loads a raw PROM (up to 1 MiB) and starts the CPU/MMU at reset.
 SS-20 or the Axil 320 clone. --cpus selects one or two single-CPU MBus modules;
 SS-5 accepts only one. The default is one. SS-20/Axil use the high sun4m device map and a
 36-bit boot window but the same device models and 128 MiB default RAM.
-Its RAM must fit eight 8 MiB or 32 MiB DSIMMs; low slots receive larger modules first.
+--display selects the installed video: SS-20 defaults to SX; other profiles
+default to none. CGsix requires --cgsix-rom; supplying --cgsix-rom without an
+explicit --display infers CGsix and leaves SX/VSIMM uninstalled. RAM must fit
+the profile/display DSIMM geometry; low slots receive larger modules first.
 boot and serial-demo send TTYA bytes to stdout and diagnostics to stderr.
 --keyboard attaches a Type 5 keyboard; with diag-switch? false this selects the
 abbreviated OBP startup path, letting an SS-20 boot reach ok without full POST.
 --cgsix-rom attaches a CG6/TurboGX SBus card in slot 2 using its 32 KiB FCode ROM.
+--display none means no framebuffer or VSIMM, not merely serial console output.
 --serial-in supplies bytes as the guest enables and drains its receiver.
 --serial-port-a PORT and --serial-port-b PORT expose TTYA/TTYB as telnet
 consoles on 127.0.0.1; PORT 0 asks the host for a free port. Console output
@@ -91,6 +96,42 @@ fn report(console: bool, message: std::fmt::Arguments<'_>) {
 struct SerialPorts {
     a: Option<TcpSerial>,
     b: Option<TcpSerial>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DisplayChoice {
+    None,
+    Sx,
+    Cgsix,
+}
+
+impl DisplayChoice {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "sx" => Some(Self::Sx),
+            "cgsix" => Some(Self::Cgsix),
+            _ => None,
+        }
+    }
+
+    const fn video(self) -> InstalledVideo {
+        match self {
+            Self::Sx => InstalledVideo::Sx,
+            Self::None | Self::Cgsix => InstalledVideo::None,
+        }
+    }
+
+    const fn needs_cgsix_rom(self) -> bool {
+        matches!(self, Self::Cgsix)
+    }
+}
+
+fn default_display(profile: MachineProfile) -> DisplayChoice {
+    match profile.default_video() {
+        InstalledVideo::Sx => DisplayChoice::Sx,
+        InstalledVideo::None => DisplayChoice::None,
+    }
 }
 
 fn execute(
@@ -630,6 +671,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             let mut net_dns = None;
             let mut tftp_dir = None;
             let mut keyboard = false;
+            let mut display = None;
             let mut cgsix_rom = None;
             let mut nvram_in = None;
             let mut nvram_out = None;
@@ -682,6 +724,18 @@ fn run() -> Result<(), Box<dyn Error>> {
                 }
                 if boot && option == "--keyboard" {
                     keyboard = true;
+                    continue;
+                }
+                if boot && option == "--display" {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "--display requires sx, cgsix or none".to_owned())?;
+                    let choice = DisplayChoice::parse(&value).ok_or_else(|| {
+                        format!("unknown display choice: {value} (use sx, cgsix or none)")
+                    })?;
+                    if display.replace(choice).is_some() {
+                        return Err("--display supplied more than once".into());
+                    }
                     continue;
                 }
                 if boot && option == "--machine" {
@@ -775,6 +829,39 @@ fn run() -> Result<(), Box<dyn Error>> {
                     "--serial-port-a and --serial-port-b require boot (sun4m devices)".into(),
                 );
             }
+            let display = match (display, cgsix_rom.is_some()) {
+                (Some(DisplayChoice::Cgsix), false) => {
+                    return Err("--display cgsix requires --cgsix-rom".into())
+                }
+                (Some(choice), true) if !choice.needs_cgsix_rom() => {
+                    return Err(format!(
+                        "--cgsix-rom conflicts with --display {}",
+                        match choice {
+                            DisplayChoice::None => "none",
+                            DisplayChoice::Sx => "sx",
+                            DisplayChoice::Cgsix => unreachable!(),
+                        }
+                    )
+                    .into())
+                }
+                (Some(choice), _) => choice,
+                (None, true) => DisplayChoice::Cgsix,
+                (None, false) => default_display(profile),
+            };
+            if boot {
+                profile.ram_layout(ram_bytes, display.video())?;
+            }
+            let cgsix = if boot && display == DisplayChoice::Cgsix {
+                let path = cgsix_rom
+                    .as_ref()
+                    .expect("CGsix display was validated with a ROM");
+                let rom = std::fs::read(path)?;
+                let card =
+                    Cgsix::new(&rom).map_err(|error| format!("CG6 ROM {path}: {error:?}"))?;
+                Some((path.clone(), card))
+            } else {
+                None
+            };
             let entry = entry.unwrap_or(load);
             if entry % 4 != 0 {
                 return Err("entry address must be word aligned".into());
@@ -789,7 +876,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                 } else {
                     profile.default_nvram()
                 };
-                Machine::with_profile_processors(profile, ram_bytes, &bytes, nvram, cpus)?
+                Machine::with_profile_processors_video(
+                    profile,
+                    ram_bytes,
+                    &bytes,
+                    nvram,
+                    cpus,
+                    display.video(),
+                )?
             } else {
                 let mut machine = Machine::bare_metal(ram_bytes, entry)?;
                 machine.load_image(load, &bytes)?;
@@ -799,10 +893,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 machine.bus.devices_mut().expect("boot devices").keyboard =
                     Some(Keyboard::default());
             }
-            if let Some(path) = cgsix_rom {
-                let rom = std::fs::read(&path)?;
-                let card =
-                    Cgsix::new(&rom).map_err(|error| format!("CG6 ROM {path}: {error:?}"))?;
+            if let Some((path, card)) = cgsix {
                 machine
                     .install_cgsix(card)
                     .map_err(|error| format!("CG6 ROM {path}: {error}"))?;

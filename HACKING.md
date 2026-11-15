@@ -38,7 +38,7 @@ or assume host scheduling is guest timing.
 | `src/mmu.rs` | ASI dispatch, CPU/I/O translation, shared TLB, permissions and CPU fault registers |
 | `src/dma.rs` | Machine-owned SBus DMA transfers and device-facing errors |
 | `src/cache.rs` | Cache diagnostic arrays and indexed invalidation; ordinary cache hits/fills pending |
-| `src/dram.rs` | SS-5 DSIMM layout, mirrors and empty-bank behavior |
+| `src/dram.rs` | Profile-specific DSIMM layout validation, allocation, mirrors and empty-bank behavior |
 | `src/machine.rs` | Bare-metal/reset construction, SS-5/SS-20/Axil profiles, processor modules, deterministic scheduler, RAM/PROM limits and demo images |
 | `src/topology.rs` | MBus connector, hardware processor/module identities, arbitration and run-state enums; default constructors remain single-CPU, while the validated `--cpus 2` path selects two single-CPU modules |
 | `src/main.rs` | CLI parsing, image files, trace printing and CPU step budget |

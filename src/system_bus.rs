@@ -819,7 +819,7 @@ impl SystemBus {
         }
     }
     pub fn install_ss5_dram(&mut self, dram: Ss5Dram) -> Result<(), MapError> {
-        if self.dram.is_some() || self.memory.overlaps(0, APERTURE_BYTES) {
+        if self.dram.is_some() || self.memory.overlaps(0, dram.aperture_bytes()) {
             return Err(MapError::Overlap);
         }
         self.dram = Some(dram);
@@ -828,6 +828,40 @@ impl SystemBus {
 
     pub fn dram(&self) -> Option<&Ss5Dram> {
         self.dram.as_ref()
+    }
+
+    pub fn dram_aperture_bytes(&self) -> Option<u64> {
+        self.dram.as_ref().map(Ss5Dram::aperture_bytes)
+    }
+
+    fn sx_video_overlaps(&self, address: u64, size: u64) -> bool {
+        let Some(dram) = &self.dram else {
+            return false;
+        };
+        self.sx.is_some()
+            && dram.bank_bytes() == crate::dram::SS20_BANK_BYTES
+            && address < 8 * dram.bank_bytes() as u64
+            && address
+                .checked_add(size)
+                .is_some_and(|end| end > 7 * dram.bank_bytes() as u64)
+    }
+
+    /// Complete span lies in the board's usable DRAM aperture, including empty
+    /// DSIMM banks. The SS-20 SX's reserved bank 7 is video, not DMA RAM.
+    pub fn dram_contains_aperture(&self, address: u64, size: u64) -> bool {
+        self.dram
+            .as_ref()
+            .is_some_and(|dram| dram.contains_aperture(address, size))
+            && !self.sx_video_overlaps(address, size)
+    }
+
+    /// Complete span lies in installed DSIMM storage, not an empty bank or the
+    /// SS-20 SX's reserved video bank.
+    pub fn dram_contains_storage(&self, address: u64, size: u64) -> bool {
+        self.dram
+            .as_ref()
+            .is_some_and(|dram| dram.contains_storage(address, size))
+            && !self.sx_video_overlaps(address, size)
     }
 
     fn dram_at(&mut self, address: u64) -> Option<&mut Ss5Dram> {
@@ -1239,6 +1273,10 @@ impl Bus for SystemBus {
 
     fn set_access_context(&mut self, context: AccessContext) {
         self.context = context;
+    }
+
+    fn dma_table_in_dram(&self, address: u64) -> bool {
+        self.dram_contains_storage(address, 4)
     }
 
     fn observe_memory_request(&mut self, address: u64, request: MemoryRequest) {

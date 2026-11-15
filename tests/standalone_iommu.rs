@@ -189,7 +189,7 @@ fn standalone_faults_widths_bypass_reset_and_bus_errors_are_explicit() {
     assert_eq!(m.dma_read(5, PAGE_A, Width::Word), Ok(0xaaaa_aaaa));
 
     m.bus.write32(io(&m) + 0x14, 0).unwrap();
-    m.bus.write32(0x10000, 0x0100_0006).unwrap();
+    m.bus.write32(0x10000, 0x0200_0006).unwrap(); // exclusive DRAM aperture end
     assert_eq!(
         m.dma_read(5, PAGE_A, Width::Word),
         Err(DmaError::Unsupported("non-DRAM DVMA target"))
@@ -205,6 +205,45 @@ fn standalone_faults_widths_bypass_reset_and_bus_errors_are_explicit() {
         "{result:?}"
     );
     assert_eq!(m.cpu.mmu.fault_status(), 0);
+}
+
+#[test]
+fn standalone_sega_preserves_high_selectors_before_the_board_range_check() {
+    for profile in [MachineProfile::Ss20, MachineProfile::Axil320] {
+        let mut m = machine_for(profile);
+        let io = io(&m);
+        let sentinel = 0x1122_3344;
+        m.bus.write32(0x8000, sentinel).unwrap();
+        m.bus.write32(io + 0x1008, 1 << 16).unwrap(); // expansion master 0
+        for selector in [0x0002_0001, 0x0001_0001, 0x0020_0001] {
+            m.bus.write32(io + 0x1010, selector).unwrap();
+            assert_eq!(m.bus.read32(io + 0x1010).unwrap(), selector);
+            assert_eq!(
+                m.dma_write(0, 0x8000, Width::Word, 0xdead_beef),
+                Err(DmaError::Fault {
+                    address: 0x8000,
+                    kind: DmaFault::InvalidBypassAddress
+                }),
+                "{profile:?} selector {selector:#x}"
+            );
+            assert_eq!(m.bus.read32(0x8000).unwrap(), sentinel);
+        }
+        assert_eq!(m.bus.read32(io + 0x1010).unwrap(), 0x0020_0001);
+        m.reset();
+        assert_eq!(m.bus.read32(io + 0x1010).unwrap(), 0);
+        assert_eq!(m.bus.read32(0x8000).unwrap(), sentinel);
+    }
+
+    // The integrated microSPARC-II keeps its SA30-only slot mask and ignores
+    // reserved slot bit 17 rather than treating it as PA31.
+    let mut ss5 = machine_for(MachineProfile::Ss5);
+    let io = io(&ss5);
+    ss5.bus.write32(io + 0x2000, 1 << 16).unwrap();
+    ss5.bus.write32(io + 0x1010, 0x0002_0001).unwrap();
+    assert_eq!(ss5.bus.read32(io + 0x1010).unwrap(), 1);
+    ss5.bus.write32(0x8000, 0x1122_3344).unwrap();
+    ss5.dma_write(0, 0x8000, Width::Word, 0xdead_beef).unwrap();
+    assert_eq!(ss5.bus.read32(0x8000).unwrap(), 0xdead_beef);
 }
 
 #[test]

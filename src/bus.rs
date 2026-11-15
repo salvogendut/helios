@@ -211,6 +211,13 @@ pub trait Bus {
         None
     }
 
+    /// Whether a standalone-I/OMMU page-table fetch can be served by installed
+    /// DRAM storage. The default keeps the legacy 31-bit main-memory bound for
+    /// plain buses; a board bus overrides it with its actual aperture.
+    fn dma_table_in_dram(&self, address: u64) -> bool {
+        address.checked_add(4).is_some_and(|end| end <= 0x1000_0000)
+    }
+
     fn read32(&mut self, address: u64) -> Result<u32, BusError>;
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError>;
     /// The word at the lower address comes first, with no host endian conversion.

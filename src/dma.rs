@@ -215,10 +215,10 @@ impl Machine {
         width: Width,
         write: bool,
     ) -> Result<u64, DmaError> {
-        let alignment = match width {
-            Width::Byte => 1,
-            Width::Half => 2,
-            Width::Word => 4,
+        let (alignment, bytes) = match width {
+            Width::Byte => (1, 1),
+            Width::Half => (2, 2),
+            Width::Word => (4, 4),
         };
         if address % alignment != 0 {
             return Err(DmaError::Fault {
@@ -226,17 +226,18 @@ impl Machine {
                 kind: DmaFault::Misaligned,
             });
         }
+        let dram_aperture = self.bus.dram_aperture_bytes().unwrap_or(0x1000_0000);
         let mapping = self
             .bus
             .devices()
             .ok_or(DmaError::Unsupported("no SBus/IOMMU installed"))?
             .io_control
-            .mapping(master, address)?;
+            .mapping(master, address, dram_aperture)?;
         let standalone = self.standalone_iommu.take();
-        let (physical, boot_mode) = if let Some(mut iommu) = standalone {
+        let (physical, boot_mode, standalone_translation) = if let Some(mut iommu) = standalone {
             let result = iommu.translate(&mut self.bus, address, write, mapping);
             self.standalone_iommu = Some(iommu);
-            (result?, false)
+            (result?, false, true)
         } else {
             // The integrated microSPARC-II I/O path records the real CPU S pin
             // and PCR.BM in MFSR, while CP remains zero for the DMA request.
@@ -246,9 +247,14 @@ impl Machine {
                     .mmu
                     .translate_io(&mut self.bus, address, write, mapping)?,
                 self.cpu.mmu.boot_mode(),
+                false,
             )
         };
-        if physical >= 0x1000_0000 {
+        if standalone_translation {
+            if !self.bus.dram_contains_aperture(physical, bytes) {
+                return Err(DmaError::Unsupported("non-DRAM DVMA target"));
+            }
+        } else if physical >= 0x1000_0000 {
             return Err(DmaError::Unsupported("non-DRAM DVMA target"));
         }
         let kind = match (write, width) {

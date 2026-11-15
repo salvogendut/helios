@@ -1,7 +1,10 @@
 # Configurable RAM: issue #3 implementation handoff
 
-Prepared 2026-11-15. This is a researched work order; the RAM changes described
-below are not implemented or accepted yet.
+Prepared 2026-11-15. Slices A–C are implemented and reviewed; the completion
+work found and corrected Axil firmware sizing and SS-20 split-bank mapping.
+See the [completion review](ram-capacity-completion.md) for current acceptance,
+validation and cleanup status. The user approved integration into both `main`
+branches and closure of issue #3 on 2026-11-15.
 
 ## Objective and starting points
 
@@ -20,9 +23,10 @@ Both repositories already have a pushed `feat/configurable-ram` branch:
 
 Read each repository's `AGENTS.md`, then Helios `README.md`, `HACKING.md`,
 `docs/references.md`, `docs/dram-tlb.md`, `docs/machines.md`, `docs/io-control.md`
-and `docs/firmware.md`. The current accepted baseline is 605 unique normal core
-tests / 607 with `perf-counters`, and 34 Heliacal tests. Those are previous
-milestone results, not a new validation run for this documentation change.
+and `docs/firmware.md`. The pre-feature baseline was 605 unique normal core
+tests / 607 with `perf-counters`, and 34 Heliacal tests. Accepted slices A/B now
+pass 620/622 unique core tests; slice C passes 42 Heliacal tests. Review notes
+record the independent checks and the limits of those results.
 
 Keep the current CPU configurations: SS-5 has one CPU; SS-20/Axil have one or two
 single-CPU modules, processors 0/2. Four CPUs, new machine families, JIT, memory
@@ -38,7 +42,7 @@ integer: a total must be constructible from the available modules and sockets.
 | SS-5 / CGsix | Eight sockets, 8 or 32 MiB DSIMMs | 256 MiB |
 | SS-20 / native SX with one VSIMM | Seven DRAM sockets, 16/32/64 MiB DSIMMs; bank 7 reserved for VSIMM | 448 MiB |
 | SS-20 / CGsix, no VSIMM | Eight DRAM sockets, 16/32/64 MiB DSIMMs | 512 MiB |
-| Axil 320 / CGsix | Existing core uses eight SS-20-style banks; corroborate Axil module sizes and socket map in slice A | 512 MiB target; Axil-specific geometry needs verification |
+| Axil 320 / CGsix | Eight sockets, two VSIMM-capable; pinned OBP 2.19 profile uses 16/64 MiB banks with no VSIMM | 512 MiB |
 
 Source notes:
 
@@ -55,13 +59,14 @@ Source notes:
   pages 198–200, gives 16/32/64 MiB modules and the 512/448/384 MiB capacities
   for zero/one/two occupied video slots. Slot labels, installation order and
   address-bank numbers differ; do not use the SS-10SX slot map for SS-20.
-- The existing Axil references are recorded in `docs/references.md`. They are
-  leads, not a newly verified manufacturer specification. Find an Axil manual,
-  primary hardware report or inspectable firmware evidence to corroborate the
-  512 MiB target and especially 32 MiB module support. The user's confirmation
-  of common **MBus CPU modules** does not establish identical RAM sockets.
-  Record remaining assumptions explicitly if a primary specification cannot be
-  recovered; do not present guessed module combinations as verified hardware.
+- The project owner confirmed on 2026-11-15 that the Axil 320 has eight RAM
+  sockets and that two of them may hold VSIMMs. With no VSIMM, all eight are
+  available for DRAM, so the 512 MiB target is geometrically consistent. This
+  is user-supplied hardware evidence, not a manufacturer manual. The existing
+  core's initial SS-20-style module assumption was superseded during acceptance:
+  the pinned Axil 2.19 ROM recognizes 16/64 MiB banks. The profile now builds
+  those populations. Physical 8/32 MiB Axil support remains unverified; do not
+  confuse this firmware restriction with a vendor module inventory.
 - Use the existing microSPARC-II and Sun-4M architecture manuals for address,
   mirroring and DMA rules. Emulator comparisons remain pinned to QEMU
   `f71afb409a87c4ecd0f9d63a5963eb645dfab780` and MAME machine sources
@@ -75,7 +80,7 @@ module; 240 MiB does not fit eight sockets. Eight-bank SS-20 480 MiB fits,
 448 MiB fits. Verify these independently by enumerating module counts, rather
 than copying the production layout algorithm into the tests.
 
-## Findings in the current code
+## Findings at the start of implementation
 
 | Area | Observed behavior / work required |
 | --- | --- |

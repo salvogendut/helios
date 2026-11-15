@@ -1,5 +1,15 @@
 # Agent notes
 
+- [Configurable RAM completion](ram-capacity-completion.md) — Axil firmware-compatible populations, SS-20 split 32 MiB bank fix, CGsix console configuration, tracked frontend lifecycle tests and final acceptance evidence.
+
+- [Configurable RAM slice D interim review](ram-capacity-slice-d-interim-review.md) — completed maximum-size serial evidence checked; Axil 416→448 MiB discrepancy independently reproduced; SS-20/CGsix 512 MiB guest panic confirmed in UP and SMP captures; focused handover and remaining acceptance checks.
+
+- [Configurable RAM slice C review](ram-capacity-slice-c-review.md) — frontend accepted for slice D; 42 tests, 6 independent fixtures, confirmed RAM replacement and SS-5 256 MiB display smoke pass; maximum-capacity Solaris and interactive acceptance remain.
+
+- [Configurable RAM slice B review](ram-capacity-slice-b-review.md) — SEGA aliasing correction independently accepted; 620/622 unique tests, 7/7 review fixtures and standard checks pass; ready for Heliacal slice C, with maximum-capacity guest acceptance still pending.
+
+- [Configurable RAM slice A review](ram-capacity-slice-a-review.md) — topology/construction accepted for slice B; 8 independent fixtures, 611/613 unique tests, enumeration-oracle and Axil-documentation follow-ups; temporary build cleaned.
+
 - [Configurable RAM plan and handoff](ram-capacity-plan.md) — issue #3 work order for both repositories: shared topology, SS-20 VSIMM limits, high-RAM DMA, CLI/F9 settings, firmware acceptance and cleanup.
 
 - [SMP slice 4 review](smp-slice4-review.md) — CLI fixes, 605/607 tests, SS-20 SMP input and Axil CDE lifecycle/persistence accepted; independent Axil move/resize/expose/iconify/focus assertions complete; experimental slice ready for incremental merge, temporary clones/builds cleaned.
