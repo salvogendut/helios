@@ -18,6 +18,24 @@ fn result(f: &mut Floppy, n: usize) -> Vec<u8> {
 }
 
 #[test]
+fn newer_part_id_probe_returns_invalid_command_without_an_interrupt() {
+    let mut f = Floppy::default();
+    f.write(2, 12).unwrap();
+    send(&mut f, &[0x13, 0, 0x10, 0]); // disable reset polling
+    send(&mut f, &[0x18]); // 82078 extension, invalid on 82077
+    assert!(!f.irq());
+    assert_eq!(f.read(4).unwrap(), 0xd0);
+    assert_eq!(f.write(5, 0x10), Err(BusErrorKind::WouldBlock));
+    assert_eq!(result(&mut f, 1), [0x80]);
+    assert_eq!(f.read(4).unwrap(), 0x80);
+    send(&mut f, &[0x10]);
+    assert_eq!(result(&mut f, 1), [0x90]);
+    assert!(!f.irq());
+    // Valid media commands remain explicit unsupported operations.
+    assert!(f.write(5, 0xa6).unwrap_err().is_host_stop());
+}
+
+#[test]
 fn base_probe_read_completes_without_consuming_controller_state() {
     let mut f = Floppy::default();
     for phase in 0..4 {

@@ -1,12 +1,13 @@
 # Firmware development baseline
 
 Use **original Sun OBP firmware** for development and hardware-accuracy checks.
-OpenBIOS is a separate compatibility test until it is proved working. Firmware
-must not be patched to bypass missing hardware, and QEMU-specific interfaces
+OpenBIOS is an optional replacement-firmware compatibility target. Original
+OBP is not patched to bypass missing hardware, and QEMU-specific interfaces
 must not redefine the SS-5 model. A successful isolated probe is not a firmware
 compatibility claim. Original OBP now reaches responsive serial and graphical
 monitors, with keyboard-entered Forth commands on the TurboGX console.
-OpenBIOS has not reached a prompt. The latest [graphical checkpoint](#graphical-obp-console)
+The separately built OpenBIOS port reaches interactive serial and TurboGX
+graphical prompts on all three profiles; its limits are described below. The [graphical OBP checkpoint](#graphical-obp-console)
 and [serial/timer/Ethernet checkpoint](#timer-and-ethernet-bring-up) distinguish
 this from full hardware compatibility or OS boot. Earlier checkpoints below
 are retained as historical evidence.
@@ -14,6 +15,145 @@ are retained as historical evidence.
 The selected machine is an SS5/85: 85 MHz microSPARC-II, 128 MiB RAM, CGsix,
 SCSI disk/CD-ROM, Ethernet and serial. Pending devices remain absent; the
 implemented subset and timing convention are documented separately.
+
+## Automatic OpenBIOS fallback
+
+`helios boot` with no positional PROM and Heliacal with `prom = ""` select
+OpenBIOS. A configured PROM always wins: a missing, unreadable or invalid
+configured file reports an error instead of selecting another image. Raw Sun
+PROMs retain the existing size-based loading rules; arbitrary raw ROM contents
+cannot be authenticated by the loader. OpenBIOS ELF files are validated as
+big-endian ELF32/SPARC, with one bounded load segment at `0xffd00000`; BSS is
+zero-filled. The CLI prints the selected firmware/path; Heliacal logs it and
+shows it in **F9 > About**. The raw runner (`helios run FILE`) is unchanged.
+
+Build the **Helios SPARC32 port** from official OpenBIOS commit
+[`e5ac46dd24e6216c36aa80462af25457e7029440`](https://github.com/openbios/openbios/tree/e5ac46dd24e6216c36aa80462af25457e7029440),
+the OpenBIOS source revision referenced by the pinned QEMU tree. This source
+build is distinct from QEMU's older prebuilt comparison image below. The
+tracked `tools/openbios/helios.patch` contains the platform port; the upstream
+GPL-2.0 source and resulting firmware remain outside version control.
+
+```sh
+# Requires git, make, host gcc, xsltproc, toke (fcode-utils), and a SPARC cross compiler.
+# Fedora packages: gcc-sparc64-linux-gnu binutils-sparc64-linux-gnu fcode-utils libxslt
+python3 tools/build_openbios.py --jobs 4
+# Start at an interactive Forth prompt, serial console on stdout:
+cargo run --release -- boot --machine ss20 --display none --steps 1200000000
+```
+
+The helper refuses an existing build tree or differing output. Use a fresh
+`--work-dir`/`--output-dir` to rebuild. `--source-repository PATH` permits cloning
+an existing local upstream checkout containing the pinned commit. Its JSON
+manifest records upstream revision, patch/image SHA-256 and compiler. The old
+source needs GNU C11 and warning-tolerant compilation with current GCC; this
+does not change Helios's warning policy. Build timestamps/compiler versions can
+change the ELF hash; the recipe is pinned, not a bit-for-bit reproducibility claim.
+
+Selection checks `HELIOS_OPENBIOS` first if set; an invalid value is an error.
+Otherwise it searches for `openbios-helios-sparc32.elf` in this order:
+
+1. `local/firmware/` relative to the working directory.
+2. `$XDG_DATA_HOME/helios/firmware/`, or `$HOME/.local/share/helios/firmware/`.
+3. The Helios checkout's `local/firmware/` recorded at build time.
+4. `/usr/local/share/helios/firmware/`, then `/usr/share/helios/firmware/`.
+
+Missing candidates are skipped; an existing invalid candidate is reported.
+There are no automatic downloads or bundled firmware files. Heliacal's named
+machine PROM paths follow the same rules; existing configured OBP paths are
+never removed or rewritten. To return a machine to automatic selection, clear
+its PROM path in F9 or set `prom = ""` in its configuration.
+
+### Firmware services and platform port
+
+Normal machine constructors install **no fw_cfg service**. OpenBIOS startup
+explicitly installs a byte-stream configuration service at `0xd00000510`:
+big-endian halfword selector, byte data at `+2`, little-endian numeric payloads,
+read-only entries, no DMA or host pointers. Unknown keys/end-of-entry read zero.
+Wide and atomic accesses fail without consuming stream data. This service
+survives board reset, with its selector/cursor reset.
+
+On SS-5 only this service page is admitted through ASI `0x2d` and an explicit
+4 KiB firmware page-table mapping. Other physical addresses retain the normal
+31-bit microSPARC-II semantics. OpenBIOS's boot-mode relocation at `0xffd00000`
+has a firmware-only PROM alias. Original OBP does not enable these exceptions;
+its ASIs, boot aliases, page tables, diagnostics and device behavior remain the
+hardware baseline. The interface is an emulator/firmware contract, not an SS-5
+register map.
+
+The source port uses the NCR system timer for real delays, bounds detection of
+an absent floppy drive, follows ESP reset/interrupt/status sequencing, enables
+SBus arbitration before DMA, selects Sun CD boot slice `d`, and describes MBus CPUs with MIDs 8/A (processors
+0/2). Secondary startup grants AER only after publishing the context. It removes
+upstream's fictitious SS-20 APC node and reports nominal 85/75 MHz clocks instead
+of an inherited 170 MHz. Axil uses the compatible SS-20 device tree while retaining
+its own IDPROM identity. The historical `intr` FCode word and sun4m SBus
+PIL mapping support TurboGX ROM interpretation; its 1 MiB framebuffer needs
+a 2 MiB firmware virtual-I/O window with a linker bound check. Version-1 FCode
+also receives Sun's terminated packed-string convention, preventing stale
+digits from corrupting resolution parsing; ordinary `pack` remains unchanged.
+The generic framebuffer palette fallback keeps its argument stack balanced
+when the ROM's `color!` is private. Keyboard startup enables the SCC receiver
+at 1200 baud and filters station releases/reset replies without reading an
+empty FIFO. Startup still clears all RAM, including on reset, but uses
+64-byte blocks of aligned doubleword stores to reduce the silent interval
+before serial initialization. A native dictionary-chain search preserves the
+original Forth stack results, ASCII case rules and live dictionary semantics;
+search order and immediate flags remain in the Forth callers. The target uses
+`-O2` to reduce dispatch overhead. These changes correct firmware assumptions; they do not
+make the emulator's devices imitate QEMU's timing shortcuts. The controller's
+82078 PARTID probe receives the documented 82077 invalid-command result `0x80`;
+unsupported media commands still report an explicit stop.
+
+### NVRAM and current compatibility limits
+
+OpenBIOS uses a CHRP environment, not Sun OBP's configuration layout. Fresh
+OpenBIOS NVRAM preserves the profile IDPROM/RTC and starts with
+`auto-boot?=false`, `boot-device=disk`. Heliacal appends `.openbios` to each
+existing flat/named-machine NVRAM filename and saves the two formats separately.
+Switching firmware never converts an OBP environment in place. The CLI leaves
+filenames explicit: use a separate `--nvram`/`--nvram-out` pair. Supplying an OBP
+or corrupt CHRP environment to OpenBIOS is rejected before attaching disks.
+
+- Serial Forth is available on SS-5, SS-20 and Axil. Use `boot disk` or
+  `boot cdrom`; OpenBIOS's prompt is `0 >`, not Sun OBP's `ok` prompt.
+- Heliacal's TurboGX console accepts captured keyboard commands on all three
+  profiles (`1 2 + . cr` returns `3`), including two-CPU SS-20/Axil configurations.
+  The optimized port reduces a measured SS-5/256 MiB startup from 43.6 to
+  15.2 seconds for the serial prompt and from 157.6 to 21.4 seconds for the
+  first TurboGX banner pixels (fast clocks, local release-build benchmark;
+  timings depend on the host and configuration). The latter measures first
+  output, not the completed graphical prompt. Heliacal shows a startup notice
+  until console output appears. Large-memory machines still clear all RAM
+  before enabling serial, so even TTYA starts after a delay.
+  Graphical mode sends its Forth prompt to the screen; headless mode uses TTYA.
+- The port needs at least 32 MiB and contiguous installed DRAM. Sparse DSIMM
+  populations remain valid hardware configurations but require original OBP.
+  Validation rejects these firmware limits before RAM/media construction;
+  the default 128 MiB is suitable on every model. Firmware reserves about
+  16 MiB, so the OS's usable-memory report is smaller than installed capacity.
+- Native SX/CG14 has no OpenBIOS display driver. Heliacal reports this and asks
+  for headless mode, CGsix, or original OBP; it does not silently change the
+  saved machine's display. TurboGX still requires its separate FCode ROM.
+- NetBSD 11.1 reaches a serial single-user shell from an existing CHD on
+  SS-20, with a disk write surviving clean unmount/power-off and another boot.
+  Its CD reaches the microroot installer media-selection prompt. The supplied
+  GENERIC kernel uses one CPU even with two configured; this is not a NetBSD
+  SMP acceptance. Disk boot was also checked with 512 MiB.
+- Solaris 2.6 CD boot on the two-CPU Axil profile reaches a single-user shell;
+  `psrinfo -v` reports processors 0 and 2 online at 75 MHz, followed by a clean
+  `sync; halt`. This checkpoint does not establish a new installation or CDE
+  support under replacement firmware.
+- Heliacal's headless OpenBIOS path was checked with NetBSD shell input through
+  its PTY, the embedded serial view, persisted-file verification, guest halt,
+  host Quit and owned-link cleanup. Source guest media were preserved.
+- OpenBIOS's halt callback requests power-off. Its abort callback also powers
+  off instead of returning to the monitor; do not expect Sun OBP Stop-A behavior.
+
+These are bounded firmware/OS checkpoints, not general desktop, installation
+or network-boot support. Original-OBP display smoke tests still pass on SS-5,
+SS-20/SX and Axil/TurboGX. Agent reproduction details and retained evidence are
+in [the acceptance record](../clanker/openbios-fallback.md).
 
 ## Original SS-5 OBP
 
@@ -536,8 +676,9 @@ stops at PC=`0x00005f0c`, nPC=`0x00005f10`, instruction=`0xc4b145a0`: an unsuppo
 ASI `0x2d` halfword store. In QEMU this is the `fw_cfg` selector at physical
 `0xd00000510`, outside microSPARC-II's 31-bit hardware space. The stop is an
 emulator limitation, not a CPU error state, and there is no console output.
-Implementing that interface is deferred compatibility work; original OBP
-hardware bring-up takes priority.
+This historical failure is addressed by the opt-in service above. The stock
+image still assumes QEMU device behavior; use the source-built port for the
+automatic fallback. Original OBP remains the hardware-accuracy reference.
 
 ## Timer and Ethernet bring-up
 

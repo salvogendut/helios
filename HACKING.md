@@ -33,6 +33,7 @@ or assume host scheduling is guest timing.
 | `src/bus.rs` | Physical bus contract, RAM/ROM mappings and external byte import |
 | `src/system_bus.rs` | Physical decoding, per-profile sun4m layouts, device widths, clock advancement and IRQ wiring |
 | `src/devices/` | NVRAM/RTC, SCCs, keyboard/mouse, CGsix and SX/CG14, interrupt control, timers, reset/status, ECC memory control and I/O configuration |
+| `src/firmware.rs`, `src/firmware/image.rs` | Shared host firmware selection, ELF boundary, separate CHRP NVRAM and opt-in fw_cfg service |
 | `src/media.rs`, `src/media/` | Logical host-media boundary, optional CHD codecs, persistent children, durable writes and explicit blank-image creation |
 | `src/serial_host.rs` | Loopback telnet serial consoles; nonblocking host I/O polled by frontends |
 | `src/net/` | User-mode NAT over the Ethernet frame endpoint: ARP/RARP, DHCP, ICMP, UDP, DNS, TFTP |
@@ -502,3 +503,15 @@ Original OBP lists both image-backed targets with `probe-scsi-all`; see
 CD's UFS root, then reach the serial language-selection prompt; installation
 remains unverified. Report actual command
 results, not just firmware device-node creation.
+
+## Replacement firmware boundary
+
+`FirmwareImage::load` implements the shared CLI/frontend selection rules; an
+explicit PROM never falls back on error. OpenBIOS installs `OpenBiosConfig`
+only after machine construction. The extra ASI/page/boot-alias handling is
+conditional on that service's presence; do not broaden microSPARC hardware
+addressing to make a replacement firmware work. `tests/openbios.rs` covers
+service isolation, access atomicity, translations/diagnostics, NVRAM isolation
+and ELF validation. The source-based firmware port and RAM/display limitations
+are described in [firmware.md](docs/firmware.md#automatic-openbios-fallback).
+Keep original OBP regressions alongside replacement-firmware acceptance.

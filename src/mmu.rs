@@ -217,6 +217,7 @@ struct Entry {
     pte: u32,
     upper: u32,
     lower: u32,
+    firmware_page: bool,
 }
 
 impl Entry {
@@ -717,6 +718,7 @@ impl Srmmu {
         // RAM tests can install arbitrary patterns with translation disabled.
         // Unsupported active types are checked at lookup, not on diagnostic writes.
         entry.pte_address = None;
+        entry.firmware_page = false;
         *slot = entry;
         self.refresh_tlb_diagnostic();
         Ok(())
@@ -858,6 +860,8 @@ impl Srmmu {
             }
             8..=11 | 0x20 => {}
             0x21..=0x2f if self.config.reference_mmu => {}
+            0x2d if bus
+                .firmware_mmio_page((u64::from(asi & 15) << 32) | u64::from(address & !0xfff)) => {}
             _ => {
                 return Err(MemoryError::UnsupportedAsi {
                     asi,
@@ -968,6 +972,8 @@ impl Srmmu {
             }
             8..=11 | 0x20 => {}
             0x21..=0x2f if self.config.reference_mmu => {}
+            0x2d if bus
+                .firmware_mmio_page((u64::from(asi & 15) << 32) | u64::from(address & !0xfff)) => {}
             _ => {
                 return Err(MemoryError::UnsupportedAsi {
                     asi,
@@ -1368,6 +1374,7 @@ impl Srmmu {
             pte,
             upper: virtual_base | ((context & 0xff) << 4) | 8 | level_tag,
             lower: permissions[acc] | u32::from(pte & 0x40 != 0),
+            firmware_page: false,
         };
         self.tlb[index] = entry;
     }
@@ -1681,12 +1688,22 @@ impl Srmmu {
         access: Access,
     ) -> Result<Translation, MemoryError> {
         if access.instruction() && self.control & self.config.boot_mode_bit != 0 {
+            let offset = if (0xffd0_0000..0xffe0_0000).contains(&access.address)
+                && bus.firmware_mmio_page(crate::firmware::FW_CFG_PAGE)
+            {
+                access.address - 0xffd0_0000
+            } else {
+                access.address & self.config.boot_mask
+            };
             return Ok(Translation {
-                physical: self.config.prom_base | u64::from(access.address & self.config.boot_mask),
+                physical: self.config.prom_base | u64::from(offset),
                 cacheable: false,
             });
         }
-        if self.config.reference_mmu && (0x21..=0x2f).contains(&access.asi) {
+        if (self.config.reference_mmu && (0x21..=0x2f).contains(&access.asi))
+            || (access.asi == 0x2d
+                && bus.firmware_mmio_page((0xdu64 << 32) | u64::from(access.address & !0xfff)))
+        {
             let physical = (u64::from(access.asi & 0xf) << 32) | u64::from(access.address);
             return Ok(Translation {
                 physical,
@@ -1799,9 +1816,12 @@ impl Srmmu {
 
     fn translation(&self, access: Access, entry: Entry) -> Translation {
         Translation {
-            physical: ((u64::from(entry.pte & self.config.pte_physical_mask) << 4)
-                & !u64::from(entry.offset_mask))
-                | u64::from(access.address & entry.offset_mask),
+            physical: (if entry.firmware_page {
+                crate::firmware::FW_CFG_PAGE
+            } else {
+                (u64::from(entry.pte & self.config.pte_physical_mask) << 4)
+                    & !u64::from(entry.offset_mask)
+            }) | u64::from(access.address & entry.offset_mask),
             cacheable: entry.pte & 0x80 != 0,
         }
     }
@@ -1991,6 +2011,7 @@ impl Srmmu {
             },
             upper: (address & !0xfff) | ((self.context & 0xff) << 4) | 8 | level_tag,
             lower: permissions[acc] | u32::from(pte & MODIFIED != 0),
+            firmware_page: false,
         }
     }
 
@@ -2004,7 +2025,12 @@ impl Srmmu {
             match word & 3 {
                 1 if level < 3 => physical = self.next_table(word, access.address, level),
                 2 if level == 0 => return Err(MemoryError::UnsupportedRootPte),
-                2 => return Ok(self.entry(access.address, level, physical, word)),
+                2 => {
+                    let mut entry = self.entry(access.address, level, physical, word);
+                    entry.firmware_page =
+                        level == 3 && bus.firmware_mmio_page(u64::from(word & 0xffff_ff00) << 4);
+                    return Ok(entry);
+                }
                 et => {
                     return Err(MemoryError::Translation(access.fault(
                         if et == 0 {

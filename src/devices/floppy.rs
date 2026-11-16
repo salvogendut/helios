@@ -188,7 +188,7 @@ impl Floppy {
         match opcode {
             3 | 0x0f => Ok(3),     // SPECIFY / SEEK
             4 | 7 | 0x12 => Ok(2), // SENSE DRIVE / RECALIBRATE / PERPENDICULAR
-            8 | 0x0e | 0x10 | 0x14 | 0x94 => Ok(1),
+            8 | 0x0e | 0x10 | 0x14 | 0x94 | 0x18 => Ok(1),
             0x13 => Ok(4), // CONFIGURE
             _ => Err(BusErrorKind::Unsupported("floppy command")),
         }
@@ -241,6 +241,10 @@ impl Floppy {
                 self.pretrack,
             ]),
             0x10 => self.result.push_back(0x90),
+            // PARTID is an 82078 extension, not an 82077 command. Intel
+            // 82077AA section 5: invalid commands return ST0=80h and enter
+            // the result phase. OpenBIOS uses this to distinguish revisions.
+            0x18 => self.result.push_back(0x80),
             7 | 0x0f => {
                 let drive = self.command[1] & 3;
                 let recalibrate = opcode == 7;

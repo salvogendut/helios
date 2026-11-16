@@ -1017,3 +1017,73 @@ fn boot_cpu_count_rejects_missing_zero_four_and_malformed_values_in_any_order() 
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+fn openbios_test_elf() -> Vec<u8> {
+    let mut bytes = vec![0; 92];
+    bytes[..7].copy_from_slice(b"\x7fELF\x01\x02\x01");
+    for (offset, value) in [(16, 2u16), (18, 2), (40, 52), (42, 32), (44, 1)] {
+        bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    for (offset, value) in [
+        (20, 1u32),
+        (24, 0xffd0_0000),
+        (28, 52),
+        (52, 1),
+        (56, 84),
+        (60, 0xffd0_0000),
+        (64, 0xffd0_0000),
+        (68, 8),
+        (72, 16),
+    ] {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+    }
+    bytes[84..].copy_from_slice(&[0x10, 0x80, 0, 0, 1, 0, 0, 0]);
+    bytes
+}
+
+#[test]
+fn omitted_prom_uses_openbios_on_every_profile_and_reports_the_path() {
+    let firmware = Image::new(&openbios_test_elf());
+    for model in ["ss5", "ss20", "axil320"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_helios"))
+            .args([
+                "boot",
+                "--machine",
+                model,
+                "--display",
+                "none",
+                "--steps",
+                "2",
+            ])
+            .env("HELIOS_OPENBIOS", firmware.path())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{model}: {stderr}");
+        assert!(stderr.contains("Firmware: OpenBIOS"));
+        assert!(stderr.contains(firmware.path()));
+        assert!(stderr.contains("2 instructions, 0 traps"));
+    }
+}
+
+#[test]
+fn explicit_prom_and_explicit_failures_never_use_the_fallback() {
+    let fallback = Image::new(&openbios_test_elf());
+    let original = Image::new(&[0x10, 0x80, 0, 0, 1, 0, 0, 0]);
+    for path in [original.path(), "does-not-exist-obp-issue8.bin"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_helios"))
+            .args(["boot", path, "--steps", "2"])
+            .env("HELIOS_OPENBIOS", fallback.path())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.success(), path == original.path(), "{stderr}");
+        assert!(!stderr.contains("Firmware: OpenBIOS"));
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_helios"))
+        .args(["boot", "--steps", "2"])
+        .env("HELIOS_OPENBIOS", "does-not-exist-openbios-issue8.elf")
+        .output()
+        .unwrap();
+    assert!(!output.status.success()); // even if another fallback is installed locally
+}
