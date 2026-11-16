@@ -76,8 +76,10 @@ See [SCSI storage](docs/scsi.md).
 A minimal **NetBSD 11.1 sparc** installation onto a new 2 GiB CHD also boots
 its unmodified GENERIC kernel to serial root login on SS-20 (one CPU, 128 MiB,
 accurate clocks). Installed-file checksums and guest-written data survive
-clean halt and host reopening. Coverage is limited to that serial/storage
-configuration; a timecounter-backwards warning remains unresolved.
+clean halt and host reopening. The SS-20 SX console also reaches graphical
+root login with 256 MiB and fast clocks after implementing its cursor ROPs
+and queue-empty status. This does not establish NetBSD X11 or SMP support;
+the earlier serial boot's timecounter-backwards warning remains unresolved.
 
 The implemented foundation includes:
 
