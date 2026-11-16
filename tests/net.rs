@@ -283,6 +283,161 @@ fn icmp_echo_to_the_gateway_is_answered() {
 }
 
 #[test]
+fn invalid_icmp_requests_do_not_generate_gateway_or_remote_replies() {
+    let mut net = NatEngine::new(config());
+    for destination in [GATEWAY_IP, Ipv4Addr::LOCALHOST] {
+        for mut echo in [
+            vec![8, 0, 0, 0],
+            vec![8, 1, 0, 0, 1, 2, 0, 1],
+            vec![0, 0, 0, 0, 1, 2, 0, 1],
+        ] {
+            let sum = checksum(&echo);
+            echo[2..4].copy_from_slice(&sum.to_be_bytes());
+            net.input(
+                &guest_ip_frame(GUEST_IP, destination, PROTO_ICMP, &echo, GATEWAY_MAC),
+                Instant::now(),
+            );
+        }
+        net.input(
+            &guest_ip_frame(
+                GUEST_IP,
+                destination,
+                PROTO_ICMP,
+                &[8, 0, 0, 0, 1, 2, 0, 1],
+                GATEWAY_MAC,
+            ),
+            Instant::now(),
+        );
+    }
+    assert!(net.output().is_none());
+    assert_eq!(net.stats().dropped, 8);
+    assert_eq!((net.stats().icmp_forwarded, net.pending_icmp()), (0, 0));
+}
+
+#[cfg(not(all(feature = "host-icmp", target_os = "linux")))]
+#[test]
+fn unavailable_icmp_is_counted_and_reported_once_without_synthetic_success() {
+    let mut net = NatEngine::new(config());
+    let mut echo = vec![8, 0, 0, 0, 0xab, 0xcd, 0, 1, b'x'];
+    let sum = checksum(&echo);
+    echo[2..4].copy_from_slice(&sum.to_be_bytes());
+    for _ in 0..2 {
+        net.input(
+            &guest_ip_frame(
+                GUEST_IP,
+                Ipv4Addr::LOCALHOST,
+                PROTO_ICMP,
+                &echo,
+                GATEWAY_MAC,
+            ),
+            Instant::now(),
+        );
+    }
+    assert!(net.take_network_warning().unwrap().contains("host-icmp"));
+    assert!(net.take_network_warning().is_none());
+    assert_eq!(net.stats().icmp_errors, 2);
+    assert!(net.output().is_none());
+    assert_eq!(net.pending_icmp(), 0);
+}
+
+#[test]
+fn external_icmp_rejects_exhausted_ttl_nonunicast_and_oversize_without_host_io() {
+    let mut net = NatEngine::new(config());
+    for (destination, ttl, size) in [
+        (Ipv4Addr::LOCALHOST, 0, 8),
+        (Ipv4Addr::LOCALHOST, 1, 8),
+        (Ipv4Addr::UNSPECIFIED, 64, 8),
+        (Ipv4Addr::BROADCAST, 64, 8),
+        (Ipv4Addr::new(224, 0, 0, 1), 64, 8),
+        (Ipv4Addr::LOCALHOST, 64, 1481),
+    ] {
+        let mut echo = vec![0u8; size];
+        echo[0] = 8;
+        let sum = checksum(&echo);
+        echo[2..4].copy_from_slice(&sum.to_be_bytes());
+        let ip = ipv4_packet(GUEST_IP, destination, PROTO_ICMP, 1, ttl, &echo);
+        net.input(
+            &ether_frame(GATEWAY_MAC, GUEST_MAC, ETHERTYPE_IPV4, &ip),
+            Instant::now(),
+        );
+    }
+    assert_eq!(net.stats().dropped, 6);
+    assert_eq!((net.stats().icmp_forwarded, net.pending_icmp()), (0, 0));
+    assert_eq!(net.stats().icmp_errors, 0);
+    assert!(net.take_network_warning().is_none());
+    assert!(net.output().is_none());
+}
+
+#[cfg(all(feature = "host-icmp", target_os = "linux"))]
+#[test]
+#[ignore = "requires Linux ping-socket permission; run explicitly with --ignored"]
+fn host_icmp_loopback_preserves_guest_identity_sequence_and_payload() {
+    let mut net = NatEngine::new(config());
+    let mut expected = Vec::new();
+    for (index, (id, sequence, size)) in [
+        (0, 65535, 0),
+        (0xabcd, 7, 57),
+        (0xabcd, 7, 64),
+        (0x1357, 8, 1472),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let remote = Ipv4Addr::new(127, 0, 0, 1 + (index % 2) as u8);
+        let guest = Ipv4Addr::new(192, 168, 0, 2 + index as u8);
+        let mac = [2, 0, 0, 0, 0, 2 + index as u8];
+        let mut echo = vec![0u8; 8 + size];
+        echo[0] = 8;
+        echo[4..6].copy_from_slice(&(id as u16).to_be_bytes());
+        echo[6..8].copy_from_slice(&(sequence as u16).to_be_bytes());
+        for (i, byte) in echo[8..].iter_mut().enumerate() {
+            *byte = (i % 251) as u8;
+        }
+        let sum = checksum(&echo);
+        echo[2..4].copy_from_slice(&sum.to_be_bytes());
+        let ip = ipv4_packet(guest, remote, PROTO_ICMP, 1, 64, &echo);
+        net.input(
+            &ether_frame(GATEWAY_MAC, mac, ETHERTYPE_IPV4, &ip),
+            Instant::now(),
+        );
+        expected.push((remote, guest, mac, echo));
+    }
+    assert_eq!(
+        net.stats().icmp_forwarded,
+        4,
+        "{:?}",
+        net.take_network_warning()
+    );
+    for _ in 0..4 {
+        let frame = wait_output(&mut net);
+        let ethernet = EthernetFrame::parse(&frame).unwrap();
+        let ip = ethernet.ipv4().unwrap();
+        let (remote, guest, mac, request) = expected
+            .iter()
+            .find(|(_, guest, _, _)| *guest == ip.destination)
+            .unwrap();
+        assert_eq!(
+            (ip.source, ip.destination, ethernet.destination()),
+            (*remote, *guest, *mac)
+        );
+        assert!(ip.header_checksum_valid());
+        assert_eq!(ip.payload()[..2], [0, 0]);
+        assert_eq!(&ip.payload()[4..], &request[4..]);
+        assert_eq!(checksum(ip.payload()), 0);
+    }
+    assert_eq!(
+        (
+            net.stats().icmp_replies,
+            net.stats().icmp_errors,
+            net.pending_icmp()
+        ),
+        (4, 0, 0)
+    );
+    net.poll(Instant::now());
+    assert!(net.output().is_none());
+}
+
+#[test]
 fn udp_flows_are_natted_to_host_sockets_and_answers_come_back() {
     let server = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
     server

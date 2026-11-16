@@ -10,9 +10,13 @@ publish = false
 default = []
 perf-counters = []
 chd = ["dep:libchdman-rs"]
+host-icmp = ["dep:socket2"]
 
 [dependencies]
 libchdman-rs = { version = "=0.289.5", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+socket2 = { version = "=0.6.5", optional = true }
 
 [lints.rust]
 unsafe_code = "forbid"

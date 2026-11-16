@@ -3,17 +3,18 @@
 //! The engine owns no emulation state and runs on the frontend's thread: the
 //! frontend hands it guest frames, calls `poll` with host time, and injects the
 //! returned frames through `Ethernet::receive_frame`. Stage one implements ARP
-//! and RARP, BOOTP/DHCP, gateway ICMP echo, UDP NAT with DNS relaying, and a
+//! and RARP, BOOTP/DHCP, ICMP echo, UDP NAT with DNS relaying, and a
 //! read-only TFTP server. TCP NAT and host port forwards are explicit later
 //! stages; TCP packets are counted and dropped.
 
+mod icmp;
 pub mod packet;
 mod tftp;
 
 use crate::net::packet::{
-    arp_packet, ether_frame, icmp_echo_reply, icmp_protocol_unreachable, ipv4_packet,
-    ipv4_udp_fragments, EthernetFrame, Ipv4, MacAddr, Udp, BROADCAST_MAC, ETHERTYPE_ARP,
-    ETHERTYPE_IPV4, ETHERTYPE_RARP, PROTO_ICMP, PROTO_TCP, PROTO_UDP,
+    arp_packet, ether_frame, icmp_echo_reply, icmp_echo_request_valid, icmp_protocol_unreachable,
+    ipv4_packet, ipv4_udp_fragments, EthernetFrame, Ipv4, MacAddr, Udp, BROADCAST_MAC,
+    ETHERTYPE_ARP, ETHERTYPE_IPV4, ETHERTYPE_RARP, PROTO_ICMP, PROTO_TCP, PROTO_UDP,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -88,6 +89,10 @@ pub struct NatStats {
     pub rarp_requests: u64,
     pub bootp_requests: u64,
     pub icmp_echoes: u64,
+    pub icmp_forwarded: u64,
+    pub icmp_replies: u64,
+    pub icmp_errors: u64,
+    pub icmp_timeouts: u64,
     pub udp_requests: u64,
     pub udp_replies: u64,
     pub dns_queries: u64,
@@ -134,6 +139,7 @@ pub struct NatEngine {
     guest_mac: Option<MacAddr>,
     udp: HashMap<UdpKey, UdpFlow>,
     dns: HashMap<DnsKey, DnsFlow>,
+    icmp: icmp::Relay,
     tftp: Option<TftpServer>,
     output: std::collections::VecDeque<Vec<u8>>,
     ip_id: u16,
@@ -150,6 +156,7 @@ impl NatEngine {
             guest_mac: None,
             udp: HashMap::new(),
             dns: HashMap::new(),
+            icmp: icmp::Relay::default(),
             output: std::collections::VecDeque::new(),
             ip_id: 0,
             stats: NatStats::default(),
@@ -167,6 +174,16 @@ impl NatEngine {
 
     pub fn connections(&self) -> (usize, usize) {
         (self.udp.len(), self.dns.len())
+    }
+
+    pub fn pending_icmp(&self) -> usize {
+        self.icmp.len()
+    }
+
+    /// One diagnostic after a host ICMP setup/send failure. The frontend may
+    /// display/log it; a missing reply never becomes a fabricated echo reply.
+    pub fn take_network_warning(&mut self) -> Option<String> {
+        self.icmp.take_warning()
     }
 
     /// Handle one guest Ethernet frame (without FCS), producing zero or more
@@ -191,6 +208,13 @@ impl NatEngine {
 
     /// Poll host sockets and retransmit timers. `now` is host time.
     pub fn poll(&mut self, now: Instant) {
+        let echoes = self.icmp.poll(now, &mut self.buffer);
+        self.stats.icmp_errors += echoes.errors;
+        self.stats.icmp_timeouts += echoes.expired;
+        for echo in echoes.replies {
+            self.reply_ipv4(echo.mac, echo.remote, echo.guest, PROTO_ICMP, &echo.payload);
+            self.stats.icmp_replies += 1;
+        }
         self.poll_udp(now);
         self.poll_dns(now);
         let due = match self.tftp.as_mut() {
@@ -313,7 +337,7 @@ impl NatEngine {
                 }
                 self.handle_udp(ethernet, &ip, &udp, now);
             }
-            PROTO_ICMP => self.handle_icmp(ethernet, &ip),
+            PROTO_ICMP => self.handle_icmp(ethernet, &ip, now),
             PROTO_TCP => {
                 self.stats.unsupported_tcp += 1;
                 let unreachable = icmp_protocol_unreachable(ethernet.payload());
@@ -382,8 +406,32 @@ impl NatEngine {
         );
     }
 
-    fn handle_icmp(&mut self, ethernet: &EthernetFrame<'_>, ip: &Ipv4<'_>) {
+    fn handle_icmp(&mut self, ethernet: &EthernetFrame<'_>, ip: &Ipv4<'_>, now: Instant) {
+        if !icmp_echo_request_valid(ip.payload()) || ip.payload().len() > packet::IPV4_MAX_PAYLOAD {
+            self.stats.dropped += 1;
+            return;
+        }
         if ip.destination != self.config.gateway_ip {
+            if ip.ttl <= 1
+                || ip.destination.is_unspecified()
+                || ip.destination.is_multicast()
+                || ip.destination.is_broadcast()
+            {
+                self.stats.dropped += 1;
+                return;
+            }
+            if self.icmp.send(
+                ethernet.source(),
+                ip.source,
+                ip.destination,
+                ip.ttl - 1,
+                ip.payload(),
+                now,
+            ) {
+                self.stats.icmp_forwarded += 1;
+            } else {
+                self.stats.icmp_errors += 1;
+            }
             return;
         }
         let Some(reply) = icmp_echo_reply(ip.payload()) else {

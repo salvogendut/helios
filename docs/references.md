@@ -521,6 +521,13 @@ constructs the bits directly and uses its existing deferred exception path.
 
 ## Provenance
 
+Host ICMP echo follows [RFC 792](https://www.rfc-editor.org/rfc/rfc792.html),
+[Linux ping-group policy](https://docs.kernel.org/networking/ip-sysctl.html),
+and [Linux v6.12 ping.c](https://github.com/torvalds/linux/blob/v6.12/net/ipv4/ping.c)
+for unprivileged socket identifiers and receive layout. This host networking
+adapter does not alter emulated Ethernet registers or device timing. See
+[networking.md](networking.md) for its feature flag and limits.
+
 The initial Rust implementation and fixtures are newly written. No MAME, QEMU
 or IRIS implementation files are vendored, and no firmware is bundled. Hardware
 constants and instruction behavior are documented with their references above.

@@ -21,7 +21,7 @@ pub const IPV4_HDR: usize = 20;
 pub const UDP_HDR: usize = 8;
 pub const ICMP_HDR: usize = 8;
 pub const MTU: usize = 1500;
-const IPV4_MAX_PAYLOAD: usize = MTU - IPV4_HDR;
+pub(super) const IPV4_MAX_PAYLOAD: usize = MTU - IPV4_HDR;
 
 #[inline]
 fn be16(bytes: &[u8], offset: usize) -> u16 {
@@ -381,7 +381,7 @@ pub fn ipv4_udp_fragments(
 
 /// ICMP echo reply for an echo request's payload (header included).
 pub fn icmp_echo_reply(request: &[u8]) -> Option<Vec<u8>> {
-    if request.len() < ICMP_HDR || request[0] != 8 {
+    if !icmp_echo_request_valid(request) {
         return None;
     }
     let mut reply = request.to_vec();
@@ -391,6 +391,11 @@ pub fn icmp_echo_reply(request: &[u8]) -> Option<Vec<u8>> {
     let checksum = checksum(&reply);
     put16(&mut reply, 2, checksum);
     Some(reply)
+}
+
+/// Echo requests must have code zero and a valid checksum, including odd data.
+pub fn icmp_echo_request_valid(request: &[u8]) -> bool {
+    request.len() >= ICMP_HDR && request[..2] == [8, 0] && checksum(request) == 0
 }
 
 /// Build an ICMP destination-unreachable/protocol-unreachable message quoting

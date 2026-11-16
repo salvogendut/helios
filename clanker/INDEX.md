@@ -1,5 +1,7 @@
 # Agent notes
 
+- [External ICMP echo](icmp-echo.md) — bounded Linux ping relay, actual NetBSD/Solaris guest tests, host-policy diagnostics and explicit networking limits.
+
 - [RTC startup date](rtc-startup.md) — stale year-2000 clock diagnosis, explicit UTC startup seeding, Heliacal saved-time option and NetBSD/Solaris checks.
 
 - [NetBSD SX console fix](netbsd-sx-console.md) — reproduced cursor ROP stop, corrected word/byte ROPs and queue-empty status, graphical root login, regression checks and private-media evidence.

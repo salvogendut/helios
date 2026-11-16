@@ -6,6 +6,26 @@ permissions:
   contents: read
 
 jobs:
+  icmp:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain: [stable, '1.74.0']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy
+      - run: cargo check --locked --features host-icmp
+      - run: cargo clippy --locked --offline --all-targets --features host-icmp -- -D warnings
+      - run: cargo test --locked --offline --features host-icmp --lib net::icmp
+      - run: cargo test --locked --offline --features host-icmp --test net
+      # Enable unprivileged ping sockets only in this disposable CI runner.
+      # The emulator never changes the host's group policy or uses raw sockets.
+      - run: sudo sysctl -w 'net.ipv4.ping_group_range=0 2147483647'
+      - run: cargo test --locked --offline --features host-icmp --test net host_icmp_loopback -- --ignored
+
   check:
     runs-on: ubuntu-latest
     strategy:

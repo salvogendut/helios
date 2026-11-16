@@ -83,7 +83,8 @@ the earlier serial boot's timecounter-backwards warning remains unresolved.
 
 The implemented foundation includes:
 
-- A Rust library and headless CLI, dependency-free by default; optional CHD storage.
+- A Rust library and headless CLI, dependency-free by default; optional CHD
+  storage and Linux host ICMP echo.
 - An optional native framebuffer window, CGsix indexed VRAM/palette/cursor,
   SS-20 SX/CG14 scanout and an SX instruction subset, console drawing operations
   and a Sun keyboard/mouse on the second SCC.
@@ -131,8 +132,9 @@ The implemented foundation includes:
   audio DMA, sample conversion and interrupts remain unmodeled.
 - NCR89C100 Ethernet DMA and NCR92C990 initialization, single-buffer packets,
   CRC, filtering and internal loopback through the IOMMU, plus an optional
-  user-mode NAT (ARP/RARP, DHCP/BOOTP, gateway ICMP, UDP, DNS relay and
-  read-only TFTP). See [Ethernet](docs/ethernet.md) and
+  user-mode NAT (ARP/RARP, DHCP/BOOTP, ICMP echo, UDP, DNS relay and
+  read-only TFTP). External IPv4 ping uses the optional Linux `host-icmp`
+  feature. See [Ethernet](docs/ethernet.md) and
   [host networking](docs/networking.md).
 - SS-5 system reset/status, guest software reset and watchdog status latching;
   a second polled SCC with an optional Type 5 keyboard and Sun mouse protocol.
@@ -279,7 +281,9 @@ banks are rejected. SS-20/CGsix Solaris console boot also requires excluding
 the unimplemented DBRI slot with `setenv sbus-probe-list f0123` in OBP. See
 [machine configuration](docs/machines.md#ss-20-cgsix-console-configuration).
 
-TCP NAT and host port forwards are not implemented yet. See
+For external IPv4 ping, build on Linux with `--features host-icmp`; Heliacal
+enables this feature. Gateway ping needs no optional feature. TCP NAT and host
+port forwards are not implemented yet. See
 [host networking](docs/networking.md).
 
 `boot` installs the SS-5 bank layout and a read-only 1 MiB PROM aperture at `0x70000000`, starts

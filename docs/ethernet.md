@@ -75,9 +75,10 @@ descriptor is fetched. Reset retains already transmitted output. Internal
 loopback accepts 8–32-byte test packets, delivers them through the real receive
 ring and never exposes them to the host network endpoint.
 
-The frontend has no network backend or RARP/TFTP server yet. The library packet
-endpoint is the boundary for future isolated or host networking. No network
-traffic is sent to the host's interfaces by the current CLI.
+The CLI's `--net` option and Heliacal's Network setting attach the host-side
+NAT to this packet endpoint. ARP/RARP, DHCP, gateway ICMP, UDP, DNS and read-only
+TFTP are available; external IPv4 ping additionally uses the Linux `host-icmp`
+feature. See [networking.md](networking.md) for host requirements and limits.
 
 ## Limits and reference differences
 
