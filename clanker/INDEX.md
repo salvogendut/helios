@@ -113,3 +113,5 @@
 - [Issue #5 Slice C decoded cache](performance-issue5-slice-c.md) — bounded opt-in PC/raw-word decode cache with interpreter snapshot validation; disabled by default pending performance work.
 
 - [Issue #5 SS-5 page-walk investigation](performance-issue5-mmu-walk.md) — per-slot fast-cache generations; unsafe leaf-only walk shortcut removed; matched benchmark within +0.11%, WP=0 bottleneck remains open.
+
+- [SS-5 WP=0 investigation](ss5-wp0-investigation.md) — manual range semantics, OBP TRCR write trace, Solaris idle evidence and a WP=0 regression; replacement semantics unchanged.

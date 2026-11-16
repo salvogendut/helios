@@ -163,6 +163,29 @@ fn replacement_control_wrap_freeze_ptp_slots_and_io_partition_affect_real_fills(
 }
 
 #[test]
+fn wp_zero_limits_replacement_to_slot_zero() {
+    let (mut m, mut b) = fixture();
+    // TRCR.WP=0, TLBRC=0. This is the retained OBP/Solaris value.
+    put(&mut m, &mut b, 0x1000, 4, 0);
+    for context in 0..4u32 {
+        put(&mut m, &mut b, 0x200, 4, context);
+        assert_eq!(get(&mut m, &mut b, 0x4000, 11), 0x1234_5678);
+        assert_eq!(
+            get(&mut m, &mut b, 0x300, 6),
+            0x4008 | (context << 4),
+            "WP=0 fill {context} must land in slot zero"
+        );
+        for slot in 1..64 {
+            assert_eq!(
+                get(&mut m, &mut b, 0x300 + slot * 4, 6) & 8,
+                0,
+                "WP=0 must leave slot {slot} locked"
+            );
+        }
+    }
+}
+
+#[test]
 fn diagnostic_reserved_addresses_widths_and_unsupported_lookup_are_precise() {
     let (mut m, mut b) = fixture();
     put(&mut m, &mut b, 0, 4, PCR_EN | PCR_NF);
