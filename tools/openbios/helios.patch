@@ -1,0 +1,797 @@
+diff --git a/Makefile.target b/Makefile.target
+index 6f2d264..91027c4 100644
+--- a/Makefile.target
++++ b/Makefile.target
+@@ -26,12 +26,12 @@ NM     := $(TARGET)nm
+ STRIP  := $(TARGET)strip
+ RANLIB := $(TARGET)ranlib
+ 
+-CFLAGS+= -Os -g -DNATIVE_BITWIDTH_EQUALS_HOST_BITWIDTH -USWAP_ENDIANNESS
++CFLAGS+= -O2 -g -DNATIVE_BITWIDTH_EQUALS_HOST_BITWIDTH -USWAP_ENDIANNESS
+ CFLAGS+= -Wall -Wredundant-decls -Wshadow -Wpointer-arith
+ CFLAGS+= -Wstrict-prototypes -Wmissing-declarations -Wundef -Wendif-labels
+ CFLAGS+= -Wstrict-aliasing -Wwrite-strings -Wmissing-prototypes -Wnested-externs
+ CFLAGS+= -Wbuiltin-declaration-mismatch -Wimplicit-fallthrough -Woverride-init -Wno-maybe-uninitialized
+-CFLAGS+= -Werror
++CFLAGS+= -Wno-error -std=gnu11
+ # Flags for dependency generation
+ CFLAGS+= -MMD -MP -MT $@ -MF '$(*D)/$(*F).d'
+ INCLUDES := -I$(SRCDIR)/include -I$(SRCDIR)/kernel/include -I$(ODIR)/target/include
+diff --git a/arch/sparc32/entry.S b/arch/sparc32/entry.S
+index 74841c5..2edbb74 100644
+--- a/arch/sparc32/entry.S
++++ b/arch/sparc32/entry.S
+@@ -161,15 +161,33 @@ entry:
+         ! leave the kernel image intact
+         mov     0, %g6
+         cmp     %g4, 0
+-        beq     clear_mem
++        beq     prepare_clear_mem
+          nop
+ 
+         ! Start from 16M
+         set     0x1000000, %g6
+ 
++prepare_clear_mem:
++        ! Clear the same full RAM range, using 64-byte blocks. RAM size and
++        ! either start (0 or 16 MiB) are multiples of 64. Keep %g1 (RAM end),
++        ! %g5 (configuration port) and %g7 (CPU ID) intact. The two source
++        ! registers must both be zero: stda %g0 would store RAM size as well.
++        clr     %g2
++        clr     %g3
++        mov     8, %g4
+ clear_mem:
+-        sta     %g0, [%g6] ASI_M_BYPASS
+-        add     %g6, 0x4, %g6
++        stda    %g2, [%g6] ASI_M_BYPASS
++        stda    %g2, [%g6 + %g4] ASI_M_BYPASS
++        add     %g6, 16, %g6
++        stda    %g2, [%g6] ASI_M_BYPASS
++        stda    %g2, [%g6 + %g4] ASI_M_BYPASS
++        add     %g6, 16, %g6
++        stda    %g2, [%g6] ASI_M_BYPASS
++        stda    %g2, [%g6 + %g4] ASI_M_BYPASS
++        add     %g6, 16, %g6
++        stda    %g2, [%g6] ASI_M_BYPASS
++        stda    %g2, [%g6 + %g4] ASI_M_BYPASS
++        add     %g6, 16, %g6
+         cmp     %g6, %g1
+         bl      clear_mem
+          nop
+diff --git a/arch/sparc32/ldscript b/arch/sparc32/ldscript
+index b543c15..a768133 100644
+--- a/arch/sparc32/ldscript
++++ b/arch/sparc32/ldscript
+@@ -13,7 +13,8 @@ BASE_ADDR = 0xffd00000;
+ /* 16KB stack */
+ STACK_SIZE = 16384;
+ VMEM_SIZE = 128 * 1024;
+-IOMEM_SIZE = 256 * 1024 + 768 * 1024;
++/* TurboGX maps a 1 MiB framebuffer in addition to controller registers. */
++IOMEM_SIZE = 2 * 1024 * 1024;
+ 
+ SECTIONS
+ {
+@@ -65,6 +66,7 @@ SECTIONS
+     . = ALIGN(4096);
+     _end = .;
+     _iomem = _end + IOMEM_SIZE;
++    ASSERT(_iomem <= 0xffff0000, "firmware I/O VA exceeds OFMEM_VIRT_TOP")
+ 
+     /* We discard .note sections other than .note.ELFBoot,
+      * because some versions of GCC generates useless ones. */
+diff --git a/arch/sparc32/openbios.c b/arch/sparc32/openbios.c
+index 9af4e18..98902b9 100644
+--- a/arch/sparc32/openbios.c
++++ b/arch/sparc32/openbios.c
+@@ -123,15 +123,34 @@ void setup_timers(void)
+ {
+ }
+ 
++/* NCR system counter: bits 30:9 count 500 ns ticks. Use the system
++ * counter rather than instruction-count delays, which fail on timed devices.
++ * The firmware owns this counter until handing control to the client. */
++static volatile uint32_t *delay_counter;
++
+ void udelay(unsigned int usecs)
+ {
++    if (!delay_counter) {
++        phys_addr_t base = hwdef->slavio_base + hwdef->counter_offset + 0x10000;
++        delay_counter = (volatile uint32_t *)ofmem_map_io(base, 8);
++        delay_counter[0] = 0; /* free run, no interrupt */
++    }
++    while (usecs) {
++        unsigned int chunk = usecs > 1000000 ? 1000000 : usecs;
++        uint32_t start = delay_counter[1] >> 9;
++        while (((delay_counter[1] >> 9) - start) % 0x400000 < chunk * 2)
++            ;
++        usecs -= chunk;
++    }
+ }
+ 
+ void mdelay(unsigned int msecs)
+ {
++    while (msecs--)
++        udelay(1000);
+ }
+ 
+-static void mb86904_init(void)
++static void mb86904_init(unsigned int mid __attribute__((unused)))
+ {
+     PUSH(32);
+     fword("encode-int");
+@@ -149,8 +168,9 @@ static void mb86904_init(void)
+     fword("property");
+ }
+ 
+-static void tms390z55_init(void)
++static void tms390z55_init(unsigned int mid)
+ {
++    uint32_t base = 0xf0000000U | (mid << 24);
+     push_str("");
+     fword("encode-string");
+     push_str("ecache-parity?");
+@@ -173,7 +193,7 @@ static void tms390z55_init(void)
+ 
+     PUSH(0xf);
+     fword("encode-int");
+-    PUSH(0xf8fffffc);
++    PUSH(base | 0x00fffffc);
+     fword("encode-int");
+     fword("encode+");
+     PUSH(4);
+@@ -183,7 +203,7 @@ static void tms390z55_init(void)
+     PUSH(0xf);
+     fword("encode-int");
+     fword("encode+");
+-    PUSH(0xf8c00000);
++    PUSH(base | 0x00c00000);
+     fword("encode-int");
+     fword("encode+");
+     PUSH(0x1000);
+@@ -193,7 +213,7 @@ static void tms390z55_init(void)
+     PUSH(0xf);
+     fword("encode-int");
+     fword("encode+");
+-    PUSH(0xf8000000);
++    PUSH(base);
+     fword("encode-int");
+     fword("encode+");
+     PUSH(0x1000);
+@@ -203,7 +223,7 @@ static void tms390z55_init(void)
+     PUSH(0xf);
+     fword("encode-int");
+     fword("encode+");
+-    PUSH(0xf8800000);
++    PUSH(base | 0x00800000);
+     fword("encode-int");
+     fword("encode+");
+     PUSH(0x1000);
+@@ -213,7 +233,7 @@ static void tms390z55_init(void)
+     fword("property");
+ }
+ 
+-static void rt625_init(void)
++static void rt625_init(unsigned int mid __attribute__((unused)))
+ {
+     PUSH(32);
+     fword("encode-int");
+@@ -227,7 +247,7 @@ static void rt625_init(void)
+ 
+ }
+ 
+-static void bad_cpu_init(void)
++static void bad_cpu_init(unsigned int mid __attribute__((unused)))
+ {
+     printk("This CPU is not supported yet, freezing.\n");
+     for(;;);
+@@ -241,7 +261,7 @@ struct cpudef {
+     int icache_line_size, icache_lines, icache_assoc;
+     int ecache_line_size, ecache_lines, ecache_assoc;
+     int mmu_nctx;
+-    void (*initfn)(void);
++    void (*initfn)(unsigned int mid);
+ };
+ 
+ static const struct cpudef sparc_defs[] = {
+@@ -600,12 +620,13 @@ static void setup_cpu(int mid_offset)
+         push_str("cache-coherence?");
+         fword("property");
+ 
+-        PUSH(i + mid_offset);
++        /* Helios installs one CPU per MBus connector: MIDs 8 and A. */
++        PUSH(i * 2 + mid_offset);
+         fword("encode-int");
+         push_str("mid");
+         fword("property");
+ 
+-        cpu->initfn();
++        cpu->initfn(i * 2 + mid_offset);
+ 
+         fword("finish-device");
+     }
+@@ -712,6 +733,12 @@ static void setup_machine(uint64_t base)
+ 
+     push_str("/");
+     fword("find-device");
++    /* Helios nominal module clocks (execution may use a faster functional
++     * timebase). The inherited tree default of 170 MHz is not this hardware. */
++    PUSH(machine_id == 32 ? 85000000 : 75000000);
++    fword("encode-int");
++    push_str("clock-frequency");
++    fword("property");
+     push_str(mach->banner_name);
+     fword("encode-string");
+     push_str("banner-name");
+diff --git a/arch/sparc32/tree.fs b/arch/sparc32/tree.fs
+index e9d0333..d8e624b 100644
+--- a/arch/sparc32/tree.fs
++++ b/arch/sparc32/tree.fs
+@@ -1,5 +1,15 @@
+ include config.fs
+ 
++\ Sun-4M SBus level to CPU PIL routing (levels 1 through 7).
++: sun4m-sbus-intr>cpu ( level -- pil )
++  case
++    1 of 2 endof  2 of 3 endof  3 of 5 endof  4 of 7 endof
++    5 of 9 endof  6 of b endof  7 of d endof
++    true abort" Invalid SBus interrupt level"
++  endcase
++;
++['] sun4m-sbus-intr>cpu to sbus-intr>cpu
++
+ \ ---------
+ \ DMA words
+ \ ---------
+diff --git a/drivers/escc.c b/drivers/escc.c
+index 0f0d43a..cb08c88 100644
+--- a/drivers/escc.c
++++ b/drivers/escc.c
+@@ -244,11 +244,19 @@ NODE_METHODS(escc_port) = {
+ 
+ #ifdef CONFIG_DRIVER_ESCC_SUN
+ static volatile unsigned char *kbd_dev;
++static int shiftstate;
++static int kbd_pending = -1;
++static int kbd_reply_byte;
+ 
+ void kbd_init(phys_addr_t base)
+ {
+     kbd_dev = (unsigned char *)ofmem_map_io(base, 2 * 4);
+     kbd_dev += 4;
++    /* Real SCC receivers start disabled; the Sun keyboard uses 1200 8N1. */
++    uart_init_line(kbd_dev, 1200, 1);
++    shiftstate = 0;
++    kbd_pending = -1;
++    kbd_reply_byte = 0;
+ }
+ 
+ static const unsigned char sunkbd_keycode[128] = {
+@@ -279,42 +287,54 @@ static const unsigned char sunkbd_keycode_shifted[128] = {
+     ' ',
+ };
+ 
+-static int shiftstate;
+-
++/* Poll raw Sun station bytes into a one-character lookahead. Releases and
++ * reset/layout replies are not characters and must not trigger an empty FIFO
++ * read or block the caller waiting for a later key press. */
+ int
+ keyboard_dataready(void)
+ {
+-    return ((kbd_dev[0] & 1) == 1);
++    unsigned char ch;
++    if (kbd_pending >= 0)
++        return 1;
++    if (!kbd_dev)
++        return 0;
++    while (escc_uart_charav((uintptr_t)kbd_dev)) {
++        ch = kbd_dev[2];
++        if (kbd_reply_byte) {
++            kbd_reply_byte = 0;
++            continue;
++        }
++        if (ch == 0xff || ch == 0xfe) {
++            kbd_reply_byte = 1;
++            shiftstate = 0;
++            continue;
++        }
++        if (ch == 0x7f) {
++            shiftstate = 0;
++            continue;
++        }
++        if (ch == 99) { shiftstate |= 1; continue; }
++        if (ch == 110) { shiftstate |= 2; continue; }
++        if (ch == 227) { shiftstate &= ~1; continue; }
++        if (ch == 238) { shiftstate &= ~2; continue; }
++        if (ch & 0x80)
++            continue;
++        ch = shiftstate ? sunkbd_keycode_shifted[ch] : sunkbd_keycode[ch];
++        if (ch) {
++            kbd_pending = ch;
++            return 1;
++        }
++    }
++    return 0;
+ }
+ 
+ unsigned char
+ keyboard_readdata(void)
+ {
+-    volatile unsigned char ch;
+-
++    unsigned char ch;
+     while (!keyboard_dataready()) { }
+-
+-    do {
+-        ch = kbd_dev[2] & 0xff;
+-        if (ch == 99)
+-            shiftstate |= 1;
+-        else if (ch == 110)
+-            shiftstate |= 2;
+-        else if (ch == 227)
+-            shiftstate &= ~1;
+-        else if (ch == 238)
+-            shiftstate &= ~2;
+-        //printk("getch: %d\n", ch);
+-    } // If release, wait for key press
+-    while ((ch & 0x80) == 0x80 || ch == 238 || ch == 227);
+-    //printk("getch rel: %d\n", ch);
+-    ch &= 0x7f;
+-    if (shiftstate)
+-        ch = sunkbd_keycode_shifted[ch];
+-    else
+-        ch = sunkbd_keycode[ch];
+-    //printk("getch xlate: %d\n", ch);
+-
++    ch = kbd_pending;
++    kbd_pending = -1;
+     return ch;
+ }
+ 
+diff --git a/drivers/esp.c b/drivers/esp.c
+index 92f28cc..653b631 100644
+--- a/drivers/esp.c
++++ b/drivers/esp.c
+@@ -24,6 +24,7 @@
+ #include "scsi.h"
+ #include "asm/dma.h"
+ #include "esp.h"
++#include "timer.h"
+ #include "libopenbios/ofmem.h"
+ 
+ #define BUFSIZE         4096
+@@ -83,10 +84,26 @@ static void dump_drive(sd_private_t *drive)
+ }
+ #endif
+ 
++/* Read status before acknowledging the interrupt. Polling the interrupt
++ * register loses event information on real NCR controllers. Bound missing
++ * hardware/target waits using the platform timer. */
++static int
++wait_esp(esp_private_t *esp, int *status)
++{
++    unsigned int polls;
++    for (polls = 0; polls < 10000; polls++) {
++        *status = esp->ll->regs[ESP_STATUS];
++        if (*status & ESP_STAT_INTR)
++            return esp->ll->regs[ESP_INTRPT];
++        udelay(50);
++    }
++    return -1;
++}
++
+ static int
+ do_command(esp_private_t *esp, sd_private_t *sd, int cmdlen, int replylen)
+ {
+-    int status;
++    int status, event, scsi_status;
+ 
+     // Set SCSI target
+     esp->ll->regs[ESP_BUSID] = sd->id & 7;
+@@ -104,15 +121,15 @@ do_command(esp_private_t *esp, sd_private_t *sd, int cmdlen, int replylen)
+     // Set ATN, issue command
+     esp->ll->regs[ESP_CMD] = ESP_CMD_SELA | ESP_CMD_DMA;
+     // Wait for ESP to complete
+-    while (!(esp->ll->regs[ESP_INTRPT] & (ESP_INTR_BSERV | ESP_INTR_FDONE | ESP_INTR_DC)));
+-    // Check status
+-    status = esp->ll->regs[ESP_STATUS];
++    event = wait_esp(esp, &status);
++    if (event < 0 || (event & ESP_INTR_DC))
++        return -1;
+ 
+     DPRINTF("do_command: id %d, cmd[0] 0x%x, status 0x%x\n", sd->id, esp->buffer[1], status);
+ 
+     /* Target didn't want all command data? */
+     if ((status & ESP_STAT_TCNT) != ESP_STAT_TCNT) {
+-        return status;
++        return -1;
+     }
+     if (replylen == 0) {
+         /* No reply expected, ICCS and MSGACC to complete */
+@@ -136,24 +153,30 @@ do_command(esp_private_t *esp, sd_private_t *sd, int cmdlen, int replylen)
+     // Transfer
+     esp->ll->regs[ESP_CMD] = ESP_CMD_TI | ESP_CMD_DMA;
+     // Wait for ESP to complete
+-    while (!(esp->ll->regs[ESP_INTRPT] & (ESP_INTR_BSERV | ESP_INTR_FDONE | ESP_INTR_DC)));
+-    // Check status
+-    status = esp->ll->regs[ESP_STATUS];
++    event = wait_esp(esp, &status);
++    if (event < 0 || (event & ESP_INTR_DC))
++        return -1;
+ 
+     DPRINTF("do_command_reply: status 0x%x\n", status);
+ 
+     if ((status & ESP_STAT_TCNT) != ESP_STAT_TCNT) {
+-        return status;
++        return -1;
+     }
+ 
+ done:
+     // ICCS and MSGACC sequence to complete
+     esp->ll->regs[ESP_CMD] = ESP_CMD_ICCSEQ;
+-    (void)esp->ll->regs[ESP_FDATA];  // Ignore 1st byte for now
+-    (void)esp->ll->regs[ESP_FDATA];  // Ignore 2nd byte for now
++    event = wait_esp(esp, &status);
++    if (event < 0 || !(event & ESP_INTR_FDONE))
++        return -1;
++    scsi_status = esp->ll->regs[ESP_FDATA];
++    (void)esp->ll->regs[ESP_FDATA];
+     esp->ll->regs[ESP_CMD] = ESP_CMD_MOK;
++    event = wait_esp(esp, &status);
++    if (event < 0 || !(event & ESP_INTR_DC))
++        return -1;
+ 
+-    return 0; // OK
++    return scsi_status;
+ }
+ 
+ // offset is in sectors
+@@ -498,6 +521,7 @@ ob_esp_init(unsigned int slot, uint64_t base, unsigned long espoffset,
+         return -1;
+     }
+ 
++    memset(esp, 0, sizeof(*esp));
+     global_esp = esp;
+ 
+     if (espdma_init(slot, base, dmaoffset, &esp->espdma) != 0) {
+@@ -581,6 +605,11 @@ ob_esp_init(unsigned int slot, uint64_t base, unsigned long espoffset,
+ 
+     // Chip reset
+     esp->ll->regs[ESP_CMD] = ESP_CMD_RC;
++    /* NCR53C9x requires NOP after chip reset before any other command. */
++    esp->ll->regs[ESP_CMD] = 0;
++    esp->ll->regs[ESP_CFG1] = 7; /* initiator ID */
++    esp->ll->regs[ESP_CFACT] = ESP_CCF_F0; /* 40 MHz / 8 */
++    esp->ll->regs[ESP_TIMEO] = 153; /* approximately 250 ms */
+ 
+     DPRINTF("ESP at 0x%lx, buffer va 0x%lx dva 0x%lx\n", (unsigned long)esp,
+             (unsigned long)esp->buffer, (unsigned long)esp->buffer_dvma);
+@@ -634,6 +663,9 @@ ob_esp_init(unsigned int slot, uint64_t base, unsigned long espoffset,
+                  id);
+         REGISTER_NODE_METHODS(ob_sd, nodebuff);
+         if (esp->sd[id].media == TYPE_ROM) {
++            /* sun4m install CDs carry their boot blocks in Sun slice d.
++             * Slice a is the ISO filesystem, not an executable boot block. */
++            strcat(nodebuff, ":d");
+             counter_ptr = &cdcount;
+         } else {
+             counter_ptr = &diskcount;
+diff --git a/drivers/floppy.c b/drivers/floppy.c
+index a3dff1f..4da6466 100644
+--- a/drivers/floppy.c
++++ b/drivers/floppy.c
+@@ -650,11 +650,11 @@ static void show_floppy(void)
+ 	printk_debug("\n");
+ }
+ 
+-static void floppy_recalibrate(void)
++static int floppy_recalibrate(void)
+ {
+ 	unsigned char cmd[2];
+ 	unsigned char reply[MAX_REPLIES];
+-	int nr, success;
++	int nr, success, attempts = 2;
+ 	success = 0;
+ 	do {
+ 		printk_debug("floppy_recalibrate\n");
+@@ -689,9 +689,12 @@ static void floppy_recalibrate(void)
+ 			(reply[0] & ST0_SE) &&
+ 			/* We are at cylinder 0 */
+ 			(reply[1] == 0);
+-	} while(!success);
++	} while(!success && --attempts);
++        if (!success)
++            return 0;
+ 	/* Remember we are at track 0 */
+ 	drive_state[FD_DRIVE].track = 0;
++        return 1;
+ }
+ 
+ 
+@@ -1073,8 +1076,7 @@ static void floppy_reset(void)
+ 		TRACK_PRECOMPENSATION);
+ 	fdc_specify(DRIVE_H1440_HLT, DRIVE_H1440_HUT, DRIVE_H1440_SRT);
+ 	set_drive(FD_DRIVE);
+-	floppy_recalibrate();
+-	fdc_state.in_sync = 1;
++	fdc_state.in_sync = floppy_recalibrate();
+ }
+ 
+ static void
+@@ -1083,6 +1085,9 @@ ob_floppy_open(int *idx)
+         int ret = 1;
+         phandle_t ph;
+ 
++        if (!fdc_state.in_sync)
++            RET(0);
++
+         fword("my-unit");
+         idx[0]=POP();
+ 
+diff --git a/drivers/iommu.c b/drivers/iommu.c
+index a6c02b8..7971509 100644
+--- a/drivers/iommu.c
++++ b/drivers/iommu.c
+@@ -243,6 +243,15 @@ ob_init_iommu(uint64_t base)
+     struct iommu_regs *regs;
+ 
+     regs = iommu_init(&ciommu, base);
++    /* Sun SBus masters need an arbitration grant independently of IOMMU ME.
++     * The integrated microSPARC and standalone MBus controls are distinct. */
++    {
++        uint64_t offset = base == 0x10000000ULL ? 0x2000 : 0x1008;
++        uint32_t mask = base == 0x10000000ULL ? 0x003f0000 : 0x001f0000;
++        volatile uint32_t *arb = (volatile uint32_t *)ofmem_map_io(base + offset, 4);
++        *arb |= mask;
++    }
++
+ 
+     push_str("/iommu");
+     fword("find-device");
+diff --git a/drivers/obio.c b/drivers/obio.c
+index 12cdb46..92c20e8 100644
+--- a/drivers/obio.c
++++ b/drivers/obio.c
+@@ -18,6 +18,8 @@
+ 
+ #include "drivers/drivers.h"
+ #include "arch/common/nvram.h"
++#define NO_QEMU_PROTOS
++#include "arch/common/fw_cfg.h"
+ #include "libopenbios/ofmem.h"
+ #include "obio.h"
+ #include "escc.h"
+@@ -377,28 +379,35 @@ struct smp_cfg {
+ };
+ 
+ static struct smp_cfg *smp_header;
++static volatile uint32_t *cpu_aer;
+ 
+ int
+ start_cpu(unsigned int pc, unsigned int context_ptr, unsigned int context, int cpu)
+ {
+-    if (!cpu)
+-        return -1;
+-
+     cpu &= 7;
++    /* The supported MBus layout has bootstrap CPU 0 and secondary CPU 2. */
++    if (!cpu_aer || cpu != 2 || fw_cfg_read_i32(FW_CFG_NB_CPUS) < 2)
++        return -1;
+ 
+     smp_header->smp_entry = pc;
+     smp_header->smp_ctxtbl = context_ptr;
+     smp_header->smp_ctx = context;
+     smp_header->valid = cpu;
+ 
++    /* Admit the physical MBus processor only after publishing its startup
++     * context. A directed interrupt does not grant bus arbitration. */
++    if (cpu_aer)
++        *cpu_aer |= 1U << cpu;
+     intregs->cpu_intregs[cpu].set = SUN4M_SOFT_INT(14);
+ 
+     return 0;
+ }
+ 
+ static void
+-ob_smp_init(unsigned long mem_size)
++ob_smp_init(unsigned long mem_size, uint64_t slavio_base)
+ {
++    if (slavio_base == 0xff1000000ULL)
++        cpu_aer = (volatile uint32_t *)ofmem_map_io(0xfe0001008ULL, 4);
+     // See arch/sparc32/entry.S for memory layout
+     smp_header = (struct smp_cfg *)ofmem_map_io((uint64_t)(mem_size - 0x100),
+                                           sizeof(struct smp_cfg));
+@@ -463,7 +472,7 @@ ob_obio_init(uint64_t slavio_base, unsigned long fd_offset,
+ 
+     ob_interrupt_init(slavio_base, intr_offset, intr_ncpu);
+ 
+-    ob_smp_init(mem_size);
++    ob_smp_init(mem_size, slavio_base);
+ 
+     return 0;
+ }
+diff --git a/drivers/sbus.c b/drivers/sbus.c
+index d59963e..9580b3e 100644
+--- a/drivers/sbus.c
++++ b/drivers/sbus.c
+@@ -340,8 +340,7 @@ sbus_probe_slot_ss10(unsigned int slot, uint64_t base)
+ #endif
+     case 0xf: // le, esp, bpp, power-management
+         ob_macio_init(slot, base, 0);
+-        // Power management (APC) XXX should not exist
+-        ob_apc_init(slot, APC_OFFSET);
++        /* SS-10/20 and SS-600MP have no SBus APC. Do not advertise one. */
+         break;
+     default:
+         break;
+@@ -372,8 +371,7 @@ sbus_probe_slot_ss600mp(unsigned int slot, uint64_t base)
+ #endif
+         // NCR 92C990, Am7990, Lance. See http://www.amd.com
+         ob_le_init(slot, base, 0x00060000, SS600MP_LEBUFFER);
+-        // Power management (APC) XXX should not exist
+-        ob_apc_init(slot, APC_OFFSET);
++        /* SS-10/20 and SS-600MP have no SBus APC. Do not advertise one. */
+         break;
+     default:
+         break;
+diff --git a/forth/bootstrap/bootstrap.fs b/forth/bootstrap/bootstrap.fs
+index 7b66f5c..6cc0eaa 100644
+--- a/forth/bootstrap/bootstrap.fs
++++ b/forth/bootstrap/bootstrap.fs
+@@ -913,7 +913,7 @@ variable #out  0 #out  !
+ 
+ \ $find is an fcode word, but we place it here since we use it for find.
+ 
+-: find-wordlist ( name-str name-len last -- xt true | name-str name-len false )
++: (find-wordlist-reference) ( name-str name-len last -- xt true | name-str name-len false )
+ 
+   @ >r
+ 
+@@ -931,6 +931,10 @@ variable #out  0 #out  !
+ 
+   ;
+ 
++: find-wordlist ( name-str name-len last -- xt true | name-str name-len false )
++  (find-wordlist-native)
++;
++
+ : $find ( name-str name-len -- xt true | name-str name-len false )
+   locals-dict 0<> if
+     locals-dict-buf @ find-wordlist ?dup if
+diff --git a/forth/device/display.fs b/forth/device/display.fs
+index 010f9af..cf17853 100644
+--- a/forth/device/display.fs
++++ b/forth/device/display.fs
+@@ -403,7 +403,9 @@ defer fb8-invertrect
+     s" color!" $find if
+       execute
+     else
+-      2drop
++      \ No public palette method: discard name and all four call arguments.
++      \ The FCode driver may already have programmed its private palette.
++      2drop 2drop 2drop
+     then
+     cell+
+   loop drop
+diff --git a/forth/device/other.fs b/forth/device/other.fs
+index 1bed9b8..80f9cd8 100644
+--- a/forth/device/other.fs
++++ b/forth/device/other.fs
+@@ -175,10 +175,19 @@ variable obp-ticks
+   fcode-header 
+   ;
+  
+-\ Begin program with spread 1 followed by FCode-header. 
++\ Sun version-1 programs use the pre-IEEE counted-string convention:
++\ pack also writes a NUL after the characters (destination needs len+2).
++\ TurboGX's numeric parser relies on it when reusing a shorter string buffer.
++\ Keep ordinary pack and later FCode formats unchanged.
++: sun-version1-pack ( str len addr -- pstr )
++  pack 0 over count + c!
++;
++
++\ Begin program with spread 1 followed by FCode-header.
+ : version1 ( -- )
+   1 to fcode-spread
+-  fcode-header 
++  ['] sun-version1-pack false h# 83 set-token
++  fcode-header
+   ;
+ 
+ \ Cease evaluating this FCode program.
+diff --git a/forth/device/preof.fs b/forth/device/preof.fs
+index 34f32b2..89ceaab 100644
+--- a/forth/device/preof.fs
++++ b/forth/device/preof.fs
+@@ -42,7 +42,16 @@ deadbeef constant processor-type ( -- processor-type )
+ : memmap		non-implemented ;
+ : >physical		non-implemented ;
+ : my-params 		non-implemented ;
+-: intr			non-implemented ;
++\ IEEE 1275 historical SBus property constructor, used by TurboGX FCode.
++: intr ( sbus-interrupt# vector -- )
++  >r
++  " interrupts" get-my-property if
++    dup encode-int " interrupts" property
++  else
++    2drop
++  then
++  sbus-intr>cpu encode-int r> encode-int encode+ " intr" property
++;
+ : driver		non-implemented ;
+ : group-code		non-implemented ;
+ : probe 		non-implemented ;
+diff --git a/kernel/bootstrap.c b/kernel/bootstrap.c
+index 8ad3efe..a66f89c 100644
+--- a/kernel/bootstrap.c
++++ b/kernel/bootstrap.c
+@@ -89,7 +89,7 @@ static const char *wordnames[] = {
+ 	"here", "here!", "dobranch", "do?branch", "unaligned-w@",
+ 	"unaligned-w!", "unaligned-l@", "unaligned-l!", "ioc@", "iow@",
+ 	"iol@", "ioc!", "iow!", "iol!", "i", "j", "call", "sys-debug",
+-	"$include", "$encode-file", "(debug", "(debug-off)"
++	"$include", "$encode-file", "(debug", "(debug-off)", "(find-wordlist-native)"
+ };
+ 
+ /*
+diff --git a/kernel/forth.c b/kernel/forth.c
+index 61dd70d..1845be9 100644
+--- a/kernel/forth.c
++++ b/kernel/forth.c
+@@ -1857,6 +1857,49 @@ static void loop_j(void)
+  * THE END). ANY OTHER CHANGE WILL BREAK COMPATIBILITY TO OLDER
+  * BINARY DICTIONARIES.
+  */
++/* Same search and stack result as bootstrap.fs find-wordlist. Keep search
++ * order, locals, immediate flags and dictionary mutation in their existing
++ * callers; this primitive only walks one current chain, without caching.
++ * Use the cross-compiler accessors for target cells and dictionary pointers. */
++static void find_wordlist_native(void)
++{
++    ucell wid = POP();
++    ucell len = POP();
++    ucell name = POP();
++    ucell lfa = read_ucell(cell2pointer(wid));
++
++    while (lfa) {
++        ucell end = lfa - 1; /* skip flags, then padding */
++        ucell nlen, nfa, i;
++        do {
++            --end;
++        } while (read_byte(cell2pointer(end)) == 0);
++        nlen = read_byte(cell2pointer(end)) & 0x7f;
++        nfa = end - nlen;
++        if (nlen == len) {
++            for (i = 0; i < len; ++i) {
++                unsigned int a = read_byte(cell2pointer(name + i));
++                unsigned int b = read_byte(cell2pointer(nfa + i));
++                if (a >= 'a' && a <= 'z')
++                    a -= 'a' - 'A';
++                if (b >= 'a' && b <= 'z')
++                    b -= 'a' - 'A';
++                if (a != b)
++                    break;
++            }
++            if (i == len) {
++                PUSH(lfa + sizeof(ucell));
++                PUSH((ucell)-1);
++                return;
++            }
++        }
++        lfa = read_ucell(cell2pointer(lfa));
++    }
++    PUSH(name);
++    PUSH(len);
++    PUSH(0);
++}
++
+ static forth_word * const words[] = {
+     /*
+      * CFAs and special words
+@@ -1963,4 +2006,5 @@ static forth_word * const words[] = {
+     do_encode_file,         /* $encode-file */
+     do_debug_xt,            /* (debug  */
+     do_debug_off,           /* (debug-off) */
++    find_wordlist_native,    /* (find-wordlist-native) */
+ };

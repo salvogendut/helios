@@ -7,6 +7,7 @@ pub mod cpu;
 pub mod devices;
 pub mod dma;
 pub mod dram;
+pub mod firmware;
 pub mod fpu;
 pub mod iommu;
 pub mod machine;

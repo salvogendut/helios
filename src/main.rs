@@ -3,6 +3,7 @@ use helios::cpu::{Step, PSR_ET, PSR_S};
 use helios::devices::{
     cgsix::Cgsix, keyboard::Keyboard, nvram::Nvram, scsi::MediaKind, serial::Channel,
 };
+use helios::firmware::{FirmwareImage, FirmwareKind, OpenBiosConfig};
 use helios::machine::{
     demo_image, serial_demo_image, timer_demo_image, trap_demo_image, InstalledVideo, Machine,
     MachineProfile, SchedulerError, CPU_CLOCK_HZ, DEFAULT_RAM_BYTES, TARGET,
@@ -12,7 +13,7 @@ use helios::serial_host::TcpSerial;
 use std::error::Error;
 use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const HELP: &str = "Helios — Sun SPARC emulator foundation
@@ -25,7 +26,7 @@ Usage:
   helios serial-demo [--trace]
   helios timer-demo [--trace]
   helios run FILE [--load-address N] [--entry N] [--steps N] [--ram-mib N] [--trace]
-  helios boot PROM [--machine ss5|ss20|axil320] [--cpus 1|2] [--accurate-clocks] [--steps N] [--ram-mib N] [--trace]
+  helios boot [PROM] [--machine ss5|ss20|axil320] [--cpus 1|2] [--accurate-clocks] [--steps N] [--ram-mib N] [--trace]
                    [--display sx|cgsix|none] [--serial-in FILE]
                    [--serial-port-a PORT] [--serial-port-b PORT] [--keyboard]
                    [--cgsix-rom FILE] [--nvram FILE] [--nvram-out NEW_FILE]
@@ -44,7 +45,11 @@ triggering stores also count as instructions. Unsupported behavior and CPU error
 state exit with status 1.
 Reaching the step budget exits successfully; it does not mean guest halt.
 
-boot loads a raw PROM (up to 1 MiB) and starts the CPU/MMU at reset.
+boot loads an explicit raw PROM (up to 1 MiB) or OpenBIOS SPARC32 ELF.
+With PROM omitted it selects the documented OpenBIOS fallback; HELIOS_OPENBIOS
+can name its ELF file. Explicit image errors never select another firmware.
+The active firmware and path are printed on stderr. OpenBIOS uses separate
+CHRP NVRAM; never supply an OBP NVRAM image to OpenBIOS or vice versa.
 --machine selects the initial profile (default ss5): SS-5, single-processor
 SS-20 or the Axil 320 clone. --cpus selects one or two single-CPU MBus modules;
 SS-5 accepts only one. The default is one. SS-20/Axil use the high sun4m device map and a
@@ -591,7 +596,7 @@ fn execute_scheduled(
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args().skip(1).peekable();
     match args.next().as_deref() {
         None | Some("--help" | "-h") => println!("{HELP}"),
         Some("create-disk") => {
@@ -758,9 +763,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         Some(command @ ("run" | "boot")) => {
             let boot = command == "boot";
-            let file = args
-                .next()
-                .ok_or("run/boot requires a raw image filename")?;
+            let file = if args.peek().is_some_and(|s| !s.starts_with('-')) {
+                args.next()
+            } else {
+                None
+            };
+            if !boot && file.is_none() {
+                return Err("run requires a raw image filename".into());
+            }
             let mut load = 0u32;
             let mut entry = None;
             let mut steps = 1000;
@@ -986,7 +996,24 @@ fn run() -> Result<(), Box<dyn Error>> {
             if entry % 4 != 0 {
                 return Err("entry address must be word aligned".into());
             }
-            let bytes = std::fs::read(file)?;
+            let firmware = if boot {
+                Some(FirmwareImage::load(file.as_deref().map(Path::new))?)
+            } else {
+                None
+            };
+            let bytes = if let Some(image) = &firmware {
+                if image.kind == FirmwareKind::OpenBios {
+                    helios::firmware::validate_openbios_ram(profile, ram_bytes, display.video())?;
+                }
+                eprintln!(
+                    "Firmware: {} ({})",
+                    image.kind.label(),
+                    image.path.display()
+                );
+                image.bytes.clone()
+            } else {
+                std::fs::read(file.expect("run filename validated"))?
+            };
             if bytes.is_empty() {
                 return Err("raw image is empty".into());
             }
@@ -994,9 +1021,16 @@ fn run() -> Result<(), Box<dyn Error>> {
                 let mut nvram = if let Some(path) = nvram_in {
                     Nvram::from_image(&std::fs::read(path)?)?
                 } else {
-                    profile.default_nvram()
+                    firmware
+                        .as_ref()
+                        .expect("boot firmware")
+                        .kind
+                        .default_nvram(profile)
                 };
                 rtc_start.unwrap_or_default().initialize(&mut nvram)?;
+                if firmware.as_ref().expect("boot firmware").kind == FirmwareKind::OpenBios {
+                    helios::firmware::validate_openbios_nvram(&nvram)?;
+                }
                 Machine::with_profile_processors_video(
                     profile,
                     ram_bytes,
@@ -1012,6 +1046,17 @@ fn run() -> Result<(), Box<dyn Error>> {
             };
             if boot && accurate_clocks {
                 machine.reset_with_clock_mode(helios::machine::CpuClockMode::Hardware);
+            }
+            if firmware
+                .as_ref()
+                .is_some_and(|f| f.kind == FirmwareKind::OpenBios)
+            {
+                machine.bus.install_openbios(OpenBiosConfig::new(
+                    profile,
+                    ram_bytes,
+                    cpus as u16,
+                    display == DisplayChoice::None || !keyboard,
+                ));
             }
             if boot {
                 eprintln!(

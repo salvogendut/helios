@@ -1,5 +1,9 @@
 # Agent notes
 
+- [OpenBIOS startup optimization](openbios-startup-optimization.md) — native dictionary search and `-O2`, measured serial/graphics improvements and firmware/OS acceptance.
+- [OpenBIOS startup cost profile](openbios-cost-profile.md) — full serial/CGsix phase measurements, guest instruction sampling, and the Forth dispatcher bottleneck.
+- [OpenBIOS fallback](openbios-fallback.md) — shared firmware selection, isolated firmware services/NVRAM, source port, OS/PTY checks, blank-startup diagnosis/RAM-clear optimization and compatibility limits for issue #8.
+
 - [External ICMP echo](icmp-echo.md) — bounded Linux ping relay, actual NetBSD/Solaris guest tests, host-policy diagnostics and explicit networking limits.
 
 - [RTC startup date](rtc-startup.md) — stale year-2000 clock diagnosis, explicit UTC startup seeding, Heliacal saved-time option and NetBSD/Solaris checks.

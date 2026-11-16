@@ -456,6 +456,7 @@ struct InstalledMxcc {
 
 #[derive(Debug)]
 pub struct SystemBus {
+    openbios: Option<crate::firmware::OpenBiosConfig>,
     layout: Sun4mLayout,
     memory: MemoryBus,
     devices: Option<Sun4mDevices>,
@@ -484,6 +485,7 @@ pub const PROM_BYTE_CYCLES: u64 = 6;
 impl SystemBus {
     pub fn with_layout(layout: Sun4mLayout) -> Self {
         Self {
+            openbios: None,
             layout,
             memory: MemoryBus::default(),
             devices: None,
@@ -501,6 +503,27 @@ impl SystemBus {
 
     pub fn layout(&self) -> Sun4mLayout {
         self.layout
+    }
+
+    /// Install the optional QEMU/OpenBIOS firmware contract. This service is
+    /// absent from normal constructors and original-OBP machine profiles.
+    pub fn install_openbios(&mut self, config: crate::firmware::OpenBiosConfig) {
+        self.openbios = Some(config);
+    }
+
+    fn firmware_access(
+        &mut self,
+        address: u64,
+        bytes: u8,
+        write: Option<u32>,
+    ) -> Option<Result<u32, BusError>> {
+        if address & !0xfff != crate::firmware::FW_CFG_PAGE {
+            return None;
+        }
+        self.openbios.as_mut().map(|cfg| {
+            cfg.access(address, bytes, write)
+                .map_err(|kind| BusError { address, kind })
+        })
     }
 
     /// Current bus access attributes. The default is a host/debug baseline
@@ -973,6 +996,9 @@ impl SystemBus {
     }
     fn reset_io(&mut self) {
         self.flush_device_time();
+        if let Some(config) = &mut self.openbios {
+            config.reset();
+        }
         if let Some(card) = &mut self.cgsix {
             card.reset();
         }
@@ -1262,6 +1288,9 @@ impl SystemBus {
 }
 
 impl Bus for SystemBus {
+    fn firmware_mmio_page(&self, page: u64) -> bool {
+        self.openbios.is_some() && page == crate::firmware::FW_CFG_PAGE
+    }
     fn access_context(&self) -> AccessContext {
         self.context
     }
@@ -1329,6 +1358,9 @@ impl Bus for SystemBus {
     }
 
     fn read8(&mut self, address: u64) -> Result<u8, BusError> {
+        if let Some(result) = self.firmware_access(address, 1, None) {
+            return result.map(|v| v as u8);
+        }
         if let Some((mxcc, register)) = self.mxcc_at(address) {
             let word = mxcc.borrow().read_word(register & !3);
             return Ok((word >> ((3 - (register & 3)) * 8)) as u8);
@@ -1421,6 +1453,9 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write8(&mut self, address: u64, value: u8) -> Result<(), BusError> {
+        if let Some(result) = self.firmware_access(address, 1, Some(u32::from(value))) {
+            return result.map(|_| ());
+        }
         if let Some((mxcc, register)) = self.mxcc_at(address) {
             let shift = (3 - (register & 3)) * 8;
             let old = mxcc.borrow().read_word(register & !3);
@@ -1528,6 +1563,9 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read16(&mut self, address: u64) -> Result<u16, BusError> {
+        if let Some(result) = self.firmware_access(address, 2, None) {
+            return result.map(|v| v as u16);
+        }
         if let Some((mxcc, register)) = self.mxcc_at(address) {
             if address & 1 != 0 {
                 return Err(BusError {
@@ -1599,6 +1637,9 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write16(&mut self, address: u64, value: u16) -> Result<(), BusError> {
+        if let Some(result) = self.firmware_access(address, 2, Some(u32::from(value))) {
+            return result.map(|_| ());
+        }
         if let Some((mxcc, register)) = self.mxcc_at(address) {
             if address & 1 != 0 {
                 return Err(BusError {
@@ -1683,6 +1724,9 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read32(&mut self, address: u64) -> Result<u32, BusError> {
+        if let Some(result) = self.firmware_access(address, 4, None) {
+            return result;
+        }
         if let Some((mxcc, register)) = self.mxcc_at(address) {
             if address & 3 != 0 {
                 return Err(BusError {
@@ -1774,6 +1818,9 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError> {
+        if let Some(result) = self.firmware_access(address, 4, Some(value)) {
+            return result.map(|_| ());
+        }
         if let Some((mxcc, register)) = self.mxcc_at(address) {
             if address & 3 != 0 {
                 return Err(BusError {
@@ -1933,6 +1980,12 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn read_doubleword(&mut self, address: u64) -> Result<[u32; 2], BusError> {
+        if self.firmware_mmio_page(address & !0xfff) {
+            return Err(BusError {
+                address,
+                kind: BusErrorKind::Unsupported("OpenBIOS fw_cfg wide or atomic access"),
+            });
+        }
         if let Some((mxcc, register)) = self.mxcc_at(address) {
             if address & 7 != 0 {
                 return Err(BusError {
@@ -2015,6 +2068,12 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write_doubleword(&mut self, address: u64, words: [u32; 2]) -> Result<(), BusError> {
+        if self.firmware_mmio_page(address & !0xfff) {
+            return Err(BusError {
+                address,
+                kind: BusErrorKind::Unsupported("OpenBIOS fw_cfg wide or atomic access"),
+            });
+        }
         if let Some((mxcc, register)) = self.mxcc_at(address) {
             if address & 7 != 0 {
                 return Err(BusError {
@@ -2097,6 +2156,12 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn swap32(&mut self, address: u64, value: u32) -> Result<u32, BusError> {
+        if self.firmware_mmio_page(address & !0xfff) {
+            return Err(BusError {
+                address,
+                kind: BusErrorKind::Unsupported("OpenBIOS fw_cfg wide or atomic access"),
+            });
+        }
         if self.prom_writes_ignored(address) {
             return self
                 .memory
@@ -2121,6 +2186,12 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn ldstub8(&mut self, address: u64) -> Result<u8, BusError> {
+        if self.firmware_mmio_page(address & !0xfff) {
+            return Err(BusError {
+                address,
+                kind: BusErrorKind::Unsupported("OpenBIOS fw_cfg wide or atomic access"),
+            });
+        }
         if self.prom_writes_ignored(address) {
             return self
                 .memory

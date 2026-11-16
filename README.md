@@ -156,6 +156,17 @@ serial bit timing, broader SCSI command support, audio streaming, a host network
 backend and broader graphics acceleration remain to be implemented. There is no general firmware or OS compatibility
 claim.
 
+## OpenBIOS fallback
+
+Omitting the PROM from `helios boot` selects a locally installed OpenBIOS image.
+An explicit OBP image still takes precedence, including any errors. Heliacal
+uses the same rule for an empty PROM setting, including named machines.
+Build the pinned firmware port with `python3 tools/build_openbios.py`; firmware
+is not bundled or downloaded automatically at startup. `HELIOS_OPENBIOS` can
+point to its ELF. OpenBIOS has separate NVRAM, a 32 MiB/contiguous-RAM requirement,
+and no native SX console; original OBP remains the accuracy baseline. See
+[setup, provenance and tested compatibility](docs/firmware.md#automatic-openbios-fallback).
+
 ## Build and run
 
 Use Rust 1.74 or newer with Cargo for the default build. The core needs no host GUI libraries or
@@ -372,5 +383,6 @@ boot. The CLI prints serial output; interactive input currently uses the library
 API. [Firmware records](docs/firmware.md#serial-ok-prompt) include the transcript,
 counts, input/response verification and remaining limitations.
 The fetched image is hash-verified and stays ignored.
-OpenBIOS remains a separate compatibility test until it is proved working.
+OpenBIOS is an explicit replacement-firmware compatibility path; original OBP
+remains the hardware-accuracy baseline.
 

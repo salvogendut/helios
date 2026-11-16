@@ -166,6 +166,12 @@ fn aligned(address: u64, alignment: u64) -> Result<(), BusError> {
 /// them explicitly: generic read-then-write fallbacks can consume MMIO data before
 /// discovering a write failure. Future concurrent owners must serialize them.
 pub trait Bus {
+    /// An explicitly installed replacement-firmware service page. This is not
+    /// a widening of a CPU's hardware physical-address space.
+    fn firmware_mmio_page(&self, _page: u64) -> bool {
+        false
+    }
+
     /// Current access attributes. Implementations without identity-bearing
     /// registers may ignore the context.
     fn access_context(&self) -> AccessContext {

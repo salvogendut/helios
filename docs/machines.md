@@ -335,3 +335,13 @@ release. Guest geometry and native-frame comparisons verify these operations.
 Axil CPU-bound work overlaps filesystem allocation/I/O; checksum markers
 survive clean halt and confirmed frontend reset/reboot. These are bounded
 Solaris 2.6 workloads, not exhaustive SMP or operating-system compatibility.
+
+## Replacement firmware
+
+An omitted PROM selects the separately built OpenBIOS port on all three
+profiles. Explicit OBP takes precedence; its existing board/RAM/graphics
+support is unchanged. OpenBIOS requires at least 32 MiB and contiguous DRAM,
+uses separate CHRP NVRAM, and lacks a native SX console. Axil uses the
+SS-20-compatible OpenBIOS tree with Axil IDPROM. See the
+[firmware setup and compatibility record](firmware.md#automatic-openbios-fallback)
+before choosing a replacement-firmware configuration.

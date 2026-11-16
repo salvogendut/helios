@@ -541,3 +541,51 @@ been performed. [Graphics references](graphics.md#evidence-and-references)
 record Linux's CG6 driver, the LSI SGX/BT458 manual, Sun FCode and the keyboard
 specification used for the graphical console implementation.
 
+
+## OpenBIOS replacement-firmware contract
+
+- [Official OpenBIOS source at e5ac46dd](https://github.com/openbios/openbios/tree/e5ac46dd24e6216c36aa80462af25457e7029440):
+  `arch/sparc32/{entry.S,openbios.c,romvec.c,tree.fs}`,
+  `drivers/{escc,esp,floppy,iommu,obio,sbus}.c`, and `include/arch/common/fw_cfg.h`.
+  This is the source revision selected by the pinned QEMU tree; its SPARC32
+  empty delay functions, consecutive MID assumptions and fictitious SS-20 APC
+  node differ from this machine implementation. The tracked source patch
+  supplies actual timer/ESP/arbitration sequencing, topology and device-tree
+  corrections. The port also unrolls `entry.S`'s whole-RAM clear into aligned
+  doubleword stores without skipping cold-boot or reset initialization.
+  It is a separate port, not a hardware specification.
+- [QEMU fw_cfg specification](https://www.qemu.org/docs/master/specs/fw_cfg.html)
+  and the pinned `hw/nvram/fw_cfg.c` / `hw/sparc/sun4m.c`: selector/data semantics,
+  endian boundaries and SPARC configuration keys. Helios enables this service
+  only for OpenBIOS. It is not a physical Sun register.
+- [Intel 82077AA data sheet](https://ardent-tool.com/datasheets/Intel_82077AA.pdf),
+  section 5, invalid command: the unsupported 82078 PARTID opcode returns
+  ST0 `0x80` without IRQ. Real unimplemented floppy media operations remain
+  explicit errors. NCR timer and ESP sequencing references remain those in
+  [interrupts/timers](interrupts-timers.md) and [SCSI](scsi.md).
+
+- [IEEE 1275-1994](https://www.openfirmware.info/data/docs/of1275.pdf),
+  `intr` (FCode `0x117`) and `sbus-intr>cpu`: construct CPU-level/vector pairs
+  and an `interrupts` property when absent. TurboGX uses this historical word
+  before installing its display methods; upstream OpenBIOS stops interpretation
+  at a stub. The port implements the specified stack/property semantics and
+  the sun4m SBus PIL mapping (2, 3, 5, 7, 9, 11, 13). See also the
+  [Oracle FCode property reference](https://docs.oracle.com/cd/E19957-01/802-3239-10/property.html).
+- [FirmWorks Open Firmware pack primitive](https://github.com/openbios/openfirmware/blob/d5cc657ce81c0f7d1857b4687766b64d75a4145d/cpu/ppc/kerncode.fth),
+  `code pack`: stores a NUL after the counted characters. Original version-1
+  TurboGX FCode relies on this convention when parsing successive decimal
+  resolution fields in one reusable buffer. The port binds a terminated
+  variant only in each version-1 FCode evaluation table; ordinary OpenBIOS
+  `pack` and later formats remain unchanged. This is a compatibility extension,
+  not a requirement inferred from the shorter IEEE counted-string definition.
+
+- The same pinned OpenBIOS `forth/bootstrap/bootstrap.fs` (`lfa2name`,
+  `comp-word`, `upc`, `find-wordlist`) defines the exact dictionary layout and
+  lookup semantics translated into the port's native primitive. Its
+  `kernel/cross.h` accessors preserve host/target cell and byte order during
+  cross compilation. The original Forth implementation remains available for
+  differential checks; search order and immediate-word handling are unchanged.
+- [GCC optimization options](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html):
+  the target firmware build uses `-O2` instead of upstream's size-oriented
+  `-Os`. This is a firmware compilation choice, not a change to guest CPU
+  execution or hardware timing.

@@ -1,0 +1,2 @@
+# Unified-diff context must preserve the pinned upstream whitespace.
+tools/openbios/helios.patch -whitespace
