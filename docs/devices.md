@@ -209,7 +209,14 @@ MSR/DSR (`+4`), FIFO (`+5`) and DIR/CCR (`+7`). System reset holds DOR.nRESET
 low; writing it high releases the core. NCR-specific DOR bits control eject,
 density, motor and interrupt gating; reserved bits 5/1 read zero by convention.
 Wider transfers throughout the aperture retain the NCR SBus-error behavior.
-Unimplemented register offsets/mirrors and masked/atomic accesses stop explicitly.
+A byte read at `+0` completes without side effects, permitting the base-address
+probe used by NetBSD on real SS-5/SS-20 machines. Its value is deterministically
+`ff`, an undriven-bus convention pending a hardware readback capture. This is
+not an implementation of PS/2 SRA pin status: NCR table 6-15 omits that
+mode-dependent register. The omitted table entry alone is not evidence that
+the byte access should fault. Reads of `+1`/`+3`, the test register at `+6`,
+unclassified mirrors, writes to `+0` and masked/atomic accesses still stop
+explicitly. There is no floppy drive or media-transfer engine.
 
 MSR distinguishes reset, command-ready, parameter collection, result-read and
 per-drive busy state. FIFO reads/writes in the wrong direction return retryable

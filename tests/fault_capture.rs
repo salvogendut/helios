@@ -95,7 +95,7 @@ fn sbus_slot_holes_time_out_but_ram_control_and_graphics_holes_remain_distinct()
 }
 
 #[test]
-fn ncr_rejects_wide_floppy_accesses_but_byte_emulation_remains_a_host_stop() {
+fn ncr_rejects_wide_floppy_accesses_and_keeps_unknown_mirrors_explicit() {
     let mut m = fixture();
     for address in [
         0x7150_0000,
@@ -123,7 +123,11 @@ fn ncr_rejects_wide_floppy_accesses_but_byte_emulation_remains_a_host_stop() {
             m.bus.write32(address, 0).unwrap_err().kind,
             BusErrorKind::SBusError
         );
-        assert!(m.bus.read8(address).unwrap_err().kind.is_host_stop());
+        if address == FLOPPY_BASE {
+            assert_eq!(m.bus.read8(address), Ok(0xff));
+        } else {
+            assert!(m.bus.read8(address).unwrap_err().kind.is_host_stop());
+        }
         assert!(m.bus.write8(address, 0).unwrap_err().kind.is_host_stop());
         assert!(m.bus.swap32(address, 0).unwrap_err().kind.is_host_stop());
         assert!(m
@@ -173,12 +177,46 @@ fn no_fault_and_priority_rules_do_not_lose_or_attach_timeout_bits_to_the_wrong_f
     assert_eq!(get(&mut m, EMPTY, 11), Ok(0));
     assert_eq!(m.cpu.mmu.fault_status(), 0x132);
     assert_eq!(m.cpu.mmu.fault_address(), 0x1234_5678);
-    // Missing FDC implementation is not converted to a timeout, even under NF.
+    // The unimplemented test register is not converted to a bus fault under NF.
     let before = m.cpu.mmu.clone();
     assert!(
-        matches!(m.cpu.mmu.load(&mut m.bus, FLOPPY_BASE as u32, 11, Width::Byte), Err(MemoryError::Bus(e)) if e.kind.is_host_stop())
+        matches!(m.cpu.mmu.load(&mut m.bus, FLOPPY_BASE as u32 + 6, 11, Width::Byte), Err(MemoryError::Bus(e)) if e.kind.is_host_stop())
     );
     assert_eq!(m.cpu.mmu, before);
+}
+
+#[test]
+fn floppy_byte_probe_completes_without_a_trap_or_fault_capture() {
+    // NetBSD's fdcmatch_obio tests whether a byte read completes, not its
+    // value. Exercise the guest instruction with and without MMU NF/PSR.ET.
+    let words = [
+        0x8189_2000u32, // wr %g4, %psr
+        0x0100_0000,
+        0x0100_0000,
+        0x0100_0000,
+        0xc408_6000, // ldub [%g1], %g2
+    ];
+    let prom: Vec<_> = words.into_iter().flat_map(u32::to_be_bytes).collect();
+    for traps in [0, PSR_ET] {
+        for no_fault in [0, PCR_NF] {
+            let mut m = Machine::sun4m(0x2000, &prom).unwrap();
+            m.cpu.write_reg(1, FLOPPY_BASE as u32);
+            m.cpu.write_reg(2, 0x1234_5678);
+            m.cpu.write_reg(4, PSR_S | traps);
+            put(&mut m, 0, 4, helios::mmu::PCR_BM | no_fault);
+            for _ in 0..4 {
+                m.step().unwrap();
+            }
+            let before = m.bus.devices().unwrap().floppy.clone();
+            assert!(matches!(m.step().unwrap(), Step::Executed { pc: 16, .. }));
+            assert_eq!((m.cpu.pc(), m.cpu.npc()), (20, 24));
+            assert_eq!(m.cpu.read_reg(2), 0xff);
+            assert_eq!(m.cpu.mmu.fault_status(), 0);
+            assert_eq!(m.cpu.mmu.fault_address(), 0);
+            assert_eq!(m.bus.devices().unwrap().floppy, before);
+            assert!(m.cpu.error_state().is_none());
+        }
+    }
 }
 
 #[test]

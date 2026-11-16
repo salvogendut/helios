@@ -135,6 +135,11 @@ impl Floppy {
 
     pub fn read(&mut self, offset: u64) -> Result<u8, BusErrorKind> {
         match offset {
+            // Real SS-5/SS-20 machines complete NetBSD's byte probe here.
+            // NCR table 6-15 omits the mode-dependent SRA pin semantics;
+            // use a pulled-high readback convention without acknowledging
+            // an interrupt or inventing PS/2 status. See docs/devices.md.
+            0 => Ok(0xff),
             2 => Ok(self.dor),
             4 => Ok((if self.dor & 4 == 0 {
                 0

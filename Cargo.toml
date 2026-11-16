@@ -9,6 +9,10 @@ publish = false
 [features]
 default = []
 perf-counters = []
+chd = ["dep:libchdman-rs"]
+
+[dependencies]
+libchdman-rs = { version = "=0.289.5", optional = true }
 
 [lints.rust]
 unsafe_code = "forbid"

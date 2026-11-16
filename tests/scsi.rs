@@ -388,6 +388,70 @@ fn parameters(m: &mut Machine, bytes: &[u8]) {
     }
 }
 
+#[cfg(feature = "chd")]
+#[test]
+fn chd_scsi_capacity_staged_writes_reset_sync_and_reopen_use_logical_sectors() {
+    use helios::media::{companion_path, Media};
+    use libchdman_rs::hd::{create_from_reader, HdCreateOptions};
+    let image = Image::new(&[]);
+    std::fs::remove_file(&image.0).unwrap();
+    let source: Vec<_> = (0..8192).map(|i| (i * 23 + i / 512) as u8).collect();
+    create_from_reader(
+        std::io::Cursor::new(source.clone()),
+        &image.0,
+        HdCreateOptions {
+            logical_size: 8192,
+            ..Default::default()
+        },
+        &mut |_| {},
+        &|| false,
+    )
+    .unwrap();
+    let parent = std::fs::read(&image.0).unwrap();
+    let child = Image(companion_path(&image.0));
+    let mut m = fixture();
+    m.bus
+        .devices_mut()
+        .unwrap()
+        .scsi
+        .attach_disk_rw(3, &image.0)
+        .unwrap();
+    select(&mut m, 3, 0, &[0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(data(&mut m), [0, 0, 0, 15, 0, 0, 2, 0]);
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 3, 0, &[0x2a, 0, 0, 0, 0, 7, 0, 0, 2, 0]);
+    parameters(&mut m, &[0x91; 128]);
+    // Aborted DATA OUT must not leak a partial write into the child.
+    m.bus.write8(ESP + 12, 3).unwrap();
+    assert_eq!(irq(&mut m).2, 0x80);
+    let mut probe = Media::open(&image.0, MediaKind::Disk, false).unwrap();
+    let mut bytes = vec![0; 8192];
+    probe.read_exact_at(0, &mut bytes).unwrap();
+    assert_eq!(bytes, source);
+    drop(probe);
+    m.advance_ns(6500);
+    // Clear the reset unit attention before the real write.
+    select(&mut m, 3, 0, &[0, 0, 0, 0, 0, 0]);
+    assert_eq!(complete(&mut m), 2);
+    select(&mut m, 3, 0, &[3, 0, 0, 0, 18, 0]);
+    data(&mut m);
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 3, 0, &[0x2a, 0, 0, 0, 0, 7, 0, 0, 2, 0]);
+    parameters(&mut m, &[0x56; 1024]);
+    assert_eq!(complete(&mut m), 0);
+    select(&mut m, 3, 0, &[0x35, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(complete(&mut m), 0);
+    drop(m);
+    let mut reopened = Media::open(&image.0, MediaKind::Disk, false).unwrap();
+    reopened.read_exact_at(0, &mut bytes).unwrap();
+    let mut expected = source;
+    expected[3584..4608].fill(0x56);
+    assert_eq!(bytes, expected);
+    assert_eq!(std::fs::read(&image.0).unwrap(), parent);
+    drop(reopened);
+    drop(child);
+}
+
 #[test]
 fn mode_select_cd_blocks_changes_capacity_and_reads_across_sector_boundaries() {
     let mut m = fixture();

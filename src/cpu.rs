@@ -73,6 +73,8 @@ pub enum FaultKind {
     PrivilegedInstruction,
     FpDisabled,
     FpException,
+    /// These V8 machines have no optional non-FPU coprocessor.
+    CpDisabled,
     SoftwareTrap(u8),
     InstructionAccess(BusError),
     DataAccess(BusError),
@@ -98,6 +100,7 @@ impl FaultKind {
             Self::PrivilegedInstruction => 0x03,
             Self::FpDisabled => 0x04,
             Self::FpException => 0x08,
+            Self::CpDisabled => 0x24,
             Self::WindowOverflow => 0x05,
             Self::WindowUnderflow => 0x06,
             Self::TagOverflow => 0x0a,
@@ -664,6 +667,7 @@ impl Cpu {
         match word >> 30 {
             0 => match (word >> 22) & 7 {
                 0 => return Err(FaultKind::IllegalInstruction), // UNIMP, including zero-filled RAM
+                7 => return Err(FaultKind::CpDisabled),         // CBccc, including never/annul
                 4 => self.write_reg(rd, (word & 0x3f_ffff) << 10), // SETHI (including NOP)
                 2 | 6 => {
                     let condition = (word >> 25) & 15;
@@ -691,6 +695,7 @@ impl Cpu {
                 next_npc = self.pc.wrapping_add(word << 2);
             }
             2 => match op3 {
+                0x36 | 0x37 => return Err(FaultKind::CpDisabled), // CPop1/CPop2
                 0x34 | 0x35 => {
                     self.require_fpu()?;
                     if self.prepare_fp(FpOperation::Operate)? {
@@ -824,7 +829,10 @@ impl Cpu {
                 0x28 => {
                     if word == 0x8143_c000 {
                         // STBAR: synchronous single-owner stores are already ordered.
-                    } else if rs1 == 0 {
+                    } else if rs1 < 15 {
+                        // V8 B.28: reserved RDASR 1..14 has undefined data,
+                        // but must not raise illegal_instruction. Choose Y
+                        // readback; this does not implement the V9 CCR/TICK.
                         self.write_reg(rd, self.y);
                     } else {
                         return Err(FaultKind::UnsupportedInstruction); // implementation-specific ASR
@@ -911,6 +919,14 @@ impl Cpu {
                 }
                 _ => return Err(FaultKind::UnsupportedInstruction),
             },
+            3 if matches!(op3, 0x30 | 0x31 | 0x33..=0x37) => {
+                // V8 B.3/B.6 and C.9: privilege precedes cp_disabled for
+                // STDCQ; absence precedes alignment and all data accesses.
+                if op3 == 0x36 {
+                    self.require_supervisor()?;
+                }
+                return Err(FaultKind::CpDisabled);
+            }
             3 if matches!(op3, 0x20 | 0x21 | 0x23..=0x27) => {
                 self.fp_memory(bus, op3, rd, a.wrapping_add(b))?;
             }

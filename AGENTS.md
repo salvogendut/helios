@@ -27,4 +27,6 @@ changing CPU, bus or device behavior.
   Agent findings and local environment notes belong in clanker/ and its index.
 - Keep guest firmware and disks under ignored local/. Do not overwrite source
   images during testing. No third-party implementation or firmware is bundled.
+- Include the intended SCSI ID in new guest/test disk filenames, for example
+  `netbsd11-ss20-scsi3.chd`, and keep attachment paths consistent with the name.
 

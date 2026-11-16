@@ -18,12 +18,31 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy
       - run: cargo fmt --all --check
+      # Resolve the optional CHD package index without compiling/downloading it
+      # on the Rust 1.74 default lane, then keep the required checks offline.
+      - run: cargo check --locked
       - run: cargo clippy --locked --offline --all-targets -- -D warnings
       - run: cargo test --locked --offline
       - run: cargo run --locked --offline -- demo
       - run: cargo run --locked --offline -- trap-demo
       - run: cargo run --locked --offline -- serial-demo
       - run: cargo run --locked --offline -- timer-demo
+
+  chd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: sudo apt-get update && sudo apt-get install -y g++
+      - run: cargo fetch --locked --target x86_64-unknown-linux-gnu
+      - run: cargo clippy --locked --offline --all-targets --features chd,perf-counters -- -D warnings
+      - run: cargo test --locked --offline --features chd,perf-counters
+      - run: cargo run --locked --offline --features chd -- demo
+      - run: cargo run --locked --offline --features chd -- trap-demo
+      - run: cargo run --locked --offline --features chd -- serial-demo
+      - run: cargo run --locked --offline --features chd -- timer-demo
 
   desktop:
     runs-on: ubuntu-latest
@@ -37,7 +56,7 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy
       - run: sudo apt-get update && sudo apt-get install -y libx11-dev pkg-config
-      - run: cargo fetch --manifest-path helios-ui/Cargo.toml --locked --target x86_64-unknown-linux-gnu
+      - run: cargo check --manifest-path helios-ui/Cargo.toml --locked
       - run: cargo fmt --manifest-path helios-ui/Cargo.toml --check
       - run: cargo clippy --manifest-path helios-ui/Cargo.toml --locked --offline --all-targets -- -D warnings
       - run: cargo test --manifest-path helios-ui/Cargo.toml --locked --offline

@@ -18,6 +18,61 @@ fn result(f: &mut Floppy, n: usize) -> Vec<u8> {
 }
 
 #[test]
+fn base_probe_read_completes_without_consuming_controller_state() {
+    let mut f = Floppy::default();
+    for phase in 0..4 {
+        match phase {
+            1 => {
+                f.write(2, 12).unwrap();
+                f.advance_ns(500_000); // pending reset interrupt and four results
+            }
+            2 => send(&mut f, &[3, 0xa5]), // partial SPECIFY
+            3 => {
+                send(&mut f, &[0x21]);
+                send(&mut f, &[0x10]); // unread VERSION result
+            }
+            _ => {}
+        }
+        let before = f.clone();
+        // 0xff is the documented readback convention, not PS/2 SRA bits.
+        assert_eq!(f.read(0), Ok(0xff));
+        assert_eq!(f, before);
+        for offset in [1, 3, 6] {
+            assert!(f.read(offset).unwrap_err().is_host_stop());
+            assert_eq!(f, before);
+        }
+        assert!(f.write(0, 0xff).unwrap_err().is_host_stop());
+        assert_eq!(f, before);
+    }
+    assert_eq!(result(&mut f, 1), [0x90]);
+    send(&mut f, &[8]);
+    assert_eq!(result(&mut f, 2), [0xc0, 0]);
+}
+
+#[test]
+fn base_probe_is_byte_sized_on_each_machine_map() {
+    use helios::machine::MachineProfile;
+    for (profile, address) in [
+        (MachineProfile::Ss5, 0x7140_0000),
+        (MachineProfile::Ss20, 0x000f_f170_0000),
+        (MachineProfile::Axil320, 0x000f_f170_0000),
+    ] {
+        let mut bus = SystemBus::with_layout(profile.layout());
+        bus.install_sun4m(Nvram::default()).unwrap();
+        assert_eq!(bus.read8(address), Ok(0xff));
+        assert_eq!(
+            bus.read16(address).unwrap_err().kind,
+            BusErrorKind::SBusError
+        );
+        assert_eq!(
+            bus.read32(address).unwrap_err().kind,
+            BusErrorKind::SBusError
+        );
+        assert_eq!(bus.read8(address + 2), Ok(0)); // DOR still held in reset
+    }
+}
+
+#[test]
 fn floppy_reset_poll_is_delayed_maskable_and_has_four_sense_results() {
     let mut f = Floppy::default();
     assert_eq!(f.read(2).unwrap(), 0);

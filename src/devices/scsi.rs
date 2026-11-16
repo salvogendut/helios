@@ -1,27 +1,13 @@
 //! Narrow SCSI-2 bus with raw disk and read-only CD-ROM targets, one LUN each.
 //! Image bytes cross into the emulator here; no host byte order reaches DVMA.
-use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use crate::media::Media;
+pub use crate::media::MediaKind;
+use std::io;
 use std::path::Path;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MediaKind {
-    Disk,
-    Cdrom,
-}
-
-impl MediaKind {
-    pub fn block_size(self) -> u32 {
-        match self {
-            Self::Disk => 512,
-            Self::Cdrom => 2048,
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct ScsiTarget {
-    image: File,
+    image: Media,
     kind: MediaKind,
     writable: bool,
     image_bytes: u64,
@@ -58,14 +44,14 @@ pub struct ScsiBus {
 }
 
 impl ScsiBus {
-    /// Attach one raw image at LUN 0. ID 7 is reserved for the host adapter.
+    /// Attach one disk or CD image at LUN 0. ID 7 is the host adapter.
     /// Images are opened read-only, including disks. No implicit replacement.
     pub fn attach(&mut self, id: u8, kind: MediaKind, path: impl AsRef<Path>) -> io::Result<()> {
         self.attach_image(id, kind, path.as_ref(), false)
     }
 
-    /// Explicitly attach an existing raw disk for guest writes. This never
-    /// creates, truncates or replaces a host file; CD-ROMs remain read-only.
+    /// Explicitly attach an existing disk for guest writes. The base is never
+    /// created or replaced; compressed CHDs create/reuse a persistent child.
     pub fn attach_disk_rw(&mut self, id: u8, path: impl AsRef<Path>) -> io::Result<()> {
         self.attach_image(id, MediaKind::Disk, path.as_ref(), true)
     }
@@ -83,17 +69,8 @@ impl ScsiBus {
                 "SCSI ID must be unused and in 0..=6",
             ));
         }
-        let image = File::options().read(true).write(writable).open(path)?;
-        let metadata = image.metadata()?;
-        let size = metadata.len();
-        let block_size = u64::from(kind.block_size());
-        if !metadata.is_file()
-            || size == 0
-            || size % block_size != 0
-            || size / block_size > 1_u64 << 32
-        {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "SCSI image must be a nonempty raw file of whole blocks (512 bytes for disk, 2048 for CD-ROM), at most 2^32 blocks"));
-        }
+        let image = Media::open(path, kind, writable)?;
+        let size = image.info().logical_bytes;
         self.targets[usize::from(id)] = Some(ScsiTarget {
             image,
             kind,
@@ -287,12 +264,7 @@ impl ScsiTarget {
                         data_out: length != 0,
                     };
                 }
-                if self
-                    .image
-                    .seek(SeekFrom::Start(offset))
-                    .and_then(|_| self.image.read_exact(&mut data))
-                    .is_err()
-                {
+                if self.image.read_exact_at(offset, &mut data).is_err() {
                     return self.check(3, 0x11); // Unrecovered read error.
                 }
                 self.reads += 1;
@@ -312,7 +284,7 @@ impl ScsiTarget {
                 if lba >= self.blocks() || lba + count > self.blocks() {
                     return self.check(5, 0x21);
                 }
-                if self.writable && self.image.sync_data().is_err() {
+                if self.writable && self.image.sync().is_err() {
                     return self.check(3, 0x0c);
                 }
                 Vec::new()
@@ -434,13 +406,11 @@ impl ScsiTarget {
         // Stage the entire command before touching the image. Reset or DMA
         // failure during DATA OUT cannot leave a partially received write.
         // Host I/O failures can still leave partial data, like a media error.
-        if self.image.metadata().map(|m| m.len()).ok() != Some(self.image_bytes)
-            || self
-                .image
-                .seek(SeekFrom::Start(offset))
-                .and_then(|_| self.image.write_all(data))
-                .and_then(|_| self.image.sync_data())
-                .is_err()
+        if self
+            .image
+            .write_all_at(offset, data)
+            .and_then(|_| self.image.sync())
+            .is_err()
         {
             return self.check(3, 0x0c); // Write error; never report false GOOD.
         }
