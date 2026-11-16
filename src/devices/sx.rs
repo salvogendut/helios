@@ -49,6 +49,7 @@ const SX_USER_PAGE: usize = 0x1000;
 
 const SX_GO: u32 = 0x1000;
 const SX_MT: u32 = 0x4000;
+const SX_BZ: u32 = 0x8000;
 const RETRACE_PERIOD_NS: u64 = 1_000_000_000 / 76;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -428,7 +429,10 @@ impl Sx {
         match offset {
             SX_CONTROL_STATUS => {
                 self.go = value & SX_GO != 0;
-                self.status = value & !SX_GO;
+                // Instructions complete before the bus access returns, so
+                // every observable boundary has an empty, inactive queue.
+                // MT and BZ describe hardware state, not writable controls.
+                self.status = (value & !(SX_GO | SX_MT | SX_BZ)) | SX_MT;
             }
             SX_ERROR => self.error = value,
             SX_PAGE_BOUND_LOWER => self.page_bound_lower = value,
@@ -500,11 +504,18 @@ impl Sx {
             let a = ((instruction >> 14) & 0x7f) as usize;
             let b = (instruction & 0x7f) as usize;
             let d = ((instruction >> 7) & 0x7f) as usize;
-            if op == 1 {
+            if op <= 2 {
                 if count > 16 || a + count > 128 || b + count > 128 || d + count > 128 {
                     return Err(BusErrorKind::Unsupported("SX ROP register range"));
                 }
+                // ROP_B consumes one MASK bit per byte, from bit 31 down.
+                // Keep longer vectors explicit until behavior beyond the
+                // 32-bit selector span is established independently.
+                if op == 0 && count > 8 {
+                    return Err(BusErrorKind::Unsupported("SX byte ROP mask span"));
+                }
                 let rop = self.rop_control & 0xff;
+                let mask = self.regs[2];
                 let mut values = [0u32; 16];
                 for (index, value) in values.iter_mut().take(count).enumerate() {
                     let lhs = self.regs[a + index];
@@ -512,7 +523,13 @@ impl Sx {
                     let mut result = 0u32;
                     for bit in 0..32 {
                         let select = (((lhs >> bit) & 1) << 1) | ((rhs >> bit) & 1);
-                        let table = if (self.regs[2] >> bit) & 1 != 0 {
+                        let mask_bit = match op {
+                            0 => 31 - (index * 4 + (31 - bit) / 8), // ROP_B
+                            1 => bit,                               // ROP_M
+                            2 => 31 - index,                        // ROP_L
+                            _ => unreachable!(),
+                        };
+                        let table = if (mask >> mask_bit) & 1 != 0 {
                             (rop >> 4) & 0xf
                         } else {
                             rop & 0xf

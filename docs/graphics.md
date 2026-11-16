@@ -204,7 +204,7 @@ scalar-OR and masked store-select/long/byte commands. The CG14 scanout decodes
 apertures. The observed SX shifts (including scalar/immediate funnel-left
 across adjacent source registers), PLOT/Bresenham generation, logic, masked
 store, mixed store-select, indexed byte stores, conditional packed byte
-stores, packed loads, ROP_M, packed masked stores, and direct unsigned
+stores, packed loads, ROP_B/ROP_M/ROP_L, packed masked stores, and direct unsigned
 byte/long loads execute with register/range atomicity. Unaligned packed loads
 and stores select their byte lanes from the effective address, with a 32-byte
 unaligned load spanning up to nine registers. Loads stage their source vector
@@ -221,6 +221,16 @@ instructions and command data
 types still return an explicit unsupported-bus error instead of being stored
 as pixel data; indexed-store mode remains inferred from the captured traffic.
 
+ROP_B selects a truth-table nibble per byte and ROP_L per word, consuming R2
+from bit 31 downward; ROP_M uses the corresponding bit of R2 within each word.
+Inputs and the mask are snapshotted before any overlapping destination changes.
+Byte ROP vectors currently stop explicitly above eight registers (32 selector
+bits); the hardware behavior beyond that span is not established here.
+SX commands complete synchronously, so the instruction queue reads empty and
+not busy at bus boundaries, including after GO/control writes. These status
+bits cannot be overwritten by the guest. NetBSD polls the queue-empty bit
+between batches of console cursor operations.
+
 Solaris 2.6 Xsun with olwm and two xterms has been exercised through the
 headless core. Tests verify 20/1/2/3-pixel moves with preserved translated
 text, uncovering a terminal by iconifying the covering window, Full Size and
@@ -230,3 +240,9 @@ Solaris console and runs Xsun/olwm/xterm. Actual SDL input validates typing,
 click-to-focus, a 20-pixel title-bar drag with zero changed client pixels, and
 keyboard/mouse capture and release. These checkpoints establish the observed
 desktop workload; they do not establish complete SX instruction coverage.
+
+NetBSD 11.1 GENERIC also boots the installed CHD to graphical root login on
+SS-20 with one CPU, 256 MiB and fast clocks, with keyboard input and console
+scrolling verified through the core. The console uses ROP_L/ROP_B for
+cursor inversion and periodically polls the SX queue-empty bit. This is a
+framebuffer-console checkpoint, not NetBSD X11 acceptance.

@@ -362,6 +362,16 @@ encoding; its configurable host geometry does not define Helios's raw target.
   `0xfc000000`/`0xffffffff`, instruction and register pages, and ASI `0x28`
   rendering accesses above 4 GiB. These provide register/aperture definitions
   for the built-in SX model; they do not establish complete SX execution.
+- Sun's [Pixel Processing in a Memory Controller](https://www.sunhelp.org/history/pdf/smc.pdf),
+  section 4.1.7 and table 1, distinguishes word, byte and bit mask interpretation
+  for ROP instructions. NetBSD `sxreg.h` 1.22 gives the ROP_B/M/L encodings;
+  `cgfourteen.c` 1.102 `cg14_invert` supplies the independently observed cursor
+  use of `0x3c` and high-bit-first byte/word masks. The reproduced GENERIC
+  command `0x92421408` inverts R8..R10 into R40..R42. `sxvar.h` 1.5 `sx_wait`
+  polls the read-only queue-empty status after batches of commands.
+  Inspected NetBSD tree: `bc1ab70174b4c8f3c69457e0ab39d4cf3cf77147`.
+  Helios bounds byte ROPs to one 32-bit selector span rather than assuming
+  how hardware handles longer vectors.
 - Sun's [Solaris 2.6 CG14 register definitions](https://github.com/Arquivotheca/Solaris-2.6/blob/2.6/os_net/src_ws/usr/src/uts/sun/sys/cg14reg.h)
   and [cgfourteen driver, revision 1.112](https://github.com/Arquivotheca/Solaris-2.6/blob/2.6/os_net/src_ws/usr/src/uts/sun/io/cgfourteen.c):
   VSIMM-1/2 MCR layouts, read-only MDI revision/implementation, VBC VCA

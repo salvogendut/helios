@@ -1,5 +1,7 @@
 # Agent notes
 
+- [NetBSD SX console fix](netbsd-sx-console.md) — reproduced cursor ROP stop, corrected word/byte ROPs and queue-empty status, graphical root login, regression checks and private-media evidence.
+
 - [NetBSD 11.1 installation](netbsd-11-install.md) — SS-20 CHD installation, normal GENERIC root login, checksum persistence, floppy/CPU probe corrections and remaining timing/APC limits.
 
 - [CHD implementation and acceptance](chd-images-progress.md) — persistent v5 hard disks, explicit image creation, Heliacal integration, Solaris write/reboot tests and NetBSD SS-20 installation/persistence.
