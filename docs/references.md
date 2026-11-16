@@ -7,6 +7,21 @@ test rather than assuming either emulator defines the hardware.
 
 ## Architecture and project model
 
+- [MAME chdman manual](https://docs.mamedev.org/tools/chdman.html) and
+  [libchdman-rs](https://github.com/danifunker/libchdman-rs), pinned crate
+  `0.289.5` (Cargo.lock records its checksum): CHD v5 headers, GDDD hard-disk
+  metadata, parent identities and uncompressed child maps. The crate builds
+  its MAME C++ implementation and codecs from source; `prebuilt` is disabled.
+  The dependency and bundled native sources retain their own BSD/codec license
+  notices (see the crate's LICENSE and mame-chd-src third-party notices).
+  Helios does not copy those implementations into this repository.
+  `chd.cpp::write_hunk` skips allocation for an all-zero uncompressed hunk;
+  Helios first claims nonzero inherited data before zeroing it in a child.
+  The logical-media boundary follows the same separation as IRIS, inspected
+  at `db49ed4beb9b533a3669d6fcb5f12480e52dc16f`, with Helios-owned lifetime,
+  sync and no-overwrite policy. `chdman` 0.288 is an independent local reader
+  for generated fixtures; no guest media is bundled.
+
 - [SPARC International technical documents](https://sparc.org/technical-documents/):
   SPARC Architecture Manual Version 8, especially integer state, instruction
   encodings, windows, traps and the reference MMU.
@@ -14,6 +29,13 @@ test rather than assuming either emulator defines the hardware.
   chapters 4 and 7, B.26–B.29 and C.8 were checked for state registers, trap
   entry, RETT priority and error mode. Immediate state writes use the permitted
   zero-delay implementation choice; guest examples retain portable spacing.
+  B.28 requires RDASR 1–14 to complete without an illegal-instruction trap,
+  leaving its result undefined. Helios chooses Y readback; it does not model
+  V9 CCR/TICK registers. This permits the V8/V9 detection in NetBSD OpenSSL
+  without converting genuinely missing ASR implementations into guest traps.
+  B.3/B.6/B.23/B.35, table 7-1 and C.9 define absent-coprocessor traps and
+  STDCQ privilege priority. The selected V8 machines have no optional CP;
+  NetBSD's OpenSSL probes reuse these opcode spaces for V9/VIS features.
   B.1/B.4 and B.7/B.8 define doubleword transfers and atomic exchanges;
   B.14, B.16–B.19 and B.32 define tagged arithmetic, MULScc, multiply/divide and
   FLUSH. Chapter 7 distinguishes precise faults from optional partial effects
@@ -185,6 +207,20 @@ test rather than assuming either emulator defines the hardware.
   map and SBus feature subset define errors for reserved windows and invalid
   widths, including the byte-only floppy aperture. Figure 6-9 defines IC at
   processor-clear bit 15; figure 6-11 assigns module error to system bit 30.
+  Table 6-15 was also checked visually on printed page 6-32 of the
+  [full SBus I/O Chipset manual, rev 1.0](https://ftpmirror.your.org/pub/misc/bitsavers/pdf/sun/sparc/801-3137-10_SPARCclassic_Engine_OEM_Technical_Manual_Part_Three_IO_Chipset_Apr1993.pdf).
+  Its NCR82077 chapter (8-8, 8-33) makes SRA/SRB mode-dependent; QEMU's
+  generic `fdctrl_read` exposes them and masks the address to three bits, which
+  does not establish NCR board decode or register mirrors. NetBSD's
+  [`fdcmatch_obio`](https://github.com/NetBSD/src/blob/netbsd-11/sys/arch/sparc/dev/fd.c)
+  performs a byte probe at offset zero. A
+  [real SS-20 NetBSD bug report and boot log](https://mail-index.netbsd.org/netbsd-bugs/2020/04/24/msg067375.html)
+  shows successful attachment, as do
+  [SS-5 boot records](https://dmesgd.nycbug.org/dmesgd?do=view&id=5396).
+  These observations contradict treating the omitted table entry as a faulting
+  byte address. Helios therefore completes that probe without side effects;
+  `ff` is an explicit undriven-read convention, not a measured status value or
+  a claim to implement PS/2 SRA. Other omitted registers remain unsupported.
 - [ISO/IEC 15205:2000 / IEEE 1496, table 9 excerpt](https://www.normsplash.com/Samples/CSA/158135716/CAN-CSA-ISO-IEC-15205-02-%28R2016%29-en-2.pdf):
   primary SBus standard, archived excerpt pages 50–60; table 9 gives SIZ encoding
   word=000, halfword=010 and byte=001, used by AFSR capture.

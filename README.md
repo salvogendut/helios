@@ -73,9 +73,15 @@ disks boot to a console login, and root shells were verified with empty local
 test passwords. Audio I/O remains unimplemented.
 See [SCSI storage](docs/scsi.md).
 
+A minimal **NetBSD 11.1 sparc** installation onto a new 2 GiB CHD also boots
+its unmodified GENERIC kernel to serial root login on SS-20 (one CPU, 128 MiB,
+accurate clocks). Installed-file checksums and guest-written data survive
+clean halt and host reopening. Coverage is limited to that serial/storage
+configuration; a timecounter-backwards warning remains unresolved.
+
 The implemented foundation includes:
 
-- A dependency-free Rust library and headless CLI.
+- A Rust library and headless CLI, dependency-free by default; optional CHD storage.
 - An optional native framebuffer window, CGsix indexed VRAM/palette/cursor,
   SS-20 SX/CG14 scanout and an SX instruction subset, console drawing operations
   and a Sun keyboard/mouse on the second SCC.
@@ -117,8 +123,8 @@ The implemented foundation includes:
   completion and interrupts. No floppy drive or media engine is attached.
 - NCR89C100 DMA2 SCSI transfers through the IOMMU, count/chaining/error handling
   and IRQ gating; NCR53C9X selection (including select-with-ATN-and-stop), timed
-  missing-target responses, PIO/DMA command/data/status/message phases, and raw
-  disk/CD-ROM targets.
+  missing-target responses, PIO/DMA command/data/status/message phases, raw
+  disk/CD-ROM targets and optional persistent CHD hard disks.
 - The SS-5 Crystal CS4231 register aperture used by Solaris's `audiocs` probe;
   audio DMA, sample conversion and interrupts remain unmodeled.
 - NCR89C100 Ethernet DMA and NCR92C990 initialization, single-buffer packets,
@@ -148,8 +154,15 @@ claim.
 
 ## Build and run
 
-Use Rust 1.74 or newer with Cargo. The core needs no host GUI libraries or
+Use Rust 1.74 or newer with Cargo for the default build. The core needs no host GUI libraries or
 downloaded crates; nightly features are not required.
+For CHD hard disks, use a current stable Rust toolchain and a C++17 compiler,
+then build with `cargo build --release --features chd`. The optional codec
+dependency requires Rust 1.87 or later; it is built from source, with no
+runtime `chdman` requirement. Heliacal enables this feature automatically.
+Create an empty disk with
+`target/release/helios create-disk local/disks/new-scsi3.chd --format chd --size-mib 2048`.
+See [SCSI storage](docs/scsi.md) for persistent children and format limits.
 The executable embeds [sun_ascii.txt](sun_ascii.txt) and prints its Sun logo and
 the HELIOS name on stderr at startup, keeping guest serial bytes on stdout.
 

@@ -162,11 +162,41 @@ fn invalid_psr_window_traps_without_partial_write() {
 }
 
 #[test]
+fn reserved_v8_asr_reads_complete_in_user_and_supervisor_mode() {
+    // B.28 requires non-trapping reads of ASR1..14, with undefined data.
+    // Helios chooses Y readback. ASR0 remains Y; ASR15 is not covered by
+    // that rule. Include both the OpenSSL RD ASR2 encoding and g0 writes.
+    for psr in [0, PSR_ET, PSR_S | PSR_ET] {
+        for source in 0..15 {
+            for destination in [0, 8] {
+                let instruction = op(2, 0x28, destination, source, 0, false);
+                if source == 2 && destination == 8 {
+                    assert_eq!(instruction, 0x9140_8000);
+                }
+                let mut m = machine(&[alu(0x30, 0, 3, 0), instruction], psr);
+                m.cpu.write_reg(3, 0xa5a5_1234);
+                m.step().unwrap();
+                let before_psr = m.cpu.psr();
+                assert!(matches!(m.step().unwrap(), Step::Executed { .. }));
+                assert_eq!(
+                    m.cpu.read_reg(destination),
+                    if destination == 0 { 0 } else { 0xa5a5_1234 }
+                );
+                assert_eq!(m.cpu.y(), 0xa5a5_1234);
+                assert_eq!(m.cpu.psr(), before_psr);
+                assert_eq!((m.cpu.pc(), m.cpu.npc()), (START + 8, START + 12));
+                assert_eq!(m.cpu.error_state(), None);
+            }
+        }
+    }
+}
+
+#[test]
 fn unimp_is_guest_illegal_but_missing_implementation_is_a_host_stop() {
     let mut m = machine(&[0], PSR_S | PSR_ET);
     assert_trap(&mut m, 2);
-    // CPop1 and implementation-specific ASR accesses are still host stops.
-    for instruction in [0x81b0_0020, alu(0x28, 3, 16, 0), alu(0x30, 16, 0, 0)] {
+    // Implementation-specific ASR accesses are still host stops.
+    for instruction in [alu(0x28, 3, 16, 0), alu(0x30, 16, 0, 0)] {
         let mut m = machine(&[instruction], PSR_S | PSR_ET);
         let before = m.cpu.clone();
         assert_eq!(
@@ -355,4 +385,75 @@ fn nested_fault_with_et_clear_latches_error_without_another_trap_entry() {
     assert_eq!(m.cpu, stopped); // even repaired code cannot execute in error mode
     m.cpu = Cpu::new(0x1870);
     assert!(matches!(m.step().unwrap(), Step::Executed { .. }));
+}
+
+#[test]
+fn absent_coprocessor_traps_before_memory_or_branch_effects() {
+    // V8 B.3/B.6/B.23/B.35. No optional CP is attached on any Helios CPU.
+    // The nonzero low fields in these captured V9 probe words are unused
+    // in their V8 forms, not ASIs or newly implemented VIS operations.
+    let mut words = vec![0xc19a_5a40, 0x81b0_0d80, 0x81b0_22a0, 0x81b0_9206];
+    for op3 in [0x30, 0x31, 0x33, 0x34, 0x35, 0x37] {
+        words.push(op(3, op3, 4, 9, 0, true));
+    }
+    words.extend([op(2, 0x36, 0, 0, 0, false), op(2, 0x37, 0, 0, 0, false)]);
+    for condition in 0..16 {
+        for annul in [0, 1] {
+            words.push((annul << 29) | (condition << 25) | (7 << 22) | 8);
+        }
+    }
+    for psr in [PSR_ET, PSR_ET | PSR_S] {
+        for &word in &words {
+            let mut m = machine(&[word], psr);
+            // Both unmapped and misaligned: neither may outrank CP absence.
+            m.cpu.write_reg(9, 0xffff_ff01);
+            m.cpu.write_reg(4, 0x1234_5678);
+            m.cpu.fpu.write_reg(0, 0x89ab_cdef);
+            let fpu = m.cpu.fpu.clone();
+            let mmu = m.cpu.mmu.clone();
+            assert_trap(&mut m, 0x24);
+            assert_eq!(m.cpu.read_reg(4), 0x1234_5678);
+            assert_eq!(m.cpu.fpu, fpu);
+            assert_eq!(m.cpu.mmu, mmu);
+        }
+    }
+}
+
+#[test]
+fn coprocessor_queue_store_preserves_privilege_priority_and_memory() {
+    for psr in [PSR_ET, PSR_S | PSR_ET] {
+        for address in [0x3000, 0xffff_ff01] {
+            let mut m = machine(&[op(3, 0x36, 0, 4, 0, true)], psr);
+            m.cpu.write_reg(4, address);
+            m.bus.write32(0x3000, 0x1234_5678).unwrap();
+            m.bus.write32(0x3004, 0x9abc_def0).unwrap();
+            assert_trap(&mut m, if psr & PSR_S == 0 { 3 } else { 0x24 });
+            assert_eq!(m.bus.read32(0x3000).unwrap(), 0x1234_5678);
+            assert_eq!(m.bus.read32(0x3004).unwrap(), 0x9abc_def0);
+        }
+    }
+}
+
+#[test]
+fn disabled_coprocessor_in_delay_slot_and_with_traps_disabled() {
+    let mut m = machine(&[0x1080_0008, 0x81b0_0d80], PSR_ET);
+    m.step().unwrap();
+    assert_eq!((m.cpu.pc(), m.cpu.npc()), (START + 4, START + 32));
+    assert_trap(&mut m, 0x24);
+    assert_eq!(
+        (m.cpu.read_reg(17), m.cpu.read_reg(18)),
+        (START + 4, START + 32)
+    );
+
+    let mut m = machine(&[0x81b0_0d80], 0);
+    let before = m.cpu.clone();
+    let fault = m.step().unwrap_err();
+    assert_eq!(fault.kind, FaultKind::CpDisabled);
+    assert_eq!(fault.kind.trap_type(), Some(0x24));
+    assert_eq!(
+        (m.cpu.pc(), m.cpu.npc(), m.cpu.psr()),
+        (before.pc(), before.npc(), before.psr())
+    );
+    assert_eq!(m.cpu.error_state(), Some(fault));
+    assert_eq!(m.step().unwrap_err(), fault);
 }

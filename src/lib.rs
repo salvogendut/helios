@@ -10,6 +10,7 @@ pub mod dram;
 pub mod fpu;
 pub mod iommu;
 pub mod machine;
+pub mod media;
 pub mod mmu;
 pub mod net;
 pub mod serial_host;

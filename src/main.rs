@@ -19,6 +19,7 @@ const HELP: &str = "Helios — Sun SPARC emulator foundation
 
 Usage:
   helios info
+  helios create-disk OUTPUT --format chd|raw --size-mib N
   helios demo [--trace]
   helios trap-demo [--trace]
   helios serial-demo [--trace]
@@ -28,7 +29,7 @@ Usage:
                    [--display sx|cgsix|none] [--serial-in FILE]
                    [--serial-port-a PORT] [--serial-port-b PORT] [--keyboard]
                    [--cgsix-rom FILE] [--nvram FILE] [--nvram-out NEW_FILE]
-                   [--disk RAW_IMAGE | --disk-rw RAW_IMAGE] [--cdrom ISO_IMAGE]
+                   [--disk IMAGE | --disk-rw IMAGE] [--cdrom ISO_IMAGE]
                    [--net] [--net-gateway IP] [--net-client IP] [--net-mask IP]
                    [--net-dns IP] [--tftp-dir DIR]
 
@@ -61,9 +62,11 @@ abbreviated OBP startup path, letting an SS-20 boot reach ok without full POST.
 consoles on 127.0.0.1; PORT 0 asks the host for a free port. Console output
 still goes to stdout. NVRAM images contain 8192 bytes; --nvram-out creates a
 new file without overwriting.
---disk attaches a read-only 512-byte/block raw disk at SCSI ID 3, LUN 0.
---disk-rw attaches an existing raw disk at ID 3 and permits guest writes.
+--disk attaches a read-only 512-byte/block raw or CHD disk at SCSI ID 3, LUN 0.
+--disk-rw permits guest writes; compressed CHDs use a persistent .diff.chd child.
 Neither disk option creates or truncates an image; choose only one.
+CHD support requires a build with --features chd. create-disk creates a blank,
+unpartitioned disk without overwriting files; --size-mib is a positive integer.
 --cdrom attaches a read-only 2048-byte/sector CD image at SCSI ID 6, LUN 0.
 --net enables the user-mode NAT (guest 192.168.0.2, gateway 192.168.0.1,
 mask 255.255.255.0, DHCP/RARP, DNS relay and UDP). --net-gateway, --net-client,
@@ -538,6 +541,54 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None | Some("--help" | "-h") => println!("{HELP}"),
+        Some("create-disk") => {
+            use helios::media::{create_disk, ImageFormat};
+            let output = args
+                .next()
+                .filter(|s| !s.starts_with('-'))
+                .ok_or("usage: helios create-disk OUTPUT --format chd|raw --size-mib N")?;
+            let mut format = None;
+            let mut bytes = None;
+            while let Some(option) = args.next() {
+                match option.as_str() {
+                    "--format" if format.is_none() => {
+                        format = Some(match args.next().as_deref() {
+                            Some("raw") => ImageFormat::Raw,
+                            Some("chd") => ImageFormat::Chd,
+                            _ => return Err("--format requires raw or chd".into()),
+                        })
+                    }
+                    "--size-mib" if bytes.is_none() => {
+                        let value = args
+                            .next()
+                            .ok_or("--size-mib requires a positive integer")?;
+                        if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                            return Err("--size-mib requires a positive decimal integer".into());
+                        }
+                        bytes = Some(
+                            value
+                                .parse::<u64>()?
+                                .checked_mul(1024 * 1024)
+                                .ok_or("Disk size overflow")?,
+                        );
+                    }
+                    _ => {
+                        return Err(
+                            format!("Unknown or duplicate create-disk option: {option}").into()
+                        )
+                    }
+                }
+            }
+            let info = create_disk(
+                &output,
+                format.ok_or("Missing --format")?,
+                bytes.ok_or("Missing --size-mib")?,
+            )?;
+            println!(
+                "Created {output}: {} MiB, 512-byte sectors, unpartitioned.",
+                info.logical_bytes / (1024 * 1024)
+            );
+        }
         Some("info") => {
             if args.next().is_some() {
                 return Err("info takes no options".into());

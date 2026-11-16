@@ -1,5 +1,11 @@
 # Agent notes
 
+- [NetBSD 11.1 installation](netbsd-11-install.md) — SS-20 CHD installation, normal GENERIC root login, checksum persistence, floppy/CPU probe corrections and remaining timing/APC limits.
+
+- [CHD implementation and acceptance](chd-images-progress.md) — persistent v5 hard disks, explicit image creation, Heliacal integration, Solaris write/reboot tests and NetBSD SS-20 installation/persistence.
+
+- [CHD images plan and handoff](chd-images-plan.md) — issue #6: dependency/MSRV proof, media abstraction, durable CHD writes, blank creation, Heliacal integration and acceptance slices.
+
 - [Clock, serial boot and CDE follow-up](clock-serial-cde-followup.md) — profile clocks, keyboard reset collision, recovered Axil disk and incompatible TurboGX+ ROM diagnosis.
 
 - [Configurable RAM completion](ram-capacity-completion.md) — Axil firmware-compatible populations, SS-20 split 32 MiB bank fix, CGsix console configuration, tracked frontend lifecycle tests and final acceptance evidence.

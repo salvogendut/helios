@@ -6,12 +6,12 @@ NCR89C100's ESP controller and DMA2 engine. Each attached target has LUN 0.
 
 ## Images
 
-Both frontends accept these optional arguments:
+The core CLI and legacy `helios-ui` frontend accept these optional arguments:
 
 | Option | Target | Image format | Access |
 | --- | --- | --- | --- |
-| `--disk PATH` | ID 3, LUN 0 | Raw disk, 512-byte blocks | Read-only |
-| `--disk-rw PATH` | ID 3, LUN 0 | Existing raw disk, 512-byte blocks | Read/write in place |
+| `--disk PATH` | ID 3, LUN 0 | Raw or CHD hard disk, 512-byte blocks | Read-only |
+| `--disk-rw PATH` | ID 3, LUN 0 | Existing raw or CHD hard disk | Read/write; see below |
 | `--cdrom PATH` | ID 6, LUN 0 | Cooked CD data image/ISO, 2048-byte sectors | Read-only |
 
 ```sh
@@ -24,11 +24,67 @@ After entering the monitor with Stop-A (Pause+A), type `probe-scsi-all`.
 The headless `helios boot` command accepts the same image options. Omit an
 option to leave its target absent. Images must be nonempty regular files of
 whole blocks, with at most 2^32 blocks. The backend does not interpret a
-filesystem or partition table. QCOW2, compressed images and raw 2352-byte CD
+filesystem or partition table. QCOW2 and raw 2352-byte CD
 sectors are not supported; supply converted raw images. Choose either `--disk`
 or `--disk-rw`, not both. The writable option opens an existing image without
-creating or truncating it. Guest writes modify that file in place; there is no
-overlay. Other attachments remain read-only and report write protection.
+creating or truncating its base. Raw guest writes modify that file in place.
+Other attachments remain read-only and report write protection.
+
+### CHD hard disks
+
+Build the core with `--features chd` (Heliacal enables it). For the legacy
+`helios-ui` package, pass `--features helios/chd`. Supported images
+are CHD v5 hard disks with GDDD metadata, 512-byte units and sector-aligned
+hunks up to 4 MiB. Capacity comes from the logical byte count, not the host
+container size or rounded CHS metadata. Maps are bounded to 4,194,304 hunks;
+metadata is bounded and checked for loops before native decoding. CHD
+CD/DVD/audio/video images, older versions and arbitrary parent chains are
+rejected explicitly. Use cooked ISO files for CDs. Signature detection works
+even after renaming a CHD; a malformed `.chd` never becomes a raw disk.
+
+An uncompressed CHD without a child is written in place. A compressed disk
+remains unchanged: guest writes create/reuse `NAME.chd.diff.chd` beside it.
+Keep both files together. Read-only attachment also reads an existing child,
+but never creates one. Invalid or mismatched parent relationships fail;
+Helios never discards a child or silently reads the old base instead.
+A compressed parent needs a nonzero SHA-1 identity. New uncompressed disks
+are intentionally hashless and remain writable in place. The first write to
+an existing hashed uncompressed image clears and syncs its stale content hashes
+before changing data; a child's parent identity is preserved.
+
+WRITE commands stage all guest DATA OUT before modifying media. GOOD follows
+a successful durability sync, as does SYNCHRONIZE CACHE. Newly allocated hunk
+data is synced before publishing its map entry; another sync persists the map.
+The native all-zero inherited-hunk shortcut is handled so zeroing parent data
+survives reopening. Host errors produce CHECK CONDITION, not success. After
+a native write/sync failure, detach/reopen is required before more CHD I/O.
+An interrupted host write is not a transaction covering all guest sectors.
+No automatic merge, recompression or child deletion occurs at halt or exit.
+Do not attach the same writable disk to multiple guests or modify it externally.
+
+`helios::media::inspect` and `validate_attachment` inspect logical capacity
+without creating a child. Actual writable attachment reports any subsequent
+child-creation/permission failure. Heliacal uses these checks for saved drafts
+and named machines; Save alone cannot create a `.diff.chd`.
+
+Create a zero-filled, unpartitioned CHD or sparse raw disk explicitly:
+
+```sh
+cargo build --release --features chd
+target/release/helios create-disk local/disks/new-scsi3.chd --format chd --size-mib 2048
+target/release/helios create-disk local/disks/new-scsi3.raw --format raw --size-mib 2048
+```
+
+Include the intended target in disk filenames, such as `-scsi3` for ID 3,
+and select the matching attachment ID. Filenames do not assign the SCSI target.
+
+The destination directory must exist. Creation refuses existing files,
+directories, dangling symlinks and companion collisions. It builds privately
+in that directory and publishes without overwriting. Blank CHDs are sparse and
+uncompressed, so creation does not allocate the logical disk in RAM. The
+guest must label and format them. Heliacal exposes the same operation under
+F9 → Media → New blank CHD disk; the new attachment remains a draft until
+Save and confirmed F5 replacement. Discard keeps the explicitly created file.
 
 Library callers attach images through
 `machine.bus.devices_mut().unwrap().scsi.attach(id, MediaKind::Disk, path)` or
@@ -37,7 +93,7 @@ Duplicate IDs and invalid images return errors before replacing a target.
 Controller and machine resets retain mounted images.
 Writable library attachment is explicit: `scsi.attach_disk_rw(id, path)`.
 
-For a new installation, create a separate blank image first. This example
+For a new installation, create a separate blank image first. This alternative
 creates a sparse 2 GiB raw disk and refuses to overwrite an existing file:
 
 ```sh
@@ -158,7 +214,7 @@ count covers the remainder of the image. IMMED and relative addressing remain
 unsupported. Neither a zero-count WRITE(10) nor failed CDB validation changes
 the image; WRITE(6)'s zero count means 256 blocks.
 
-Writable overlays, media eject/load, other mode pages, CD TOC/audio, synchronous
+Raw-image overlays, media eject/load, other mode pages, CD TOC/audio, synchronous
 negotiation, disconnect/reselection and target-mode ESP commands remain pending.
 Kernel root mounting and the serial language-selection prompt have been observed
 on both Solaris CDs. Solaris 7 and Solaris 2.6 have been installed to separate
@@ -246,3 +302,16 @@ read-only is not a valid test because Solaris writes during filesystem checks.
 `tapes` and `ports` link generators are the corresponding logical-device
 rebuild steps. Do not use Solaris 10+ `devfsadm` workflow assumptions for a
 2.6 installation.
+
+## NetBSD 11.1 installation checkpoint
+
+The NetBSD 11.1 sparc minimal installer has also completed on SS-20 with one
+CPU, 128 MiB RAM, serial console, original OBP and `--accurate-clocks`, using
+a cooked ISO source and new writable 2 GiB CHD. Its unmodified GENERIC kernel
+boots from disk to root login; installed kernel/shell checksums and guest-written
+files persist across clean halt and host reopening. At OBP use `boot cdrom`
+for installation and `boot disk` afterward. In Heliacal, the corresponding
+clock control is **F9 → Advanced → Accurate CPU clocks** (enable Tinker first).
+The floppy controller reports no attached drives. A timecounter-backwards
+warning remains unresolved; this checkpoint covers SS-20 serial/storage,
+with entropy/network configuration left to guest setup.

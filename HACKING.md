@@ -33,6 +33,7 @@ or assume host scheduling is guest timing.
 | `src/bus.rs` | Physical bus contract, RAM/ROM mappings and external byte import |
 | `src/system_bus.rs` | Physical decoding, per-profile sun4m layouts, device widths, clock advancement and IRQ wiring |
 | `src/devices/` | NVRAM/RTC, SCCs, keyboard/mouse, CGsix and SX/CG14, interrupt control, timers, reset/status, ECC memory control and I/O configuration |
+| `src/media.rs`, `src/media/` | Logical host-media boundary, optional CHD codecs, persistent children, durable writes and explicit blank-image creation |
 | `src/serial_host.rs` | Loopback telnet serial consoles; nonblocking host I/O polled by frontends |
 | `src/net/` | User-mode NAT over the Ethernet frame endpoint: ARP/RARP, DHCP, ICMP, UDP, DNS, TFTP |
 | `src/mmu.rs` | ASI dispatch, CPU/I/O translation, shared TLB, permissions and CPU fault registers |
@@ -270,6 +271,7 @@ The implemented trap types are:
 | Deferred FP invalid/sequence error or empty queue store | `0x08` |
 | Window overflow / underflow | `0x05` / `0x06` |
 | Misaligned memory access or jump | `0x07` |
+| Absent non-FPU coprocessor | `0x24` |
 | Tagged arithmetic overflow (`TV` forms) | `0x0a` |
 | Integer division by zero | `0x2a` |
 | Physical instruction / data bus error | `0x21` / `0x29` |
@@ -288,9 +290,16 @@ raw host accesses do not overwrite them. See [fault-capture.md](docs/fault-captu
 Parity checking, late errors, doubleword SBus store fault completion,
 unimplemented/unfinished FPU traps and general illegal-opcode classification
 remain pending. Missing
-emulator instructions, including unimplemented ASRs, still produce an
+emulator instructions, including implementation-specific ASRs, still produce an
 `UnsupportedInstruction` host stop. Unimplemented control
 spaces produce `UnsupportedMemory`; neither is converted into a guest trap.
+Reserved V8 RDASR 1–14 completes without a trap as required by B.28; Helios
+chooses Y readback for its undefined result. This does not expose V9 CCR/TICK
+registers. Reserved writes and the ASR15 non-STBAR form remain unsupported.
+No optional V8 coprocessor is installed. CPop1/CPop2, CBccc and coprocessor
+loads/stores raise `cp_disabled`, before alignment or data access. STDCQ
+retains the higher-priority supervisor check. V9 capability probes that
+reuse those encodings therefore receive V8 traps, not VIS support.
 
 With ET=0, a precise exception latches error state without ordinary trap entry:
 no window rotation or saved locals, and no change to TBR.TT except for a failing
