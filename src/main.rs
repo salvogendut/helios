@@ -76,7 +76,8 @@ unpartitioned disk without overwriting files; --size-mib is a positive integer.
 --net enables the user-mode NAT (guest 192.168.0.2, gateway 192.168.0.1,
 mask 255.255.255.0, DHCP/RARP, DNS relay and UDP). --net-gateway, --net-client,
 --net-mask and --net-dns override its addresses. --tftp-dir adds the read-only
-TFTP server for network boot. TCP NAT is not implemented yet.
+TFTP server for network boot. External IPv4 echo uses Linux unprivileged ping
+sockets when built with --features host-icmp. TCP NAT is not implemented yet.
 Fast clocks are the default: 100 ns per completed step (10 MHz functional
 timebase), reducing interpreted work during guest timer waits. --accurate-clocks
 selects profile rates: SS-5 85 MHz, SS-20/Axil 75 MHz per CPU, with fractional
@@ -252,6 +253,9 @@ fn execute(
                         net.input(&frame, now);
                     }
                     net.poll(now);
+                    if let Some(warning) = net.take_network_warning() {
+                        eprintln!("Host NAT: {warning}");
+                    }
                     while let Some(frame) = net.output() {
                         if !devices.ethernet.receive_frame(&frame) {
                             break;
@@ -348,13 +352,17 @@ fn execute(
     if let Some(net) = network {
         let stats = net.stats();
         eprintln!(
-            "Host NAT: {} guest frames, {} host frames, {} ARP, {} RARP, {} BOOTP, {} ICMP, {} UDP, {} DNS, {} TFTP, {} dropped, {} unsupported TCP",
+            "Host NAT: {} guest frames, {} host frames, {} ARP, {} RARP, {} BOOTP, {} local ICMP, {}/{}/{} relayed ICMP sent/replies/errors, {} ICMP timeouts, {} UDP, {} DNS, {} TFTP, {} dropped, {} unsupported TCP",
             stats.guest_frames,
             stats.host_frames,
             stats.arp_requests,
             stats.rarp_requests,
             stats.bootp_requests,
             stats.icmp_echoes,
+            stats.icmp_forwarded,
+            stats.icmp_replies,
+            stats.icmp_errors,
+            stats.icmp_timeouts,
             stats.udp_requests,
             stats.dns_queries,
             stats.tftp_datagrams,
@@ -442,6 +450,9 @@ fn execute_scheduled(
                         net.input(&frame, now);
                     }
                     net.poll(now);
+                    if let Some(warning) = net.take_network_warning() {
+                        eprintln!("Host NAT: {warning}");
+                    }
                     while let Some(frame) = net.output() {
                         if !devices.ethernet.receive_frame(&frame) {
                             break;
@@ -558,13 +569,17 @@ fn execute_scheduled(
     if let Some(net) = network {
         let stats = net.stats();
         eprintln!(
-            "Host NAT: {} guest frames, {} host frames, {} ARP, {} RARP, {} BOOTP, {} ICMP, {} UDP, {} DNS, {} TFTP, {} dropped, {} unsupported TCP",
+            "Host NAT: {} guest frames, {} host frames, {} ARP, {} RARP, {} BOOTP, {} local ICMP, {}/{}/{} relayed ICMP sent/replies/errors, {} ICMP timeouts, {} UDP, {} DNS, {} TFTP, {} dropped, {} unsupported TCP",
             stats.guest_frames,
             stats.host_frames,
             stats.arp_requests,
             stats.rarp_requests,
             stats.bootp_requests,
             stats.icmp_echoes,
+            stats.icmp_forwarded,
+            stats.icmp_replies,
+            stats.icmp_errors,
+            stats.icmp_timeouts,
             stats.udp_requests,
             stats.dns_queries,
             stats.tftp_datagrams,
