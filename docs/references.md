@@ -157,6 +157,14 @@ test rather than assuming either emulator defines the hardware.
   register layout, BCD calendar, R/W transfer latches and oscillator stop.
   The model follows the hardware latch behavior rather than QEMU's simpler
   host-clock-backed register handling.
+- [NetBSD sparc `mkclock.c`](https://github.com/NetBSD/src/blob/bc1ab70174b4c8f3c69457e0ab39d4cf3cf77147/sys/arch/sparc/sparc/mkclock.c),
+  revision 1.21, sets the M48T08 year origin to 1968.
+  [`kern_todr.c`](https://github.com/NetBSD/src/blob/bc1ab70174b4c8f3c69457e0ab39d4cf3cf77147/sys/kern/kern_todr.c),
+  revision 1.52, rejects RTC dates before its 2021 threshold and substitutes
+  filesystem time. These explain the year-2000 RTC / November-2 filesystem
+  date captured during NetBSD 11.1 boot. The explicit frontend UTC startup
+  seed in [devices.md](devices.md) preserves the chip's BCD/year convention;
+  it does not change RTC latch behavior or add host-clock reads to the device.
 - [Sun TurboGX/TurboGXplus Hardware Installation Guide](https://docs.oracle.com/cd/E19957-01/801-5399-10/801-5399-10.pdf),
   801-5399-10, table 1-1 distinguishes the 1 MiB TurboGX from the 4 MiB
   TurboGXplus. The pinned MAME `cgsix.cpp` gives separate VRAM apertures, DACs

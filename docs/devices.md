@@ -33,8 +33,8 @@ Imported images and guest writes are retained without automatic checksum
 repair. No Sun environment defaults or OpenBIOS configuration partitions are
 fabricated; firmware-specific initialization remains separate work.
 
-The RTC defaults to 2000-01-01 00:00:00, weekday 7. Its two-digit year is `0x32`
-using the SS-5 software origin of 1968. The chip stores no century. Registers
+The core RTC defaults to 2000-01-01 00:00:00, weekday 7. Its two-digit year is `0x32`
+using Sun software's origin of 1968. The chip stores no century. Registers
 are BCD seconds, minutes, hours, weekday, date, month and year, in that order.
 The calendar uses 24-hour time, weekday 1–7, a leap day every fourth encoded
 year and year rollover from 99 to 00.
@@ -48,9 +48,31 @@ bits stop before a W-clear commits. Frequency calibration is unsupported.
 The machine supplies elapsed time from its 100 ns base step quantum plus
 documented physical PROM read wait states
 and `advance_ns`/`advance_seconds` APIs. The standalone `Nvram` device still uses
-explicit `advance_seconds` calls. Host wall time is never consulted. Very large
+explicit `advance_seconds` calls. The device never reads host wall time. Very large
 advances use bounded calendar work. Machine reset retains SRAM, clock state,
 latches and its fraction of an RTC second. See [guest time](interrupts-timers.md).
+
+Frontends can initialize the calendar at power-on with
+`Nvram::initialize_sun_clock(unix_seconds)`. The caller supplies UTC Unix seconds;
+1970 through 2067 is representable without wrapping Sun's two-digit year.
+Out-of-range input fails before mutation. This explicit initialization replaces
+only the eight RTC registers, releases R/W latches and starts the oscillator;
+configuration SRAM and IDPROM are preserved. Defaults, raw-image import and
+core resets remain deterministic and do not initialize from host time.
+
+Heliacal seeds host UTC when constructing a guest by default, including a
+confirmed F5 cold replacement. Its per-machine **Advanced > RTC at startup**
+option can preserve saved guest time instead. The CLI's **`--rtc host`** does
+the same one-time initialization; **`--rtc saved`** is the CLI default, and
+**`--rtc UNIX_SECONDS`** permits reproducible dates. Guest time subsequently
+advances with emulated time; pause/resume and guest resets do not resynchronize
+it. This option does not affect the CPU-speed setting.
+
+A stale year-2000 clock causes NetBSD 11's `preposterous TOD clock time`
+warning and fallback to the filesystem timestamp, which can make a recently
+started machine display the disk's older date. Solaris also compares its RTC
+against filesystem time. Seeding a current date addresses the initial calendar;
+it does not implement host-rate timing or fix independent timecounter warnings.
 
 `Nvram::from_image` requires exactly 8192 bytes and valid supported clock fields.
 `Nvram::image` exports raw SRAM/register contents. With R/W clear, this includes

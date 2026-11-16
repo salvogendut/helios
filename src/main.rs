@@ -29,6 +29,7 @@ Usage:
                    [--display sx|cgsix|none] [--serial-in FILE]
                    [--serial-port-a PORT] [--serial-port-b PORT] [--keyboard]
                    [--cgsix-rom FILE] [--nvram FILE] [--nvram-out NEW_FILE]
+                   [--rtc host|saved|UNIX_SECONDS]
                    [--disk IMAGE | --disk-rw IMAGE] [--cdrom ISO_IMAGE]
                    [--net] [--net-gateway IP] [--net-client IP] [--net-mask IP]
                    [--net-dns IP] [--tftp-dir DIR]
@@ -62,6 +63,10 @@ abbreviated OBP startup path, letting an SS-20 boot reach ok without full POST.
 consoles on 127.0.0.1; PORT 0 asks the host for a free port. Console output
 still goes to stdout. NVRAM images contain 8192 bytes; --nvram-out creates a
 new file without overwriting.
+--rtc saved (default) preserves imported RTC time or the deterministic year-2000
+default. --rtc host seeds the RTC from host UTC at startup; a decimal Unix
+timestamp selects a reproducible UTC date (1970-2067). Only RTC fields change;
+subsequent time advances with the guest, independently of the CPU clock option.
 --disk attaches a read-only 512-byte/block raw or CHD disk at SCSI ID 3, LUN 0.
 --disk-rw permits guest writes; compressed CHDs use a persistent .diff.chd child.
 Neither disk option creates or truncates an image; choose only one.
@@ -102,6 +107,39 @@ fn report(console: bool, message: std::fmt::Arguments<'_>) {
 struct SerialPorts {
     a: Option<TcpSerial>,
     b: Option<TcpSerial>,
+}
+
+#[derive(Default)]
+enum RtcStart {
+    #[default]
+    Saved,
+    Host,
+    Unix(u64),
+}
+
+impl RtcStart {
+    fn parse(value: &str) -> Result<Self, Box<dyn Error>> {
+        match value {
+            "saved" => Ok(Self::Saved),
+            "host" => Ok(Self::Host),
+            value if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) => {
+                Ok(Self::Unix(value.parse()?))
+            }
+            _ => Err("--rtc requires host, saved or decimal Unix seconds".into()),
+        }
+    }
+
+    fn initialize(self, nvram: &mut Nvram) -> Result<(), Box<dyn Error>> {
+        let seconds = match self {
+            Self::Saved => return Ok(()),
+            Self::Host => std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs(),
+            Self::Unix(seconds) => seconds,
+        };
+        nvram.initialize_sun_clock(seconds)?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -730,10 +768,18 @@ fn run() -> Result<(), Box<dyn Error>> {
             let mut cgsix_rom = None;
             let mut nvram_in = None;
             let mut nvram_out = None;
+            let mut rtc_start = None;
             let mut disk = None;
             let mut disk_writable = false;
             let mut cdrom = None;
             while let Some(option) = args.next() {
+                if boot && option == "--rtc" {
+                    let value = args.next().ok_or("--rtc requires a value")?;
+                    if rtc_start.replace(RtcStart::parse(&value)?).is_some() {
+                        return Err("--rtc supplied more than once".into());
+                    }
+                    continue;
+                }
                 if boot && option == "--accurate-clocks" {
                     accurate_clocks = true;
                     continue;
@@ -930,11 +976,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                 return Err("raw image is empty".into());
             }
             let mut machine = if boot {
-                let nvram = if let Some(path) = nvram_in {
+                let mut nvram = if let Some(path) = nvram_in {
                     Nvram::from_image(&std::fs::read(path)?)?
                 } else {
                     profile.default_nvram()
                 };
+                rtc_start.unwrap_or_default().initialize(&mut nvram)?;
                 Machine::with_profile_processors_video(
                     profile,
                     ram_bytes,
