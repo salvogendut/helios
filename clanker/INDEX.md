@@ -111,3 +111,5 @@
 - [Issue #5 Slice B differential validation](performance-issue5-slice-b.md) — full CPU/window/MMU/FPU snapshots plus scheduler, bus and device fingerprints; deliberate mismatch tests before any cache.
 
 - [Issue #5 Slice C decoded cache](performance-issue5-slice-c.md) — bounded opt-in PC/raw-word decode cache with interpreter snapshot validation; disabled by default pending performance work.
+
+- [Issue #5 SS-5 page-walk investigation](performance-issue5-mmu-walk.md) — per-slot fast-cache generations; unsafe leaf-only walk shortcut removed; matched benchmark within +0.11%, WP=0 bottleneck remains open.

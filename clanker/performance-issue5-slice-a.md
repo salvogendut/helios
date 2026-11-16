@@ -389,5 +389,5 @@ At Slice A finish, current main had **683 unique normal tests (684 successful
 lines), 685 unique with `perf-counters` (686 successful lines)**; `cargo fmt
 --all --check`; both Clippy configurations; and `demo`, `trap-demo`,
 `serial-demo`, `timer-demo` passed. The comparison harness reports `state=match`
-for ALU and memory. After Slice C the counts are 710/712. This slice is a
+for ALU and memory. After the MMU walk investigation the counts are 719/722. This slice is a
 handoff, not a JIT acceptance or an idle-power improvement.

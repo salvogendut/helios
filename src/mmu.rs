@@ -244,7 +244,8 @@ impl Entry {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FastTlbEntry {
-    generation: u64,
+    epoch: u64,
+    slot_generation: u64,
     tag: u64,
     supervisor: bool,
     index: u8,
@@ -264,21 +265,43 @@ impl Default for FastTlb {
 }
 
 impl FastTlb {
-    fn get(&self, address: u32, context: u32, supervisor: bool, generation: u64) -> Option<usize> {
+    fn get(
+        &self,
+        address: u32,
+        context: u32,
+        supervisor: bool,
+        epoch: u64,
+        slot_generations: &[u64; TLB_ENTRIES],
+    ) -> Option<usize> {
         let slot = &self.entries[((address >> 12) as usize) & (FAST_TLB_ENTRIES - 1)];
-        (slot.generation == generation
+        (slot.epoch == epoch
+            && slot.slot_generation == slot_generations[usize::from(slot.index)]
             && slot.supervisor == supervisor
             && slot.tag == Self::tag(address, context))
         .then_some(usize::from(slot.index))
     }
 
-    fn put(&mut self, address: u32, context: u32, supervisor: bool, generation: u64, index: usize) {
+    fn put(
+        &mut self,
+        address: u32,
+        context: u32,
+        supervisor: bool,
+        epoch: u64,
+        slot_generation: u64,
+        index: usize,
+    ) {
         self.entries[((address >> 12) as usize) & (FAST_TLB_ENTRIES - 1)] = FastTlbEntry {
-            generation,
+            epoch,
+            slot_generation,
             tag: Self::tag(address, context),
             supervisor,
             index: index as u8,
         };
+    }
+
+    fn invalidate_page(&mut self, virtual_base: u32) {
+        self.entries[((virtual_base >> 12) as usize) & (FAST_TLB_ENTRIES - 1)] =
+            FastTlbEntry::default();
     }
 
     fn tag(address: u32, context: u32) -> u64 {
@@ -332,6 +355,7 @@ pub struct Srmmu {
     fault_address: u32,
     tlb: [Entry; TLB_ENTRIES],
     tlb_generation: u64,
+    slot_generations: [u64; TLB_ENTRIES],
     tlb_diagnostic: Option<(u32, u32)>,
     fast_instruction: FastTlb,
     fast_data: FastTlb,
@@ -371,6 +395,7 @@ impl PartialEq for Srmmu {
             && self.fault_address == other.fault_address
             && self.tlb == other.tlb
             && self.tlb_generation == other.tlb_generation
+            && self.slot_generations == other.slot_generations
             && self.tlb_diagnostic == other.tlb_diagnostic
             && self.fast_instruction == other.fast_instruction
             && self.fast_data == other.fast_data
@@ -408,6 +433,7 @@ impl Default for Srmmu {
             fault_address: 0,
             tlb: [Entry::default(); TLB_ENTRIES],
             tlb_generation: 1,
+            slot_generations: [1; TLB_ENTRIES],
             tlb_diagnostic: None,
             fast_instruction: FastTlb::default(),
             fast_data: FastTlb::default(),
@@ -521,6 +547,11 @@ impl Srmmu {
     pub fn fault_address(&self) -> u32 {
         self.fault_address
     }
+
+    /// Host page-walk memoization is disabled pending complete table-path
+    /// coherence. Retained as a fixture compatibility hook; it does not alter
+    /// architectural state.
+    pub fn set_walk_cache_enabled(&mut self, _enabled: bool) {}
 
     /// Unprivileged FLUSH: no translation, bus access or TLB invalidation.
     pub(crate) fn flush_instruction(&mut self, address: u32) {
@@ -654,6 +685,18 @@ impl Srmmu {
         }
     }
 
+    fn invalidate_fast_mapping(&mut self, entry: Entry) {
+        if entry.offset_mask == 0xfff {
+            self.fast_instruction.invalidate_page(entry.virtual_base);
+            self.fast_data.invalidate_page(entry.virtual_base);
+        } else {
+            // Larger mappings can cover any direct-map slot. Advancing the
+            // common epoch invalidates both small caches in O(1); the new
+            // entry is cached with the post-insertion epoch.
+            self.tlb_generation = self.tlb_generation.wrapping_add(1);
+        }
+    }
+
     fn insert(&mut self, entry: Entry) -> usize {
         let wrap = ((self.trcr >> 7) & 63) as usize;
         let limit = if self.trcr & (1 << 13) != 0 {
@@ -680,7 +723,8 @@ impl Srmmu {
         if self.trcr & (1 << 6) == 0 {
             self.trcr = (self.trcr & !63) | ((counter + 1) % (limit + 1)) as u32;
         }
-        self.tlb_generation = self.tlb_generation.wrapping_add(1);
+        self.slot_generations[index] = self.slot_generations[index].wrapping_add(1);
+        self.invalidate_fast_mapping(entry);
         let diagnostic = entry.upper & 8 != 0 && (entry.lower & 2 != 0 || entry.upper & 7 == 2);
         if diagnostic {
             self.tlb_diagnostic = Some((0x300 | (index as u32 * 4), entry.upper));
@@ -1728,11 +1772,21 @@ impl Srmmu {
         let context = self.context;
         let supervisor = access.supervisor();
         let cached = if access.instruction() {
-            self.fast_instruction
-                .get(access.address, context, supervisor, self.tlb_generation)
+            self.fast_instruction.get(
+                access.address,
+                context,
+                supervisor,
+                self.tlb_generation,
+                &self.slot_generations,
+            )
         } else {
-            self.fast_data
-                .get(access.address, context, supervisor, self.tlb_generation)
+            self.fast_data.get(
+                access.address,
+                context,
+                supervisor,
+                self.tlb_generation,
+                &self.slot_generations,
+            )
         };
         if let Some(index) = cached {
             let mut entry = self.tlb[index];
@@ -1804,13 +1858,26 @@ impl Srmmu {
     fn cache_translation(&mut self, access: Access, index: usize) {
         let context = self.context;
         let supervisor = access.supervisor();
-        let generation = self.tlb_generation;
+        let epoch = self.tlb_generation;
+        let slot_generation = self.slot_generations[index];
         if access.instruction() {
-            self.fast_instruction
-                .put(access.address, context, supervisor, generation, index);
+            self.fast_instruction.put(
+                access.address,
+                context,
+                supervisor,
+                epoch,
+                slot_generation,
+                index,
+            );
         } else {
-            self.fast_data
-                .put(access.address, context, supervisor, generation, index);
+            self.fast_data.put(
+                access.address,
+                context,
+                supervisor,
+                epoch,
+                slot_generation,
+                index,
+            );
         }
     }
 
@@ -2015,7 +2082,7 @@ impl Srmmu {
         }
     }
 
-    fn walk(&self, bus: &mut impl Bus, access: Access) -> Result<Entry, MemoryError> {
+    fn walk(&mut self, bus: &mut impl Bus, access: Access) -> Result<Entry, MemoryError> {
         let mut physical = self.root();
         for level in 0..=3 {
             self.request(bus, physical, MemoryRequestKind::Read, true, false);

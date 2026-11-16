@@ -70,8 +70,8 @@ required before enabling it for production. JIT remains separate.
 
 - `cargo fmt --all --check`
 - both Clippy configurations with `-D warnings`
-- `cargo test --locked --offline`: **710 unique tests / 711 successful lines**
-- `cargo test --locked --offline --features perf-counters`: **712 unique / 713 successful lines**
+- `cargo test --locked --offline`: **719 normal tests**
+- `cargo test --locked --offline --features perf-counters`: **722 perf-counter tests**
 - `tests/decode_cache.rs`: 2/2 pass
 - `tests/decode_cache_review.rs`: 6/6 pass
 - all four built-in demos pass

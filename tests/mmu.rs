@@ -594,3 +594,44 @@ fn opt_in_translation_counters_distinguish_walks_hits_and_replacements() {
     assert_eq!(hit.fast_hits - after.fast_hits, 1);
     assert_eq!(hit.walks, after.walks);
 }
+
+#[cfg(feature = "perf-counters")]
+#[test]
+fn slot_generation_keeps_unrelated_fast_entries_after_wp_zero_fill() {
+    let (mut mmu, mut bus) = fixture();
+    // Add page leaves for VA+0x1000 and VA+0x2000 in the same segment.
+    bus.write32(0x4018, PTE).unwrap();
+    bus.write32(0x401c, PTE).unwrap();
+    bus.write32(0x8000, 0x1122_3344).unwrap();
+
+    assert_eq!(
+        mmu.load(&mut bus, VA, 11, Width::Word).unwrap(),
+        0x1122_3344
+    );
+    assert_eq!(
+        mmu.load(&mut bus, VA + 0x1000, 11, Width::Word).unwrap(),
+        0x1122_3344
+    );
+    // Warm the second page's fast-entry slot.
+    assert_eq!(
+        mmu.load(&mut bus, VA + 0x1000, 11, Width::Word).unwrap(),
+        0x1122_3344
+    );
+
+    // WP=0 makes the next fill replace slot 0. It must not invalidate the
+    // unrelated fast entry for the page that remains in slot 1.
+    write_reg(&mut mmu, &mut bus, 0x10, 0);
+    assert_eq!(
+        mmu.load(&mut bus, VA + 0x2000, 11, Width::Word).unwrap(),
+        0x1122_3344
+    );
+    let before = mmu.translation_counters();
+    assert_eq!(
+        mmu.load(&mut bus, VA + 0x1000, 11, Width::Word).unwrap(),
+        0x1122_3344
+    );
+    let after = mmu.translation_counters();
+    assert_eq!(after.fast_hits - before.fast_hits, 1);
+    assert_eq!(after.walks, before.walks);
+    assert_eq!(after.tlb_hits, before.tlb_hits);
+}
