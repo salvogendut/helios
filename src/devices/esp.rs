@@ -110,6 +110,18 @@ impl Default for Esp {
 }
 
 impl Esp {
+    pub(crate) fn diagnostic_digest(&self) -> u64 {
+        let mut digest = crate::diagnostic::Digest::new();
+        digest.debug(self);
+        digest.u64(self.response.data.len() as u64);
+        for &byte in &self.response.data {
+            digest.byte(byte);
+        }
+        digest.byte(u8::from(self.response.data_out));
+        digest.byte(self.response.status);
+        digest.finish()
+    }
+
     /// Select the SS-20/Axil core's wider register readback behavior.
     pub fn set_reference_registers(&mut self, reference: bool) {
         self.reference_registers = reference;

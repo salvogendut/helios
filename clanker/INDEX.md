@@ -107,3 +107,7 @@
 - [Unaligned SX load review](ss20-sx-unaligned-load-review.md) — packed-load lane/ninth-register fix independently verified; 20/1/2/3-pixel moves preserve text, visible window frames and the background, with remaining desktop/frontend/boot acceptance checks.
 - [SX resize and final-store review](ss20-sx-resize-review.md) — Run 21 rendering verified, shrink remainder explained by the surviving border, 491-test review and two isolated store-boundary failures, subsequently fixed in the completion follow-up.
 - [SS-20 desktop completion](ss20-desktop-completion.md) — store-boundary and VSIMM-2 identity fixes, 499 core tests, repaired legacy frontend startup, fresh SS-5/Axil boots, and actual Heliacal input acceptance.
+- [Issue #5 Slice A baseline](performance-issue5-slice-a.md) — corrected per-CPU phase/counter baseline, sampled profile, frontend idle evidence and the completed single-CPU comparison harness; no decoded cache or JIT.
+- [Issue #5 Slice B differential validation](performance-issue5-slice-b.md) — full CPU/window/MMU/FPU snapshots plus scheduler, bus and device fingerprints; deliberate mismatch tests before any cache.
+
+- [Issue #5 Slice C decoded cache](performance-issue5-slice-c.md) — bounded opt-in PC/raw-word decode cache with interpreter snapshot validation; disabled by default pending performance work.

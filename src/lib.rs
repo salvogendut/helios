@@ -5,6 +5,7 @@ pub mod bus;
 mod cache;
 pub mod cpu;
 pub mod devices;
+mod diagnostic;
 pub mod dma;
 pub mod dram;
 pub mod firmware;

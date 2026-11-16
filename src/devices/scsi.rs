@@ -44,6 +44,31 @@ pub struct ScsiBus {
 }
 
 impl ScsiBus {
+    pub(crate) fn diagnostic_digest(&self) -> u64 {
+        let mut digest = crate::diagnostic::Digest::new();
+        for (id, target) in self.targets.iter().enumerate() {
+            digest.byte(id as u8);
+            let Some(target) = target else {
+                digest.byte(0);
+                continue;
+            };
+            digest.byte(1);
+            digest.debug(&target.kind);
+            digest.byte(u8::from(target.writable));
+            digest.u64(target.image_bytes);
+            digest.u32(target.block_size);
+            digest.bytes(&target.sense);
+            digest.byte(u8::from(target.unit_attention));
+            digest.byte(u8::from(target.started));
+            digest.byte(u8::from(target.removal_prevented));
+            digest.u64(target.reads);
+            digest.u64(target.writes);
+            let info = target.image.info();
+            digest.debug(&info);
+        }
+        digest.finish()
+    }
+
     /// Attach one disk or CD image at LUN 0. ID 7 is the host adapter.
     /// Images are opened read-only, including disks. No implicit replacement.
     pub fn attach(&mut self, id: u8, kind: MediaKind, path: impl AsRef<Path>) -> io::Result<()> {

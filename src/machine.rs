@@ -8,7 +8,7 @@ use crate::dma::DmaError;
 use crate::dram::{DramLayout, Ss5Dram};
 use crate::iommu::StandaloneIommu;
 use crate::mmu::MmuConfig;
-use crate::system_bus::{Sun4mLayout, SystemBus};
+use crate::system_bus::{Sun4mLayout, SystemBus, SystemBusState};
 use crate::topology::{
     ProcessorArbitration, ProcessorModule, ProcessorRunState, ProcessorTopology, PROCESSOR_MODULES,
 };
@@ -76,6 +76,17 @@ impl CycleClock {
             self.whole_ns + 1
         } else {
             self.whole_ns
+        }
+    }
+
+    fn diagnostic_state(&self) -> ClockSnapshot {
+        ClockSnapshot {
+            hardware_hz: self.hardware_hz,
+            mode: self.mode,
+            hz: self.hz,
+            whole_ns: self.whole_ns,
+            remainder: self.remainder,
+            phase: self.phase,
         }
     }
 
@@ -496,6 +507,120 @@ impl SchedulerStats {
     }
 }
 
+/// One processor's functional clock state, retained for differential checks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClockSnapshot {
+    pub hardware_hz: u64,
+    pub mode: CpuClockMode,
+    pub hz: u64,
+    pub whole_ns: u64,
+    pub remainder: u64,
+    pub phase: u64,
+}
+
+/// Shared scheduler state at a differential checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerSnapshot {
+    pub virtual_ns: u64,
+    pub next_ready0: u64,
+    pub next_ready2: u64,
+    pub eligible0: bool,
+    pub eligible2: bool,
+    pub last_service_ns: Option<u64>,
+    pub stats: SchedulerStats,
+}
+
+/// Full architectural/CPU state plus deterministic bus/device and timing state.
+/// CPU snapshots are clones, so inactive register windows and the complete
+/// MMU/FPU state are included. Bus/device state is represented by fingerprints.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MachineSnapshot {
+    pub cpu: Cpu,
+    pub secondary_cpu: Option<Cpu>,
+    pub scheduler: SchedulerSnapshot,
+    pub clock: ClockSnapshot,
+    pub secondary_clock: Option<ClockSnapshot>,
+    pub standalone_iommu: Option<StandaloneIommu>,
+    pub bus: SystemBusState,
+}
+
+impl Clone for MachineSnapshot {
+    fn clone(&self) -> Self {
+        Self {
+            cpu: snapshot_cpu(&self.cpu),
+            secondary_cpu: self.secondary_cpu.as_ref().map(snapshot_cpu),
+            scheduler: self.scheduler.clone(),
+            clock: self.clock.clone(),
+            secondary_clock: self.secondary_clock.clone(),
+            standalone_iommu: self.standalone_iommu.clone(),
+            bus: self.bus.clone(),
+        }
+    }
+}
+
+impl MachineSnapshot {
+    pub fn differences(&self, other: &Self) -> Vec<&'static str> {
+        let mut differences = Vec::new();
+        if self.cpu != other.cpu {
+            differences.push("cpu0");
+        }
+        if self.secondary_cpu != other.secondary_cpu {
+            differences.push("cpu2");
+        }
+        if self.scheduler != other.scheduler {
+            differences.push("scheduler");
+        }
+        if self.clock != other.clock {
+            differences.push("clock0");
+        }
+        if self.secondary_clock != other.secondary_clock {
+            differences.push("clock2");
+        }
+        if self.standalone_iommu != other.standalone_iommu {
+            differences.push("iommu");
+        }
+        if self.bus.layout != other.bus.layout {
+            differences.push("bus.layout");
+        }
+        if self.bus.openbios_digest != other.bus.openbios_digest {
+            differences.push("bus.openbios");
+        }
+        if self.bus.context != other.bus.context {
+            differences.push("bus.context");
+        }
+        if self.bus.configured_processors != other.bus.configured_processors {
+            differences.push("bus.configured_processors");
+        }
+        if self.bus.prom_cycles != other.bus.prom_cycles
+            || self.bus.prom_phase != other.bus.prom_phase
+        {
+            differences.push("bus.prom");
+        }
+        if self.bus.device_ns != other.bus.device_ns {
+            differences.push("bus.device_ns");
+        }
+        if self.bus.memory_digest != other.bus.memory_digest {
+            differences.push("bus.memory");
+        }
+        if self.bus.dram_digest != other.bus.dram_digest {
+            differences.push("bus.dram");
+        }
+        if self.bus.devices_digest != other.bus.devices_digest {
+            differences.push("bus.devices");
+        }
+        if self.bus.cgsix_digest != other.bus.cgsix_digest {
+            differences.push("bus.cgsix");
+        }
+        if self.bus.sx_digest != other.bus.sx_digest {
+            differences.push("bus.sx");
+        }
+        if self.bus.mxcc_digest != other.bus.mxcc_digest {
+            differences.push("bus.mxcc");
+        }
+        differences
+    }
+}
+
 /// One tagged scheduler outcome. `virtual_ns` is the shared device clock at
 /// return, normally the earliest next eligible CPU deadline. It need not be
 /// the selected instruction's completion if another CPU has an earlier
@@ -632,6 +757,14 @@ pub struct Machine {
     secondary_cpu: Option<ProcessorModuleState>,
     scheduler: SchedulerState,
     clock: CycleClock,
+}
+
+fn snapshot_cpu(cpu: &Cpu) -> Cpu {
+    let mut snapshot = cpu.clone();
+    let mxcc = snapshot.mmu.mxcc_handle();
+    let state = mxcc.borrow().clone();
+    snapshot.mmu.set_mxcc(Rc::new(RefCell::new(state)));
+    snapshot
 }
 
 impl Machine {
@@ -1089,6 +1222,34 @@ impl Machine {
         let mut stats = self.scheduler.stats;
         stats.virtual_ns = self.scheduler.virtual_ns;
         stats
+    }
+
+    /// Capture full CPU/MMU/FPU state, scheduler/clock timing and a deterministic
+    /// fingerprint of bus, memory and device state for differential validation.
+    pub fn diagnostic_snapshot(&self) -> MachineSnapshot {
+        MachineSnapshot {
+            cpu: snapshot_cpu(&self.cpu),
+            secondary_cpu: self
+                .secondary_cpu
+                .as_ref()
+                .map(|module| snapshot_cpu(&module.cpu)),
+            scheduler: SchedulerSnapshot {
+                virtual_ns: self.scheduler.virtual_ns,
+                next_ready0: self.scheduler.next_ready0,
+                next_ready2: self.scheduler.next_ready2,
+                eligible0: self.scheduler.eligible0,
+                eligible2: self.scheduler.eligible2,
+                last_service_ns: self.scheduler.last_service_ns,
+                stats: self.scheduler.stats,
+            },
+            clock: self.clock.diagnostic_state(),
+            secondary_clock: self
+                .secondary_cpu
+                .as_ref()
+                .map(|module| module.clock.diagnostic_state()),
+            standalone_iommu: self.standalone_iommu.clone(),
+            bus: self.bus.diagnostic_state(),
+        }
     }
 
     /// Selected functional timebase: 10 MHz in Fast mode; profile oscillator

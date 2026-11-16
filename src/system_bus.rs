@@ -454,6 +454,50 @@ struct InstalledMxcc {
     state: Rc<RefCell<MxccState>>,
 }
 
+/// Read-only state used by the differential validator. Complex device state is
+/// represented by deterministic fingerprints; scalar timing/context state is
+/// retained explicitly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SystemBusState {
+    pub layout: Sun4mLayout,
+    pub openbios_digest: Option<u64>,
+    pub context: AccessContext,
+    pub configured_processors: u8,
+    pub prom_cycles: Option<u64>,
+    pub prom_phase: u64,
+    pub device_ns: u64,
+    pub memory_digest: u64,
+    pub dram_digest: Option<u64>,
+    pub devices_digest: Option<u64>,
+    pub cgsix_digest: Option<u64>,
+    pub sx_digest: Option<u64>,
+    pub mxcc_digest: u64,
+}
+
+fn devices_digest(devices: &Sun4mDevices) -> u64 {
+    let mut digest = crate::diagnostic::Digest::new();
+    digest.debug(&devices.auxiliary);
+    digest.debug(&devices.cs4231);
+    digest.debug(&devices.ecc);
+    digest.debug(&devices.floppy);
+    digest.debug(&devices.io_control);
+    digest.debug(&devices.nvram);
+    digest.debug(&devices.serial);
+    digest.debug(&devices.keyboard_serial);
+    digest.debug(&devices.keyboard);
+    digest.debug(&devices.mouse);
+    digest.debug(&devices.interrupts);
+    digest.debug(&devices.timers);
+    digest.debug(&devices.reset);
+    digest.debug(&devices.scsi_dma);
+    digest.u64(devices.esp.diagnostic_digest());
+    digest.u64(devices.scsi.diagnostic_digest());
+    digest.debug(&devices.ethernet_dma);
+    digest.debug(&devices.ethernet);
+    digest.u32(devices.rtc_phase_ns);
+    digest.finish()
+}
+
 #[derive(Debug)]
 pub struct SystemBus {
     openbios: Option<crate::firmware::OpenBiosConfig>,
@@ -503,6 +547,32 @@ impl SystemBus {
 
     pub fn layout(&self) -> Sun4mLayout {
         self.layout
+    }
+
+    pub fn diagnostic_state(&self) -> SystemBusState {
+        let mut mxcc = crate::diagnostic::Digest::new();
+        for installed in &self.mxccs {
+            mxcc.byte(installed.mid);
+            mxcc.debug(&*installed.state.borrow());
+        }
+        SystemBusState {
+            layout: self.layout,
+            openbios_digest: self.openbios.as_ref().map(crate::diagnostic::digest_debug),
+            context: self.context,
+            configured_processors: self.configured_processors,
+            prom_cycles: self.prom_cycles,
+            prom_phase: self.prom_phase,
+            device_ns: self.device_ns,
+            memory_digest: self.memory.diagnostic_digest(),
+            dram_digest: self
+                .dram
+                .as_ref()
+                .map(crate::dram::Ss5Dram::diagnostic_digest),
+            devices_digest: self.devices.as_ref().map(devices_digest),
+            cgsix_digest: self.cgsix.as_ref().map(crate::diagnostic::digest_debug),
+            sx_digest: self.sx.as_ref().map(crate::diagnostic::digest_debug),
+            mxcc_digest: mxcc.finish(),
+        }
     }
 
     /// Install the optional QEMU/OpenBIOS firmware contract. This service is

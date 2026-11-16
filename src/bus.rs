@@ -301,6 +301,21 @@ impl MemoryBus {
     pub(crate) fn overlaps(&self, start: u64, end: u64) -> bool {
         self.regions.iter().any(|r| start < r.end && end > r.base)
     }
+    pub(crate) fn diagnostic_digest(&self) -> u64 {
+        let mut digest = crate::diagnostic::Digest::new();
+        digest.u64(self.regions.len() as u64);
+        for region in &self.regions {
+            digest.u64(region.base);
+            digest.u64(region.end);
+            digest.byte(u8::from(region.read_only));
+            digest.u64(region.words.len() as u64);
+            for &word in &region.words {
+                digest.u32(word);
+            }
+        }
+        digest.finish()
+    }
+
     pub fn map_ram(&mut self, base: u64, size: usize) -> Result<(), MapError> {
         self.map(base, size, false)
     }

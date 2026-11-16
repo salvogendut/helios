@@ -220,6 +220,88 @@ impl Default for CpuConfig {
     }
 }
 
+const DECODE_CACHE_ENTRIES: usize = 64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CacheOperand {
+    Register(u8),
+    Immediate(u32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DecodedInstruction {
+    Sethi {
+        rd: u8,
+        value: u32,
+    },
+    Alu {
+        op3: u8,
+        rd: u8,
+        rs1: u8,
+        rhs: CacheOperand,
+    },
+    Branch {
+        condition: u8,
+        annul: bool,
+        displacement: u32,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DecodeEntry {
+    pc: u32,
+    word: u32,
+    instruction: DecodedInstruction,
+}
+
+#[derive(Clone, Debug)]
+struct DecodeCache {
+    entries: [Option<DecodeEntry>; DECODE_CACHE_ENTRIES],
+    enabled: bool,
+}
+
+impl Default for DecodeCache {
+    fn default() -> Self {
+        Self {
+            entries: [None; DECODE_CACHE_ENTRIES],
+            enabled: false,
+        }
+    }
+}
+
+impl PartialEq for DecodeCache {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for DecodeCache {}
+
+impl DecodeCache {
+    fn lookup(&self, pc: u32, word: u32) -> Option<DecodedInstruction> {
+        if !self.enabled {
+            return None;
+        }
+        let entry = self.entries[(pc >> 2) as usize & (DECODE_CACHE_ENTRIES - 1)]?;
+        (entry.pc == pc && entry.word == word).then_some(entry.instruction)
+    }
+
+    fn insert(&mut self, pc: u32, word: u32, instruction: DecodedInstruction) {
+        if !self.enabled {
+            return;
+        }
+        self.entries[(pc >> 2) as usize & (DECODE_CACHE_ENTRIES - 1)] = Some(DecodeEntry {
+            pc,
+            word,
+            instruction,
+        });
+    }
+
+    fn clear(&mut self) {
+        self.entries.fill(None);
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cpu {
     globals: [u32; 8],
@@ -236,6 +318,7 @@ pub struct Cpu {
     identity: CpuConfig,
     pub mmu: Srmmu,
     pub fpu: Fpu,
+    decode_cache: DecodeCache,
 }
 
 impl Cpu {
@@ -257,6 +340,7 @@ impl Cpu {
             identity: CpuConfig::default(),
             mmu: Srmmu::default(),
             fpu: Fpu::default(),
+            decode_cache: DecodeCache::default(),
         }
     }
 
@@ -292,6 +376,15 @@ impl Cpu {
     pub fn use_cpu_config(&mut self, config: CpuConfig) {
         self.identity = config;
         self.fpu.set_version(config.fpu_version);
+    }
+
+    /// Enable or disable the bounded host-side decoded-instruction cache.
+    /// The cache is not architectural state and is excluded from `Cpu` equality.
+    pub fn set_decode_cache_enabled(&mut self, enabled: bool) {
+        self.decode_cache.enabled = enabled;
+        if !enabled {
+            self.decode_cache.clear();
+        }
     }
 
     /// Non-power-up reset retains integer registers, PS, CWP and TT
@@ -435,7 +528,21 @@ impl Cpu {
             npc: self.npc,
             instruction,
         };
-        match self.execute(bus, instruction) {
+        let result = if self.decode_cache.enabled {
+            if let Some(decoded) = self.decode_cache.lookup(self.pc, instruction) {
+                self.execute_decoded(decoded);
+                Ok(())
+            } else if let Some(decoded) = Self::decode_plan(instruction) {
+                self.decode_cache.insert(self.pc, instruction, decoded);
+                self.execute_decoded(decoded);
+                Ok(())
+            } else {
+                self.execute(bus, instruction)
+            }
+        } else {
+            self.execute(bus, instruction)
+        };
+        match result {
             Ok(()) => Ok(step),
             Err(kind) => self.handle_fault(Some(instruction), kind),
         }
@@ -652,6 +759,112 @@ impl Cpu {
         Ok(())
     }
 
+    fn decode_plan(word: u32) -> Option<DecodedInstruction> {
+        let op = word >> 30;
+        let rd = ((word >> 25) & 31) as u8;
+        if op == 0 {
+            return match (word >> 22) & 7 {
+                4 => Some(DecodedInstruction::Sethi {
+                    rd,
+                    value: (word & 0x3f_ffff) << 10,
+                }),
+                2 => Some(DecodedInstruction::Branch {
+                    condition: ((word >> 25) & 15) as u8,
+                    annul: word & (1 << 29) != 0,
+                    displacement: ((word << 10) as i32 >> 8) as u32,
+                }),
+                _ => None,
+            };
+        }
+        if op != 2 {
+            return None;
+        }
+        let op3 = (word >> 19) & 63;
+        if !matches!(op3, 0x00..=0x08 | 0x0c | 0x10..=0x18 | 0x1c) {
+            return None;
+        }
+        let rs1 = ((word >> 14) & 31) as u8;
+        let rhs = if word & (1 << 13) != 0 {
+            CacheOperand::Immediate(((word << 19) as i32 >> 19) as u32)
+        } else {
+            CacheOperand::Register((word & 31) as u8)
+        };
+        Some(DecodedInstruction::Alu {
+            op3: op3 as u8,
+            rd,
+            rs1,
+            rhs,
+        })
+    }
+
+    fn execute_decoded(&mut self, instruction: DecodedInstruction) {
+        let mut next_pc = self.npc;
+        let mut next_npc = self.npc.wrapping_add(4);
+        match instruction {
+            DecodedInstruction::Sethi { rd, value } => self.write_reg(rd, value),
+            DecodedInstruction::Alu { op3, rd, rs1, rhs } => {
+                let b = match rhs {
+                    CacheOperand::Register(index) => self.read_reg(index),
+                    CacheOperand::Immediate(value) => value,
+                };
+                self.execute_alu(u32::from(op3), rd, rs1, b);
+            }
+            DecodedInstruction::Branch {
+                condition,
+                annul,
+                displacement,
+            } => {
+                let taken = self.icc.matches(u32::from(condition));
+                if taken {
+                    next_npc = self.pc.wrapping_add(displacement);
+                }
+                if annul && (!taken || condition == 8) {
+                    next_pc = next_npc;
+                    next_npc = next_pc.wrapping_add(4);
+                }
+            }
+        }
+        self.pc = next_pc;
+        self.npc = next_npc;
+    }
+
+    fn execute_alu(&mut self, op3: u32, rd: u8, rs1: u8, b: u32) {
+        let a = self.read_reg(rs1);
+        let (result, carry, overflow) = match op3 & 15 {
+            0 | 8 => {
+                let carry_in = u32::from(op3 & 8 != 0 && self.icc.c);
+                let wide = u64::from(a) + u64::from(b) + u64::from(carry_in);
+                let signed = i64::from(a as i32) + i64::from(b as i32) + i64::from(carry_in);
+                (
+                    wide as u32,
+                    wide > u64::from(u32::MAX),
+                    signed < i64::from(i32::MIN) || signed > i64::from(i32::MAX),
+                )
+            }
+            4 | 12 => {
+                let borrow = u32::from(op3 & 8 != 0 && self.icc.c);
+                let subtrahend = u64::from(b) + u64::from(borrow);
+                let signed = i64::from(a as i32) - i64::from(b as i32) - i64::from(borrow);
+                (
+                    a.wrapping_sub(b).wrapping_sub(borrow),
+                    u64::from(a) < subtrahend,
+                    signed < i64::from(i32::MIN) || signed > i64::from(i32::MAX),
+                )
+            }
+            1 => (a & b, false, false),
+            2 => (a | b, false, false),
+            3 => (a ^ b, false, false),
+            5 => (a & !b, false, false),
+            6 => (a | !b, false, false),
+            7 => (!(a ^ b), false, false),
+            _ => unreachable!("validated ALU opcode"),
+        };
+        if op3 & 0x10 != 0 {
+            self.icc = Icc::from_result(result, overflow, carry);
+        }
+        self.write_reg(rd, result);
+    }
+
     fn execute(&mut self, bus: &mut impl Bus, word: u32) -> Result<(), FaultKind> {
         let rd = ((word >> 25) & 31) as u8;
         let rs1 = ((word >> 14) & 31) as u8;
@@ -715,41 +928,7 @@ impl Cpu {
                     }
                 }
                 0x00..=0x08 | 0x0c | 0x10..=0x18 | 0x1c => {
-                    let (result, carry, overflow) = match op3 & 15 {
-                        0 | 8 => {
-                            let carry_in = u32::from(op3 & 8 != 0 && self.icc.c);
-                            let wide = u64::from(a) + u64::from(b) + u64::from(carry_in);
-                            let signed =
-                                i64::from(a as i32) + i64::from(b as i32) + i64::from(carry_in);
-                            (
-                                wide as u32,
-                                wide > u64::from(u32::MAX),
-                                signed < i64::from(i32::MIN) || signed > i64::from(i32::MAX),
-                            )
-                        }
-                        4 | 12 => {
-                            let borrow = u32::from(op3 & 8 != 0 && self.icc.c);
-                            let subtrahend = u64::from(b) + u64::from(borrow);
-                            let signed =
-                                i64::from(a as i32) - i64::from(b as i32) - i64::from(borrow);
-                            (
-                                a.wrapping_sub(b).wrapping_sub(borrow),
-                                u64::from(a) < subtrahend,
-                                signed < i64::from(i32::MIN) || signed > i64::from(i32::MAX),
-                            )
-                        }
-                        1 => (a & b, false, false),
-                        2 => (a | b, false, false),
-                        3 => (a ^ b, false, false),
-                        5 => (a & !b, false, false),
-                        6 => (a | !b, false, false),
-                        7 => (!(a ^ b), false, false),
-                        _ => unreachable!("validated ALU opcode"),
-                    };
-                    if op3 & 0x10 != 0 {
-                        self.icc = Icc::from_result(result, overflow, carry);
-                    }
-                    self.write_reg(rd, result);
+                    self.execute_alu(op3, rd, rs1, b);
                 }
                 0x0a | 0x0b | 0x1a | 0x1b => {
                     let product = if op3 & 1 == 0 {

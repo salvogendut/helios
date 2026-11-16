@@ -243,6 +243,16 @@ impl Ss5Dram {
         DramLayout::ss20_total(bytes, 8)?.allocate()
     }
 
+    pub(crate) fn diagnostic_digest(&self) -> u64 {
+        let mut digest = crate::diagnostic::Digest::new();
+        for &size in &self.sizes {
+            digest.u64(size as u64);
+        }
+        digest.u64(self.bank_bytes as u64);
+        digest.u64(self.memory.diagnostic_digest());
+        digest.finish()
+    }
+
     pub fn layout(&self) -> DramLayout {
         DramLayout {
             sizes: self.sizes,
