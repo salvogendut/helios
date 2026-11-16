@@ -350,6 +350,138 @@ fn timer_demo_reports_interrupts_separately_from_instructions_and_sync_traps() {
 }
 
 #[test]
+fn boot_rtc_fixed_and_saved_modes_preserve_configuration_and_input() {
+    use helios::devices::nvram::{Nvram, CLOCK_CONTROL};
+    let prom = Image::new(&[1, 0, 0, 0]);
+    let mut n = Nvram::default();
+    n.write(0x123, 0x5a).unwrap();
+    let original = n.image();
+    let input = Image::new(&original);
+    for profile in ["ss5", "ss20", "axil320"] {
+        for mode in ["saved", "1794832496"] {
+            let saved = Image::new(&[]);
+            std::fs::remove_file(&saved.0).unwrap();
+            let output = helios(&[
+                "boot",
+                prom.path(),
+                "--machine",
+                profile,
+                "--ram-mib",
+                "16",
+                "--steps",
+                "1",
+                "--nvram",
+                input.path(),
+                "--nvram-out",
+                saved.path(),
+                "--rtc",
+                mode,
+            ]);
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let image = std::fs::read(&saved.0).unwrap();
+            assert_eq!(&image[..CLOCK_CONTROL], &original[..CLOCK_CONTROL]);
+            if mode == "saved" {
+                assert_eq!(image, original);
+            } else {
+                assert_eq!(
+                    &image[CLOCK_CONTROL..],
+                    &[0, 0x56, 0x34, 0x12, 2, 0x16, 0x11, 0x58]
+                );
+            }
+            assert_eq!(std::fs::read(&input.0).unwrap(), original);
+        }
+    }
+}
+
+#[test]
+fn boot_rtc_host_uses_a_current_utc_sample() {
+    use helios::devices::nvram::Nvram;
+    fn now() -> Nvram {
+        let seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut n = Nvram::default();
+        n.initialize_sun_clock(seconds).unwrap();
+        n
+    }
+    fn stamp(image: &[u8]) -> [u8; 6] {
+        [
+            image[0x1fff],
+            image[0x1ffe],
+            image[0x1ffd],
+            image[0x1ffb],
+            image[0x1ffa],
+            image[0x1ff9],
+        ]
+    }
+    let prom = Image::new(&[1, 0, 0, 0]);
+    let saved = Image::new(&[]);
+    std::fs::remove_file(&saved.0).unwrap();
+    let before = stamp(&now().image());
+    let output = helios(&[
+        "boot",
+        prom.path(),
+        "--steps",
+        "1",
+        "--ram-mib",
+        "8",
+        "--rtc",
+        "host",
+        "--nvram-out",
+        saved.path(),
+    ]);
+    let after = stamp(&now().image());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let actual = stamp(&std::fs::read(&saved.0).unwrap());
+    assert!(
+        before <= actual && actual <= after,
+        "{before:?} <= {actual:?} <= {after:?}"
+    );
+}
+
+#[test]
+fn boot_rtc_rejects_bad_options_before_creating_output() {
+    let prom = Image::new(&[1, 0, 0, 0]);
+    let saved = Image::new(&[]);
+    std::fs::remove_file(&saved.0).unwrap();
+    for extra in [
+        vec!["--rtc"],
+        vec!["--rtc", ""],
+        vec!["--rtc", "-1"],
+        vec!["--rtc", "today"],
+        vec!["--rtc", "3092601600"],
+        vec!["--rtc", "18446744073709551616"],
+        vec!["--rtc", "host", "--rtc", "saved"],
+    ] {
+        let mut args = vec![
+            "boot",
+            prom.path(),
+            "--steps",
+            "1",
+            "--ram-mib",
+            "8",
+            "--nvram-out",
+            saved.path(),
+        ];
+        args.extend(extra);
+        assert!(!helios(&args).status.success(), "{args:?}");
+        assert!(!saved.0.exists());
+    }
+    assert!(!helios(&["run", prom.path(), "--rtc", "host"])
+        .status
+        .success());
+}
+
+#[test]
 fn boot_feeds_serial_input_after_guest_initialization_and_saves_nvram() {
     let prom = Image::new(&helios::machine::serial_demo_image());
     let input = Image::new(b"?");

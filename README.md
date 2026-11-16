@@ -289,6 +289,11 @@ mode. Ordinary data accesses use the physical map, including console serial at
 bytes to stdout and diagnostics/traces to stderr. Input comes from a file or,
 for `boot`, a loopback telnet console. NVRAM uses an 8192-byte raw image and is
 saved at the step limit or an execution error when `--nvram-out` is supplied.
+Use `boot --rtc host` to initialize its calendar from host UTC. The CLI default
+`--rtc saved` preserves NVRAM time (year 2000 for fresh NVRAM); a decimal Unix
+timestamp also accepts a reproducible date. Heliacal defaults to host UTC at
+startup, with a per-machine Advanced option to preserve saved guest time.
+This seeds the RTC once and is independent of CPU speed and display mode.
 The sun4m harness advances device time by a 100 ns base per completed step,
 including trap/interrupt entry, plus physical PROM read wait states. This is a
 functional scheduling convention, not full CPU cycle timing. `--accurate-clocks`

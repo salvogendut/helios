@@ -108,6 +108,7 @@ pub enum NvramError {
     InvalidSize,
     InvalidClock,
     UnsupportedCalibration,
+    ClockOutOfRange,
 }
 impl fmt::Display for NvramError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -117,6 +118,7 @@ impl fmt::Display for NvramError {
                 "NVRAM image has invalid BCD clock fields or unsupported clock-test bits"
             }
             Self::UnsupportedCalibration => "RTC frequency calibration is not implemented",
+            Self::ClockOutOfRange => "Sun RTC startup time must be between 1970 and 2067 UTC",
         })
     }
 }
@@ -183,6 +185,34 @@ impl Nvram {
             bytes[CLOCK_CONTROL + 1..].copy_from_slice(&self.clock.encode());
         }
         bytes
+    }
+
+    /// Initialize a running Sun clock from caller-supplied Unix seconds (UTC).
+    /// Sun software interprets the chip's two-digit year relative to 1968.
+    /// This power-on policy replaces the eight RTC registers, including R/W
+    /// latches and oscillator stop, but preserves all configuration/IDPROM SRAM.
+    /// Ordinary construction, image import and reset never consult host time.
+    pub fn initialize_sun_clock(&mut self, unix_seconds: u64) -> Result<(), NvramError> {
+        // 2068-01-01: the 1968-based two-digit year would wrap to zero.
+        const END: u64 = (98 * 365 + 24) * 86400;
+        if unix_seconds >= END {
+            return Err(NvramError::ClockOutOfRange);
+        }
+        let mut clock = Clock {
+            second: 0,
+            minute: 0,
+            hour: 0,
+            weekday: 5, // 1970-01-01 was Thursday; hardware numbers days 1..=7.
+            date: 1,
+            month: 1,
+            year: 2,
+            stopped: false,
+        };
+        clock.advance(unix_seconds);
+        self.clock = clock;
+        self.bytes[CLOCK_CONTROL] = 0;
+        self.bytes[CLOCK_CONTROL + 1..].copy_from_slice(&clock.encode());
+        Ok(())
     }
 
     pub fn advance_seconds(&mut self, seconds: u64) {

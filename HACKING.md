@@ -80,6 +80,11 @@ intact. An independently constructed `ProcessorModuleState` resets itself and
 retains its module MID. `sun4m_with_nvram`
 accepts an imported or customized NVRAM device. See [memory.md](docs/memory.md)
 and [devices.md](docs/devices.md) for reset state and platform limits.
+`Nvram::initialize_sun_clock` accepts an explicit UTC Unix timestamp for frontend
+startup. The CLI exposes `--rtc host|saved|UNIX_SECONDS`; saved is its default.
+Heliacal defaults to a host UTC seed at construction and offers a per-machine
+saved-clock option. Host reads stay in the frontend; guest advancement and core
+reset retention remain deterministic, independent of presentation and CPU mode.
 Guest software reset is serviced by the machine owner at a step boundary;
 see [reset.md](docs/reset.md) for retained state, trace outcomes and watchdog limits.
 The machine also installs the microSPARC-II [I/O control subset](docs/io-control.md).

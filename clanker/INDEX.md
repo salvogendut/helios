@@ -1,5 +1,7 @@
 # Agent notes
 
+- [RTC startup date](rtc-startup.md) — stale year-2000 clock diagnosis, explicit UTC startup seeding, Heliacal saved-time option and NetBSD/Solaris checks.
+
 - [NetBSD SX console fix](netbsd-sx-console.md) — reproduced cursor ROP stop, corrected word/byte ROPs and queue-empty status, graphical root login, regression checks and private-media evidence.
 
 - [NetBSD 11.1 installation](netbsd-11-install.md) — SS-20 CHD installation, normal GENERIC root login, checksum persistence, floppy/CPU probe corrections and remaining timing/APC limits.
