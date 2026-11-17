@@ -118,9 +118,9 @@
 
 - [Issue #5 device-service review](performance-issue5-device-service-review.md) — accepted held-reset IRQ correction, six promoted fixtures, matching boot evidence and a pinned SS-20 idle follow-up.
 
-- [Issue #5 frontend parking review](performance-issue5-idle-parking-frontend-review.md) — default-off implementation checkpoint accepted; 14/14 independent cases, 114 frontend tests, Clippy, formatting, SDL smoke, release and original-OBP display smoke pass; fresh matching performance measurements remain.
+- [Issue #5 frontend parking review](performance-issue5-idle-parking-frontend-review.md) — historical independent review snapshot for the accepted default-off checkpoint; 14/14 cases, 114 frontend tests, Clippy, formatting, SDL smoke, release and original-OBP display smoke pass.
 - [Issue #5 parking-token review](performance-issue5-idle-parking-token-review.md) — final MMU-proof patch applied and all 27 fixtures promoted in accepted core checkpoint e3d87e3; 781/784 unique core tests pass.
-- [Issue #5 opt-in Heliacal parking](performance-issue5-idle-parking-frontend.md) — accepted uncommitted frontend checkpoint; bounded wait/recheck/commit, console drain and preliminary Solaris CPU/PTY measurements from the preceding candidate; default off and issue #5 open.
+- [Issue #5 opt-in Heliacal parking](performance-issue5-idle-parking-frontend.md) — committed default-off checkpoint `a88d769`; bounded wait/recheck/commit, console drain, fresh matched off/on Solaris CPU/PTY measurements; issue #5 open.
 - [Issue #5 core parking token](performance-issue5-idle-parking-token.md) — accepted checkpoint e3d87e3; conditional proof, readiness, deadline and configuration invalidation validated; real Solaris admission confirmed; frontend trial reviewed separately.
 - [Issue #5 foundation review](performance-issue5-idle-parking-foundation-review.md) — corrected foundation independently accepted; all ten promoted fixtures and 745/748 unique full-suite tests pass, with conditional loop proof and qualified performance evidence.
 - [Issue #5 idle-parking foundation](performance-issue5-idle-parking-foundation.md) — accepted checkpoint 2f903cd; logical clock/deadline query, promoted review fixtures, Solaris idle-loop boundary trace, fresh frontend baseline and active-work comparison; no sleeps or recognizer.

@@ -179,12 +179,10 @@ SMP never enters this path. The host clock and waits remain outside this core
 API, which accepts explicit virtual deltas and never sleeps.
 
 The final frontend implementation is independently accepted with 114 frontend
-tests, 14 additional protocol fixtures and standard frontend checks. The latest
-retained Solaris measurement, 24.79% worker CPU and 11.36/37.64 ms PTY
-median/p95, predates its final output-drain correction. It is earlier evidence,
-not a measurement of the accepted frontend revision. A fresh matching off/on
-comparison remains before final performance claims; the 10–15% CPU target and
-issue #5 are still open. See the
+tests, 14 additional protocol fixtures and standard frontend checks; checkpoint
+`a88d769`. Fresh matched Solaris runs measured 99.746% -> 23.586% worker CPU
+and 14.263/17.612 ms -> 14.608/29.603 ms PTY median/p95 (off -> on). The 10–15%
+CPU target and issue #5 remain open. See the
 [frontend trial](performance-issue5-idle-parking-frontend.md) and
 [review](performance-issue5-idle-parking-frontend-review.md) for exact evidence,
 historical corrections and scope. No graphical/X or SMP idle result is claimed.
