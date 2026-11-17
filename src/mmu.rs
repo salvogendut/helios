@@ -1881,6 +1881,118 @@ impl Srmmu {
         }
     }
 
+    /// Read-only TLB lookup for parking-boundary proof validation. It never
+    /// walks page tables, updates TLB/R-M/diagnostic state or records faults.
+    /// A miss is deliberately unsupported and makes the proof fail closed.
+    pub(crate) fn parking_peek(
+        &self,
+        address: u32,
+        instruction: bool,
+        peek_ram_word: impl FnOnce(u64) -> Option<u32>,
+    ) -> Option<u64> {
+        if self.boot_mode() || self.control & PCR_EN == 0 || self.tlb_diagnostic.is_some() {
+            return None;
+        }
+        let access = Access {
+            address,
+            asi: if instruction { 9 } else { 1 },
+            write: false,
+        };
+        let cached = if instruction {
+            self.fast_instruction.get(
+                address,
+                self.context,
+                true,
+                self.tlb_generation,
+                &self.slot_generations,
+            )
+        } else {
+            self.fast_data.get(
+                address,
+                self.context,
+                true,
+                self.tlb_generation,
+                &self.slot_generations,
+            )
+        };
+        let index = cached
+            .filter(|index| {
+                self.tlb[*index].matches(address, self.context, true, self.config.context_mask)
+            })
+            .or_else(|| {
+                self.tlb
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, entry)| {
+                        entry.matches(address, self.context, true, self.config.context_mask)
+                    })
+                    .min_by_key(|(_, entry)| entry.offset_mask)
+                    .map(|(index, _)| index)
+            })?;
+        let entry = self.tlb[index];
+        if entry.firmware_page {
+            return None;
+        }
+        // A normal translation would update a missing R bit. Do not claim that
+        // this boundary is steady when the PPU would still write it.
+        if entry.pte & REFERENCED == 0 && entry.pte_address.is_some() {
+            return None;
+        }
+        // Reference-MMU data accesses can fill the guest-visible D-TLB
+        // diagnostic view. Reject unless that view is already steady.
+        if !instruction && self.config.reference_mmu && entry.lower & 4 == 0 {
+            let view = (address >> 18) as usize & 63;
+            let pte = (entry.pte & !0x40) | 0x20;
+            let values = [address & 0xfffc_0000, entry.context, pte];
+            let cached_view = self.diag_view_cache[view];
+            if !values
+                .iter()
+                .zip(cached_view.filled)
+                .all(|(value, filled)| *value == 0 || filled)
+            {
+                return None;
+            }
+        }
+        // A PTP2 override for this virtual region can change the selected
+        // subregion. Refuse only the relevant override; unrelated cached PTP2
+        // state does not affect this access.
+        let region = address & 0xfffc_0000;
+        let relevant_ptp2 = if instruction {
+            self.itlb_ptp2.is_some_and(|(tag, _)| tag == region)
+        } else {
+            self.dtlb_ptp2
+                .iter()
+                .flatten()
+                .any(|(tag, _)| *tag == region)
+        };
+        if relevant_ptp2 {
+            return None;
+        }
+        // A level-1 type-2 leaf can still invoke the reference subregion walk.
+        // The observer refuses that potentially side-effecting case when the
+        // leaf points into the PROM alias; ordinary low-RAM leaves remain.
+        if self.config.reference_mmu && entry.level == 1 && entry.pte & 3 == 2 {
+            let leaf_physical = u64::from(entry.pte & self.config.pte_physical_mask) << 4;
+            if leaf_physical >= self.config.prom_base {
+                return None;
+            }
+        }
+        // Both normal hit paths call fill_ptp2. A new PTP2 can redirect a
+        // later access in this same iteration. Its source must be ordinary
+        // RAM and must not describe a PTP, even when no override exists yet.
+        if self.config.reference_mmu && entry.level == 1 {
+            if let Some(pte_address) = entry.pte_address {
+                let l1_base = pte_address.checked_sub(u64::from((address >> 24) * 4))?;
+                let source = l1_base.checked_add(u64::from(((address >> 18) & 0x3f) * 4))?;
+                if peek_ram_word(source)? & 3 == 1 {
+                    return None;
+                }
+            }
+        }
+        Self::permission(access, entry).ok()?;
+        Some(self.translation(access, entry).physical)
+    }
+
     fn translation(&self, access: Access, entry: Entry) -> Translation {
         Translation {
             physical: (if entry.firmware_page {

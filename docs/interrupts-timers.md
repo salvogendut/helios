@@ -298,6 +298,34 @@ compatibility path report `None` even when the clock values coincide. SMP
 deadlines are shared: one logical clock and one earliest event, with
 processor-ready deadlines folded into the same query.
 
+### Core parking-token prototype
+
+`Machine::parking_token()` is a narrow, core-only token API for the observed
+SPARCstation 20 Solaris 2.6 serial-idle boundary
+(`SOLARIS_IDLE_PC/NPC/PSR`). It is available only on an SS-20 with one CPU, exact supervisor/ET boundary
+state, the complete mapped idle instruction path, its three load dependencies,
+steady `%o7`/`%l0` and MMU diagnostic state, and no pending/deliverable
+interrupt or pre-step service work. Boot mode, PTP2 override state and
+ambiguous fast-cache/TLB cases are refused conservatively; a TLB miss or
+changed/MMIO dependency falls back to execution. Tokens are also invalidated by
+graphics/MXCC installation, removal or replacement through a bus configuration
+epoch. Token
+issuance and `validate_parking_token()` are read-only. A token is rejected as
+stale after CPU/MMU/FPU changes, bus-visible memory/mapping/device writes,
+external device-time or deferred-time advancement, reset, or use on another
+machine. The token is not `Clone`; `advance_parked()` consumes it.
+
+`advance_parked(token, max_ns)` advances only virtual device time. It clips the
+interval to the earliest `timebase().next_ns` event, remembers whether that
+original event boundary was reached (even when a timed event becomes a pending
+IRQ), then returns
+`ParkedAdvance { requested_ns, advanced_ns, clipped, next_ns, service_required }`.
+It never steps the CPU, services DMA/IRQ/handlers, changes host time or sleeps.
+The caller must perform normal service after a clipped/due return before
+requesting another token. Single-CPU SS-20 is the only supported scope; SMP,
+OBP, frontend sleeping, host pacing and an active recognizer remain outside
+this prototype.
+
 Machine reset clears timers, timer phase and interrupt state while retaining
 NVRAM/RTC, its fractional second, RAM/ROM and completed serial output. Standalone
 device APIs let tests control time directly. Callers stepping `Cpu` directly

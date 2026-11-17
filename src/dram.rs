@@ -323,6 +323,17 @@ impl Ss5Dram {
     pub fn load_image(&mut self, address: u64, bytes: &[u8]) -> Result<(), BusError> {
         self.memory.load_image(address, bytes)
     }
+
+    /// Read-only word peek for parking-token proof validation.
+    pub(crate) fn peek32(&self, address: u64) -> Result<u32, BusError> {
+        match self.decode(address, 4)? {
+            Some(physical) => self.memory.peek32(physical).ok_or(BusError {
+                address,
+                kind: BusErrorKind::Unmapped,
+            }),
+            None => Ok(0),
+        }
+    }
 }
 
 impl Bus for Ss5Dram {

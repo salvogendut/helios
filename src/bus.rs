@@ -316,6 +316,15 @@ impl MemoryBus {
         digest.finish()
     }
 
+    /// Read-only word peek used by parking-token proof validation.
+    pub(crate) fn peek32(&self, address: u64) -> Option<u32> {
+        let region = self
+            .regions
+            .iter()
+            .find(|region| (region.base..region.end).contains(&address))?;
+        Some(region.words[((address - region.base) / 4) as usize])
+    }
+
     pub fn map_ram(&mut self, base: u64, size: usize) -> Result<(), MapError> {
         self.map(base, size, false)
     }

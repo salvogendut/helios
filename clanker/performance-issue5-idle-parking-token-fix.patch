@@ -1,0 +1,70 @@
+--- a/src/mmu.rs
++++ b/src/mmu.rs
+@@ -1884,7 +1884,12 @@
+     /// Read-only TLB lookup for parking-boundary proof validation. It never
+     /// walks page tables, updates TLB/R-M/diagnostic state or records faults.
+     /// A miss is deliberately unsupported and makes the proof fail closed.
+-    pub(crate) fn parking_peek(&self, address: u32, instruction: bool) -> Option<u64> {
++    pub(crate) fn parking_peek(
++        &self,
++        address: u32,
++        instruction: bool,
++        peek_ram_word: impl FnOnce(u64) -> Option<u32>,
++    ) -> Option<u64> {
+         if self.boot_mode() || self.control & PCR_EN == 0 || self.tlb_diagnostic.is_some() {
+             return None;
+         }
+@@ -1938,7 +1943,7 @@
+         if !instruction && self.config.reference_mmu && entry.lower & 4 == 0 {
+             let view = (address >> 18) as usize & 63;
+             let pte = (entry.pte & !0x40) | 0x20;
+-            let values = [address & 0xfffc_0000, self.context, pte];
++            let values = [address & 0xfffc_0000, entry.context, pte];
+             let cached_view = self.diag_view_cache[view];
+             if !values
+                 .iter()
+@@ -1970,6 +1975,18 @@
+             let leaf_physical = u64::from(entry.pte & self.config.pte_physical_mask) << 4;
+             if leaf_physical >= self.config.prom_base {
+                 return None;
++            }
++        }
++        // Both normal hit paths call fill_ptp2. A new PTP2 can redirect a
++        // later access in this same iteration. Its source must be ordinary
++        // RAM and must not describe a PTP, even when no override exists yet.
++        if self.config.reference_mmu && entry.level == 1 {
++            if let Some(pte_address) = entry.pte_address {
++                let l1_base = pte_address.checked_sub(u64::from((address >> 24) * 4))?;
++                let source = l1_base.checked_add(u64::from(((address >> 18) & 0x3f) * 4))?;
++                if peek_ram_word(source)? & 3 == 1 {
++                    return None;
++                }
+             }
+         }
+         Self::permission(access, entry).ok()?;
+--- a/src/machine.rs
++++ b/src/machine.rs
+@@ -1322,7 +1322,10 @@
+             (0xf006_fa64, 0x113c_097e), // sethi ..., %o0 (delay)
+         ];
+         let read_code = |pc: u32, expected: u32| {
+-            let physical = self.cpu.mmu.parking_peek(pc, true)?;
++            let physical = self
++                .cpu
++                .mmu
++                .parking_peek(pc, true, |address| self.bus.peek_ram_word(address))?;
+             (self.bus.peek_ram_word(physical) == Some(expected)).then_some(())
+         };
+         for (pc, expected) in CODE {
+@@ -1331,7 +1334,10 @@
+             }
+         }
+         let read_data = |address: u32| {
+-            let physical = self.cpu.mmu.parking_peek(address, false)?;
++            let physical = self
++                .cpu
++                .mmu
++                .parking_peek(address, false, |address| self.bus.peek_ram_word(address))?;
+             self.bus.peek_ram_word(physical)
+         };
+         let o0 = self.cpu.read_reg(8).wrapping_add(0xec);

@@ -364,7 +364,9 @@ earliest device/CPU deadline. Queries do not flush pending time or mutate
 interrupt/device state; explicit advancement flushes deferred time first.
 Scheduler deadlines appear only after explicit `step_scheduled` ownership, not
 from clock equality; fresh/reset machines and direct `step` report no CPU
-deadline.
+deadline. `parking_token()`/`advance_parked()` are a separate, single-CPU
+SS-20 Solaris-boundary prototype: tokens are read-only to issue/validate,
+single-use, clipped to the earliest event, and never sleep or service the CPU.
 `Machine::with_profile_processors` is the explicit one/two-module constructor;
 SS-5 rejects two. Default `with_profile` construction remains one CPU. CPU 2 is
 independently owned in `secondary_cpu`; it starts present but arbitration-

@@ -12,13 +12,24 @@ use crate::system_bus::{Sun4mLayout, SystemBus, SystemBusState};
 use crate::topology::{
     ProcessorArbitration, ProcessorModule, ProcessorRunState, ProcessorTopology, PROCESSOR_MODULES,
 };
-use std::{cell::RefCell, fmt, rc::Rc};
+use std::{
+    cell::RefCell,
+    fmt,
+    rc::Rc,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 pub const TARGET: &str = "SPARCstation 5 (sun4m), SPARC V8 / microSPARC-II";
 /// Upper bound for the diagnostic bare-metal harness. Named profiles use their
 /// validated DSIMM topology instead.
 pub const MAX_RAM_BYTES: usize = 256 * 1024 * 1024;
 pub const DEFAULT_RAM_BYTES: usize = 128 * 1024 * 1024;
+/// Observed Solaris SS-20 serial-idle loop boundary from the issue #5 trace.
+/// These addresses are image-specific; token issuance validates them exactly.
+pub const SOLARIS_IDLE_PC: u32 = 0xf006_fa24;
+pub const SOLARIS_IDLE_NPC: u32 = 0xf006_fa28;
+pub const SOLARIS_IDLE_PSR: u32 = 0x4040_00e0;
+static NEXT_PARKING_OWNER: AtomicU64 = AtomicU64::new(1);
 /// SS5/85 processor clock.
 pub const CPU_CLOCK_HZ: u64 = 85_000_000;
 pub const MAX_PROM_BYTES: usize = 1024 * 1024;
@@ -546,6 +557,64 @@ pub struct Timebase {
     pub next_ns: Option<u64>,
 }
 
+/// An opaque, single-use permission to advance only the validated SS-20
+/// Solaris serial-idle boundary. It contains no host/UI state.
+#[derive(Debug)]
+pub struct ParkingToken {
+    owner: u64,
+    reset_epoch: u64,
+    virtual_ns: u64,
+    deferred_ns: u64,
+    mutation_epoch: u64,
+    configuration_epoch: u64,
+    device_digest: u64,
+    arbitration: ProcessorArbitration,
+    cpu: Cpu,
+}
+
+/// Errors returned by the core-only parking token API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParkingError {
+    /// The profile or execution shape is outside this prototype (only one CPU
+    /// and the SS-20 profile are supported).
+    Unsupported,
+    /// The CPU is not exactly at the validated Solaris idle boundary.
+    NotIdleBoundary,
+    /// CPU, memory, mapping, device or reset state changed after issuance.
+    Stale,
+    /// A pending interrupt or pre-step service action requires the CPU first.
+    ServiceRequired,
+}
+
+impl fmt::Display for ParkingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Unsupported => "parking token is unsupported for this machine",
+            Self::NotIdleBoundary => "CPU is not at the validated idle boundary",
+            Self::Stale => "parking token is stale",
+            Self::ServiceRequired => "parking requires normal service first",
+        })
+    }
+}
+
+impl std::error::Error for ParkingError {}
+
+/// Result of one explicit parked interval.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParkedAdvance {
+    /// Requested virtual interval.
+    pub requested_ns: u64,
+    /// Actual interval advanced, clipped at the earliest known event.
+    pub advanced_ns: u64,
+    /// True when the requested interval crossed an event boundary.
+    pub clipped: bool,
+    /// Earliest known event after the advancement.
+    pub next_ns: Option<u64>,
+    /// True when the caller must service a due device/CPU event before issuing
+    /// another token.
+    pub service_required: bool,
+}
+
 /// Full architectural/CPU state plus deterministic bus/device and timing state.
 /// CPU snapshots are clones, so inactive register windows and the complete
 /// MMU/FPU state are included. Bus/device state is represented by fingerprints.
@@ -780,6 +849,9 @@ pub struct Machine {
     /// Whether the scheduler's deadline is the authority for `Timebase`.
     /// This is execution-path ownership, not guest architectural state.
     scheduled_clock_owned: bool,
+    profile: MachineProfile,
+    parking_owner: u64,
+    reset_epoch: u64,
 }
 
 fn snapshot_cpu(cpu: &Cpu) -> Cpu {
@@ -913,6 +985,9 @@ impl Machine {
             clock: CycleClock::new(profile.cpu_clock_hz()),
             service_guards: true,
             scheduled_clock_owned: false,
+            profile,
+            parking_owner: NEXT_PARKING_OWNER.fetch_add(1, Ordering::Relaxed),
+            reset_epoch: 0,
         };
         machine.cpu.use_cpu_config(profile.cpu_config());
         machine.cpu.use_mmu_config(profile.mmu());
@@ -1138,6 +1213,7 @@ impl Machine {
         }
         self.scheduler.reset();
         self.scheduled_clock_owned = false;
+        self.reset_epoch = self.reset_epoch.wrapping_add(1);
     }
 
     /// Reset only the local CPU/MMU and MXCC of one processor module. Board
@@ -1183,6 +1259,9 @@ impl Machine {
             clock: CycleClock::new(1_000_000_000 / STEP_NS),
             service_guards: true,
             scheduled_clock_owned: false,
+            profile: MachineProfile::Ss5,
+            parking_owner: NEXT_PARKING_OWNER.fetch_add(1, Ordering::Relaxed),
+            reset_epoch: 0,
         })
     }
 
@@ -1221,6 +1300,142 @@ impl Machine {
             next_cpu_ready_ns,
             next_ns,
         }
+    }
+
+    fn idle_boundary_proof(&self) -> bool {
+        // The complete captured stable path. The annulled f006fa30 slot is
+        // intentionally absent: it is not executed on this path.
+        const CODE: [(u32, u32); 14] = [
+            (0xf006_fa24, 0xd002_20ec), // ld [%o0+0xec], %o0
+            (0xf006_fa28, 0x80a2_2001), // cmp %o0, 1
+            (0xf006_fa2c, 0x3280_000f), // bne,a f006fa68 (not taken)
+            (0xf006_fa34, 0xd006_2058), // ld [%i0+0x58], %o0
+            (0xf006_fa38, 0x80a2_2000), // cmp %o0, 0
+            (0xf006_fa3c, 0x0280_0006), // be f006fa54 (taken)
+            (0xf006_fa40, 0x213c_097e), // sethi ..., %l0
+            (0xf006_fa54, 0xe004_21e8), // ld [%l0+0x1e8], %l0
+            (0xf006_fa58, 0x9fc4_0000), // call %l0
+            (0xf006_fa5c, 0x0100_0000), // nop (delay)
+            (0xf007_1708, 0x81c3_e008), // retl
+            (0xf007_170c, 0x0100_0000), // nop
+            (0xf006_fa60, 0x10bf_fff1), // ba f006fa24
+            (0xf006_fa64, 0x113c_097e), // sethi ..., %o0 (delay)
+        ];
+        let read_code = |pc: u32, expected: u32| {
+            let physical = self
+                .cpu
+                .mmu
+                .parking_peek(pc, true, |address| self.bus.peek_ram_word(address))?;
+            (self.bus.peek_ram_word(physical) == Some(expected)).then_some(())
+        };
+        for (pc, expected) in CODE {
+            if read_code(pc, expected).is_none() {
+                return false;
+            }
+        }
+        let read_data = |address: u32| {
+            let physical = self
+                .cpu
+                .mmu
+                .parking_peek(address, false, |address| self.bus.peek_ram_word(address))?;
+            self.bus.peek_ram_word(physical)
+        };
+        let o0 = self.cpu.read_reg(8).wrapping_add(0xec);
+        let i0 = self.cpu.read_reg(24).wrapping_add(0x58);
+        o0 == 0xf025_f8ec
+            && i0 == 0xf026_dea0
+            && self.cpu.read_reg(15) == 0xf006_fa58
+            && self.cpu.read_reg(16) == 0xf007_1708
+            && read_data(o0) == Some(1)
+            && read_data(i0) == Some(0)
+            && read_data(0xf025_f9e8) == Some(0xf007_1708)
+    }
+
+    /// Issue a single-use token for the observed SS-20 Solaris serial-idle
+    /// boundary. This is a narrow core-only prototype, not a generic idle
+    /// classifier. Querying it never mutates CPU, device, RAM or MMU state.
+    pub fn parking_token(&self) -> Result<ParkingToken, ParkingError> {
+        if self.profile != MachineProfile::Ss20 || self.secondary_cpu.is_some() {
+            return Err(ParkingError::Unsupported);
+        }
+        if self.cpu.error_state().is_some()
+            || self.software_reset_requested()
+            || self.cpu.pc() != SOLARIS_IDLE_PC
+            || self.cpu.npc() != SOLARIS_IDLE_NPC
+            || self.cpu.psr() != SOLARIS_IDLE_PSR
+            || !self.idle_boundary_proof()
+        {
+            return Err(ParkingError::NotIdleBoundary);
+        }
+        if !self.bus.parking_ready() {
+            return Err(ParkingError::ServiceRequired);
+        }
+        Ok(ParkingToken {
+            owner: self.parking_owner,
+            reset_epoch: self.reset_epoch,
+            virtual_ns: self.bus.logical_ns(),
+            deferred_ns: self.bus.deferred_ns(),
+            mutation_epoch: self.bus.mutation_epoch(),
+            configuration_epoch: self.bus.configuration_epoch(),
+            device_digest: self.bus.parking_device_digest(),
+            arbitration: self.processor_arbitration(0),
+            cpu: snapshot_cpu(&self.cpu),
+        })
+    }
+
+    /// Validate a token without consuming it or mutating the machine. The
+    /// checks cover reset ownership, the exact boundary, CPU/MMU/FPU state,
+    /// bus-visible memory/mapping/device writes, deferred time and device state.
+    pub fn validate_parking_token(&self, token: &ParkingToken) -> bool {
+        token.owner == self.parking_owner
+            && token.reset_epoch == self.reset_epoch
+            && self.profile == MachineProfile::Ss20
+            && self.secondary_cpu.is_none()
+            && self.cpu.error_state().is_none()
+            && !self.software_reset_requested()
+            && self.cpu.pc() == SOLARIS_IDLE_PC
+            && self.cpu.npc() == SOLARIS_IDLE_NPC
+            && self.cpu.psr() == SOLARIS_IDLE_PSR
+            && self.bus.logical_ns() == token.virtual_ns
+            && self.bus.deferred_ns() == token.deferred_ns
+            && self.bus.mutation_epoch() == token.mutation_epoch
+            && self.bus.configuration_epoch() == token.configuration_epoch
+            && self.bus.parking_device_digest() == token.device_digest
+            && self.processor_arbitration(0) == token.arbitration
+            && snapshot_cpu(&self.cpu) == token.cpu
+    }
+
+    /// Consume a validated token and advance devices by an explicit virtual
+    /// interval, never crossing the earliest known event. The CPU is not
+    /// stepped and no DMA/IRQ/CPU service occurs here; the caller must service
+    /// the returned boundary before issuing another token.
+    pub fn advance_parked(
+        &mut self,
+        token: ParkingToken,
+        max_ns: u64,
+    ) -> Result<ParkedAdvance, ParkingError> {
+        if !self.validate_parking_token(&token) {
+            return Err(ParkingError::Stale);
+        }
+        if !self.bus.parking_ready() {
+            return Err(ParkingError::ServiceRequired);
+        }
+        let before = self.bus.logical_ns();
+        let next = self.timebase().next_ns;
+        let actual = max_ns.min(next.map_or(max_ns, |event| event.saturating_sub(before)));
+        let reached_event = next.is_some_and(|event| event <= before.saturating_add(actual));
+        self.advance_ns(actual);
+        let after = self.timebase();
+        Ok(ParkedAdvance {
+            requested_ns: max_ns,
+            advanced_ns: actual,
+            clipped: actual < max_ns,
+            next_ns: after.next_ns,
+            service_required: reached_event
+                || after
+                    .next_ns
+                    .is_some_and(|event| event <= self.bus.logical_ns()),
+        })
     }
 
     /// Advance all device clocks between steps without executing the CPU.
@@ -1594,6 +1809,7 @@ impl Machine {
         }
         self.scheduler.reset();
         self.scheduled_clock_owned = false;
+        self.reset_epoch = self.reset_epoch.wrapping_add(1);
         Step::SoftwareReset {
             pc,
             npc,

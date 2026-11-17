@@ -118,6 +118,8 @@
 
 - [Issue #5 device-service review](performance-issue5-device-service-review.md) — accepted held-reset IRQ correction, six promoted fixtures, matching boot evidence and a pinned SS-20 idle follow-up.
 
+- [Issue #5 parking-token review](performance-issue5-idle-parking-token-review.md) — previous 24 fixtures pass; two remaining MMU-proof details have a tested patch passing 27/27 in isolation; apply it and promote fixtures before commit.
+- [Issue #5 core parking token](performance-issue5-idle-parking-token.md) — uncommitted corrected prototype; readiness, deadline and configuration invalidation fixes validated, with remaining MMU-proof details recorded in the review.
 - [Issue #5 foundation review](performance-issue5-idle-parking-foundation-review.md) — corrected foundation independently accepted; all ten promoted fixtures and 745/748 unique full-suite tests pass, with conditional loop proof and qualified performance evidence.
 - [Issue #5 idle-parking foundation](performance-issue5-idle-parking-foundation.md) — accepted logical clock/deadline query, promoted review fixtures, Solaris idle-loop boundary trace, fresh frontend baseline and active-work comparison; ready to commit, no sleeps or recognizer.
 - [Issue #5 idle-parking design review](performance-issue5-idle-parking-review.md) — eligibility, clock/deadline and wakeup corrections; PTY launch unblocked with 20 guest-verified transactions; time/deadline foundation is the next implementation slice.

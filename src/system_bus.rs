@@ -541,6 +541,8 @@ pub struct SystemBus {
     mxccs: Vec<InstalledMxcc>,
     logical_ns: u64,
     device_ns: u64,
+    mutation_epoch: u64,
+    configuration_epoch: u64,
 }
 
 impl Default for SystemBus {
@@ -571,6 +573,8 @@ impl SystemBus {
             mxccs: Vec::new(),
             logical_ns: 0,
             device_ns: 0,
+            mutation_epoch: 1,
+            configuration_epoch: 1,
         }
     }
 
@@ -748,6 +752,7 @@ impl SystemBus {
             return Err(MapError::Overlap);
         }
         self.cgsix = Some(card);
+        self.configuration_epoch = self.configuration_epoch.wrapping_add(1);
         Ok(())
     }
     pub fn cgsix(&self) -> Option<&Cgsix> {
@@ -758,11 +763,16 @@ impl SystemBus {
             return Err(MapError::Overlap);
         }
         self.sx = Some(card);
+        self.configuration_epoch = self.configuration_epoch.wrapping_add(1);
         Ok(())
     }
     /// Remove an SX/VSIMM card. An SS-20 without a VSIMM has no cg14 device.
     pub fn remove_sx(&mut self) -> Option<Sx> {
-        self.sx.take()
+        let removed = self.sx.take();
+        if removed.is_some() {
+            self.configuration_epoch = self.configuration_epoch.wrapping_add(1);
+        }
+        removed
     }
     pub fn sx(&self) -> Option<&Sx> {
         self.sx.as_ref()
@@ -782,6 +792,7 @@ impl SystemBus {
         } else {
             self.mxccs.push(InstalledMxcc { mid, state: mxcc });
         }
+        self.configuration_epoch = self.configuration_epoch.wrapping_add(1);
     }
 
     /// Decode physical module addresses from install-time identity only. Do not
@@ -1097,6 +1108,7 @@ impl SystemBus {
     fn reset_io(&mut self) {
         self.flush_device_time();
         self.logical_ns = 0;
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         if let Some(config) = &mut self.openbios {
             config.reset();
         }
@@ -1141,6 +1153,73 @@ impl SystemBus {
     /// Time submitted through the CPU fast path but not yet applied to devices.
     pub fn deferred_ns(&self) -> u64 {
         self.device_ns
+    }
+
+    /// Monotonic counter for bus-visible mutation attempts. Token validation
+    /// uses this instead of re-hashing guest RAM; false invalidation is safe.
+    pub(crate) fn mutation_epoch(&self) -> u64 {
+        self.mutation_epoch
+    }
+
+    /// Lifetime/configuration generation for installed graphics and MXCC
+    /// devices. Replacement at an equal per-device generation still changes it.
+    pub(crate) fn configuration_epoch(&self) -> u64 {
+        self.configuration_epoch
+    }
+
+    /// Read-only ordinary-RAM word peek for parking-token proof validation.
+    /// Returns None for empty banks, video overlap or unmapped/non-RAM targets.
+    pub(crate) fn peek_ram_word(&self, address: u64) -> Option<u32> {
+        if !self.dram_contains_storage(address, 4) {
+            return None;
+        }
+        self.dram.as_ref()?.peek32(address).ok()
+    }
+
+    /// Read-only readiness check for parking admission. It deliberately does
+    /// not synchronize device IRQs or service DMA: any source that normal
+    /// pre-step service could make visible is conservatively treated as busy.
+    pub(crate) fn parking_ready(&self) -> bool {
+        if let Some(devices) = &self.devices {
+            if devices.reset.requested()
+                || devices.interrupts.levels_for(0) != 0
+                || devices.serial.irq()
+                || devices.keyboard_serial.irq()
+                || devices.timers.system_irq()
+                || devices.timers.processor_irq_for(0)
+                || devices.esp.needs_service()
+                || devices.esp.irq()
+                || devices.scsi_dma.irq()
+                || devices.scsi_dma.request_pending()
+                || devices.scsi_dma.reset_asserted()
+                || devices.ethernet.needs_service()
+                || devices.ethernet.irq()
+                || devices.ethernet_dma.irq()
+                || devices.ethernet_dma.reset_asserted()
+                || devices.floppy.irq()
+            {
+                return false;
+            }
+        }
+        !self.cgsix.as_ref().is_some_and(|card| card.irq())
+            && !self.sx.as_ref().is_some_and(|card| card.irq())
+    }
+
+    /// Fingerprint of non-RAM device state for parking-token validation.
+    pub(crate) fn parking_device_digest(&self) -> u64 {
+        let mut digest = crate::diagnostic::Digest::new();
+        digest.u64(self.devices.as_ref().map(devices_digest).unwrap_or(0));
+        // Video generations are bounded state, not whole-framebuffer Debug
+        // strings. Time-driven retrace/blink changes are covered by the
+        // token's logical/deferred time checks.
+        digest.u64(self.cgsix.as_ref().map_or(0, Cgsix::generation));
+        digest.u64(self.cgsix.as_ref().map_or(0, Cgsix::scanout_key));
+        digest.u64(self.sx.as_ref().map_or(0, Sx::generation));
+        for installed in &self.mxccs {
+            digest.byte(installed.mid);
+            digest.debug(&*installed.state.borrow());
+        }
+        digest.finish()
     }
 
     /// Apply deferred device time without moving the logical clock. This is
@@ -1406,15 +1485,27 @@ impl SystemBus {
     }
     pub fn map_ram(&mut self, address: u64, size: usize) -> Result<(), MapError> {
         self.map_check(address, size)?;
-        self.memory.map_ram(address, size)
+        let result = self.memory.map_ram(address, size);
+        if result.is_ok() {
+            self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+        }
+        result
     }
     pub fn map_rom(&mut self, address: u64, bytes: &[u8]) -> Result<(), MapError> {
         self.map_check(address, bytes.len())?;
-        self.memory.map_rom(address, bytes)
+        let result = self.memory.map_rom(address, bytes);
+        if result.is_ok() {
+            self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+        }
+        result
     }
     pub fn load_image(&mut self, address: u64, bytes: &[u8]) -> Result<(), BusError> {
         if let Some(dram) = self.dram_at(address) {
-            return dram.load_image(address, bytes);
+            let result = dram.load_image(address, bytes);
+            if result.is_ok() {
+                self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+            }
+            return result;
         }
         if self.overlaps_device(address, bytes.len() as u64) {
             return Err(BusError {
@@ -1422,7 +1513,11 @@ impl SystemBus {
                 kind: BusErrorKind::Unsupported("raw image loading into devices"),
             });
         }
-        self.memory.load_image(address, bytes)
+        let result = self.memory.load_image(address, bytes);
+        if result.is_ok() {
+            self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+        }
+        result
     }
     fn memory_only(&self, address: u64, size: u64) -> Result<(), BusError> {
         if address % size != 0 {
@@ -1609,6 +1704,7 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write8(&mut self, address: u64, value: u8) -> Result<(), BusError> {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         if let Some(result) = self.firmware_access(address, 1, Some(u32::from(value))) {
             return result.map(|_| ());
         }
@@ -1793,6 +1889,7 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write16(&mut self, address: u64, value: u16) -> Result<(), BusError> {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         if let Some(result) = self.firmware_access(address, 2, Some(u32::from(value))) {
             return result.map(|_| ());
         }
@@ -1974,6 +2071,7 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError> {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         if let Some(result) = self.firmware_access(address, 4, Some(value)) {
             return result.map(|_| ());
         }
@@ -2224,6 +2322,7 @@ impl Bus for SystemBus {
         result.map_err(|error| self.physical_error(error))
     }
     fn write_doubleword(&mut self, address: u64, words: [u32; 2]) -> Result<(), BusError> {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         if self.firmware_mmio_page(address & !0xfff) {
             return Err(BusError {
                 address,
@@ -2312,6 +2411,7 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn swap32(&mut self, address: u64, value: u32) -> Result<u32, BusError> {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         if self.firmware_mmio_page(address & !0xfff) {
             return Err(BusError {
                 address,
@@ -2342,6 +2442,7 @@ impl Bus for SystemBus {
             .map_err(|error| self.physical_error(error))
     }
     fn ldstub8(&mut self, address: u64) -> Result<u8, BusError> {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
         if self.firmware_mmio_page(address & !0xfff) {
             return Err(BusError {
                 address,
