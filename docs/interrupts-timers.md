@@ -269,6 +269,35 @@ fractions accumulate. Whole-second advancement handles `u64::MAX` without
 multiplying into a `u64` overflow; timer arithmetic skips whole periods with
 bounded work. The RTC retains its separate oscillator-stop and R/W latches.
 
+### Absolute time and deadline queries
+
+`Machine::virtual_ns()` reports the logical bus clock. It counts every interval
+submitted by direct or scheduled execution, including time retained in the
+CPU fast path's deferred `device_ns` balance. `Machine::timebase()` is a
+read-only query returning that clock, the deferred balance, the earliest known
+device event and, on the scheduled path, the earliest CPU-ready deadline.
+Device events are reported as absolute logical nanoseconds; a deadline already
+covered by deferred time is reported at the current clock, not in the past.
+The query includes timer phases, RTC seconds, CGsix/CG14 retrace boundaries,
+keyboard/mouse byte or backpressure intervals, Ethernet polling, ESP selection
+and reset-pulse expiry, and floppy poll/seek events. CGsix blanking uses the
+visible-line origin that its advance path latches. Back-pressured input reports
+the next baud interval instead of an unserviceable zero-time event.
+It does not flush deferred time, acknowledge interrupts, or mutate device
+state. `flush_device_time()` is the explicit mutation point when current
+device registers are required.
+
+`advance_ns` applies any deferred CPU-path time before its new interval, so
+device ordering cannot move backwards. Deadlines account for the 2 microsecond
+coalescing boundary without treating it as an event. A caller that advances to
+a deadline must give the CPU the required service opportunity at that boundary;
+the interval APIs do not execute the CPU, enter interrupt handlers or perform
+idle parking. `next_cpu_ready_ns` is exposed only after explicit
+`step_scheduled` ownership; a fresh or reset machine and the direct `step`
+compatibility path report `None` even when the clock values coincide. SMP
+deadlines are shared: one logical clock and one earliest event, with
+processor-ready deadlines folded into the same query.
+
 Machine reset clears timers, timer phase and interrupt state while retaining
 NVRAM/RTC, its fractional second, RAM/ROM and completed serial output. Standalone
 device APIs let tests control time directly. Callers stepping `Cpu` directly

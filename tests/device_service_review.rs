@@ -107,6 +107,37 @@ fn ordinary_idle_serial_wakeup_matches_reference() {
 }
 
 #[test]
+fn timebase_query_preserves_held_scsi_reset_serial_boundary() {
+    for profile in [
+        MachineProfile::Ss5,
+        MachineProfile::Ss20,
+        MachineProfile::Axil320,
+    ] {
+        let mut a = machine(profile, 1, true);
+        let mut b = machine(profile, 1, false);
+        for m in [&mut a, &mut b] {
+            enable_serial_and_inject(m, true);
+        }
+        let before = a.diagnostic_snapshot();
+        let timebase = a.timebase();
+        assert_eq!(
+            before.differences(&a.diagnostic_snapshot()),
+            Vec::<&'static str>::new(),
+            "{profile:?}: timebase query mutated state"
+        );
+        assert_eq!(timebase.now_ns, a.virtual_ns());
+        assert!(timebase.next_ns.is_some());
+        let ra = a.step().unwrap();
+        let rb = b.step().unwrap();
+        assert_eq!(
+            ra, rb,
+            "{profile:?}: query changed the held-reset IRQ entry boundary"
+        );
+        same(&a, &b, "held reset after timebase query");
+    }
+}
+
+#[test]
 fn held_scsi_reset_preserves_serial_interrupt_boundary_up() {
     for profile in [
         MachineProfile::Ss5,

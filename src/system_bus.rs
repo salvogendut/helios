@@ -427,6 +427,30 @@ impl Sun4mDevices {
         interrupt || timer
     }
 
+    /// Earliest timed event owned by the sun4m device block, relative to the
+    /// current applied device state. Queries are read-only.
+    fn next_deadline_ns(&self) -> Option<u64> {
+        let mut earliest = self.timers.next_deadline_ns();
+        let mut keep = |candidate: Option<u64>| {
+            if let Some(candidate) = candidate {
+                earliest = Some(earliest.map_or(candidate, |value: u64| value.min(candidate)));
+            }
+        };
+        if !self.nvram.clock_stopped() {
+            keep(Some(
+                1_000_000_000u64.saturating_sub(u64::from(self.rtc_phase_ns)),
+            ));
+        }
+        if let Some(keyboard) = &self.keyboard {
+            keep(keyboard.next_deadline_ns(&self.keyboard_serial));
+        }
+        keep(self.mouse.next_deadline_ns());
+        keep(self.ethernet.next_deadline_ns());
+        keep(self.esp.next_deadline_ns());
+        keep(self.floppy.next_deadline_ns());
+        earliest
+    }
+
     fn advance_ns(&mut self, ns: u64) {
         if let Some(keyboard) = &mut self.keyboard {
             keyboard.advance_ns(ns, &mut self.keyboard_serial);
@@ -465,6 +489,9 @@ pub struct SystemBusState {
     pub configured_processors: u8,
     pub prom_cycles: Option<u64>,
     pub prom_phase: u64,
+    /// Total logical time submitted to the device bus, including deferred time.
+    pub logical_ns: u64,
+    /// Device time submitted through the CPU fast path but not yet applied.
     pub device_ns: u64,
     pub memory_digest: u64,
     pub dram_digest: Option<u64>,
@@ -512,6 +539,7 @@ pub struct SystemBus {
     cgsix: Option<Cgsix>,
     sx: Option<Sx>,
     mxccs: Vec<InstalledMxcc>,
+    logical_ns: u64,
     device_ns: u64,
 }
 
@@ -541,6 +569,7 @@ impl SystemBus {
             cgsix: None,
             sx: None,
             mxccs: Vec::new(),
+            logical_ns: 0,
             device_ns: 0,
         }
     }
@@ -562,6 +591,7 @@ impl SystemBus {
             configured_processors: self.configured_processors,
             prom_cycles: self.prom_cycles,
             prom_phase: self.prom_phase,
+            logical_ns: self.logical_ns,
             device_ns: self.device_ns,
             memory_digest: self.memory.diagnostic_digest(),
             dram_digest: self
@@ -1066,6 +1096,7 @@ impl SystemBus {
     }
     fn reset_io(&mut self) {
         self.flush_device_time();
+        self.logical_ns = 0;
         if let Some(config) = &mut self.openbios {
             config.reset();
         }
@@ -1101,18 +1132,79 @@ impl SystemBus {
             devices.timers.reset();
         }
     }
+    /// Total logical device time, including time still deferred by the CPU
+    /// fast path. This is the absolute clock used by deadline queries.
+    pub fn logical_ns(&self) -> u64 {
+        self.logical_ns
+    }
+
+    /// Time submitted through the CPU fast path but not yet applied to devices.
+    pub fn deferred_ns(&self) -> u64 {
+        self.device_ns
+    }
+
+    /// Apply deferred device time without moving the logical clock. This is
+    /// the explicit boundary operation for callers that need current device
+    /// registers; deadline queries deliberately do not call it.
+    pub fn flush_device_time(&mut self) {
+        if self.device_ns != 0 {
+            let pending = std::mem::take(&mut self.device_ns);
+            self.advance_devices_ns(pending);
+        }
+    }
+
+    /// Advance devices by an explicit logical interval. Deferred CPU-path time
+    /// is applied first so device ordering cannot move backwards.
     pub fn advance_ns(&mut self, ns: u64) {
+        self.flush_device_time();
+        self.logical_ns = self.logical_ns.saturating_add(ns);
         self.advance_devices_ns(ns);
     }
 
     /// CPU-boundary path: coalesce device work to a 2 us boundary.
     pub(crate) fn advance_ns_fast(&mut self, ns: u64) {
+        self.logical_ns = self.logical_ns.saturating_add(ns);
         self.device_ns = self.device_ns.saturating_add(ns);
         if self.device_ns < 2000 {
             return;
         }
         let elapsed = std::mem::take(&mut self.device_ns);
         self.advance_devices_ns(elapsed);
+    }
+
+    /// Earliest known device event at or after the logical clock. The result
+    /// includes deferred CPU-path time without mutating device or interrupt
+    /// state. `None` means no device has a timer-driven deadline.
+    pub fn next_device_deadline_ns(&self) -> Option<u64> {
+        let relative = self.next_device_relative_ns()?;
+        if relative <= self.device_ns {
+            Some(self.logical_ns)
+        } else {
+            Some(
+                self.logical_ns
+                    .saturating_add(relative.saturating_sub(self.device_ns)),
+            )
+        }
+    }
+
+    fn next_device_relative_ns(&self) -> Option<u64> {
+        let mut earliest = None;
+        if let Some(card) = &self.cgsix {
+            earliest = Some(earliest.map_or(card.next_deadline_ns(), |value: u64| {
+                value.min(card.next_deadline_ns())
+            }));
+        }
+        if let Some(card) = &self.sx {
+            earliest = Some(earliest.map_or(card.next_deadline_ns(), |value: u64| {
+                value.min(card.next_deadline_ns())
+            }));
+        }
+        if let Some(devices) = &self.devices {
+            if let Some(relative) = devices.next_deadline_ns() {
+                earliest = Some(earliest.map_or(relative, |value: u64| value.min(relative)));
+            }
+        }
+        earliest
     }
 
     fn advance_devices_ns(&mut self, ns: u64) {
@@ -1129,17 +1221,11 @@ impl SystemBus {
         self.sync_sx_irq();
     }
 
-    fn flush_device_time(&mut self) {
-        if self.device_ns != 0 {
-            let pending = std::mem::take(&mut self.device_ns);
-            self.advance_devices_ns(pending);
-        }
-    }
     pub fn advance_seconds(&mut self, seconds: u64) {
-        if self.device_ns != 0 {
-            let pending = std::mem::take(&mut self.device_ns);
-            self.advance_devices_ns(pending);
-        }
+        self.flush_device_time();
+        self.logical_ns = self
+            .logical_ns
+            .saturating_add(seconds.saturating_mul(1_000_000_000));
         if let Some(card) = &mut self.cgsix {
             card.advance_ns(seconds.saturating_mul(1_000_000_000));
         }

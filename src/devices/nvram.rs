@@ -219,6 +219,11 @@ impl Nvram {
         self.clock.advance(seconds);
     }
 
+    /// True when the RTC oscillator is stopped and second advancement is held.
+    pub fn clock_stopped(&self) -> bool {
+        self.clock.stopped
+    }
+
     pub fn read(&self, offset: usize) -> Result<u8, BusErrorKind> {
         if offset >= NVRAM_SIZE {
             return Err(BusErrorKind::Unmapped);

@@ -358,6 +358,13 @@ clock without cancelling an outstanding instruction/PROM wait. A module reset
 starts that CPU at the current clock. External `advance_ns`/`advance_seconds`
 clamp readiness to the new clock. If no processor has an arbitration grant,
 `SchedulerError::NoRunnable` is returned rather than spinning.
+`Machine::virtual_ns()` and the read-only `Machine::timebase()` query expose the
+one logical device clock, including the fast path's deferred balance and the
+earliest device/CPU deadline. Queries do not flush pending time or mutate
+interrupt/device state; explicit advancement flushes deferred time first.
+Scheduler deadlines appear only after explicit `step_scheduled` ownership, not
+from clock equality; fresh/reset machines and direct `step` report no CPU
+deadline.
 `Machine::with_profile_processors` is the explicit one/two-module constructor;
 SS-5 rejects two. Default `with_profile` construction remains one CPU. CPU 2 is
 independently owned in `secondary_cpu`; it starts present but arbitration-

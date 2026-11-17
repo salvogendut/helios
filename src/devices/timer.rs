@@ -47,6 +47,22 @@ impl Counter {
         }
     }
 
+    fn ticks_until_pending(&self) -> Option<u64> {
+        if self.pending {
+            return Some(0);
+        }
+        if self.limit == 0 {
+            return None;
+        }
+        let span = MODULUS - 1;
+        let distance = if self.limit > self.count {
+            u128::from(self.limit - self.count)
+        } else {
+            span - u128::from(self.count) + u128::from(self.limit)
+        };
+        Some(distance.min(u128::from(u64::MAX)) as u64)
+    }
+
     fn read(&mut self, offset: u64) -> Result<u32, BusErrorKind> {
         match offset {
             0 => {
@@ -166,11 +182,45 @@ impl Timers {
             .is_some_and(|bank| !bank.user_mode && bank.processor.pending)
     }
 
+    /// Earliest counter/user-timer event relative to the current device state,
+    /// excluding the 500 ns tick phase. Queries do not clear pending bits.
+    pub fn next_deadline_ticks(&self) -> Option<u64> {
+        let mut earliest = self.system.ticks_until_pending();
+        for bank in self.processors.values() {
+            let next = if bank.user_mode {
+                if !bank.user_run {
+                    None
+                } else if bank.user.overflow {
+                    Some(0)
+                } else {
+                    let distance = USER_MODULUS - u128::from(bank.user.count);
+                    Some(distance.min(u128::from(u64::MAX)) as u64)
+                }
+            } else {
+                bank.processor.ticks_until_pending()
+            };
+            if let Some(next) = next {
+                earliest = Some(earliest.map_or(next, |value| value.min(next)));
+            }
+        }
+        earliest
+    }
+
     pub fn advance_ns(&mut self, ns: u64) {
         let remainder = ns % TICK_NS + u64::from(self.phase_ns);
         let ticks = ns / TICK_NS + remainder / TICK_NS;
         self.phase_ns = (remainder % TICK_NS) as u16;
         self.advance_ticks(u128::from(ticks));
+    }
+
+    /// Next timer event relative to now, including the retained 500 ns phase.
+    pub fn next_deadline_ns(&self) -> Option<u64> {
+        let ticks = self.next_deadline_ticks()?;
+        Some(
+            ticks
+                .saturating_mul(TICK_NS)
+                .saturating_sub(u64::from(self.phase_ns)),
+        )
     }
 
     pub fn advance_seconds(&mut self, seconds: u64) {

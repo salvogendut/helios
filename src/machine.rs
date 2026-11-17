@@ -530,6 +530,22 @@ pub struct SchedulerSnapshot {
     pub stats: SchedulerStats,
 }
 
+/// Read-only absolute-time and deadline information. `now_ns` includes all
+/// time submitted to the bus, while `deferred_ns` is the portion not yet
+/// applied to device registers. Deadline queries never mutate device state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timebase {
+    pub now_ns: u64,
+    pub deferred_ns: u64,
+    /// Earliest timed device event, or `None` if no device has a deadline.
+    pub next_device_ns: Option<u64>,
+    /// Earliest scheduler deadline. It is present only after the explicit
+    /// `step_scheduled` execution path has claimed ownership; fresh/reset
+    /// machines and the direct `step` path report `None`.
+    pub next_cpu_ready_ns: Option<u64>,
+    pub next_ns: Option<u64>,
+}
+
 /// Full architectural/CPU state plus deterministic bus/device and timing state.
 /// CPU snapshots are clones, so inactive register windows and the complete
 /// MMU/FPU state are included. Bus/device state is represented by fingerprints.
@@ -595,6 +611,9 @@ impl MachineSnapshot {
             || self.bus.prom_phase != other.bus.prom_phase
         {
             differences.push("bus.prom");
+        }
+        if self.bus.logical_ns != other.bus.logical_ns {
+            differences.push("bus.logical");
         }
         if self.bus.device_ns != other.bus.device_ns {
             differences.push("bus.device_ns");
@@ -758,6 +777,9 @@ pub struct Machine {
     scheduler: SchedulerState,
     clock: CycleClock,
     service_guards: bool,
+    /// Whether the scheduler's deadline is the authority for `Timebase`.
+    /// This is execution-path ownership, not guest architectural state.
+    scheduled_clock_owned: bool,
 }
 
 fn snapshot_cpu(cpu: &Cpu) -> Cpu {
@@ -890,6 +912,7 @@ impl Machine {
             scheduler: SchedulerState::default(),
             clock: CycleClock::new(profile.cpu_clock_hz()),
             service_guards: true,
+            scheduled_clock_owned: false,
         };
         machine.cpu.use_cpu_config(profile.cpu_config());
         machine.cpu.use_mmu_config(profile.mmu());
@@ -1114,6 +1137,7 @@ impl Machine {
             iommu.reset();
         }
         self.scheduler.reset();
+        self.scheduled_clock_owned = false;
     }
 
     /// Reset only the local CPU/MMU and MXCC of one processor module. Board
@@ -1158,7 +1182,45 @@ impl Machine {
             scheduler: SchedulerState::default(),
             clock: CycleClock::new(1_000_000_000 / STEP_NS),
             service_guards: true,
+            scheduled_clock_owned: false,
         })
+    }
+
+    /// Total logical device time, including time deferred by the CPU fast path.
+    pub fn virtual_ns(&self) -> u64 {
+        self.bus.logical_ns()
+    }
+
+    /// Apply deferred device time without moving the logical clock. Deadline
+    /// queries deliberately do not call this.
+    pub fn flush_device_time(&mut self) {
+        self.bus.flush_device_time();
+    }
+
+    /// Read-only timebase and deadline query. The scheduler deadline is exposed
+    /// only after explicit `step_scheduled` ownership; clock equality is not
+    /// treated as ownership.
+    pub fn timebase(&self) -> Timebase {
+        let now_ns = self.bus.logical_ns();
+        let next_device_ns = self.bus.next_device_deadline_ns();
+        let next_cpu_ready_ns = if self.scheduled_clock_owned {
+            self.scheduler.earliest_ready()
+        } else {
+            None
+        };
+        let next_ns = match (next_device_ns, next_cpu_ready_ns) {
+            (Some(device), Some(cpu)) => Some(device.min(cpu)),
+            (Some(device), None) => Some(device),
+            (None, Some(cpu)) => Some(cpu),
+            (None, None) => None,
+        };
+        Timebase {
+            now_ns,
+            deferred_ns: self.bus.deferred_ns(),
+            next_device_ns,
+            next_cpu_ready_ns,
+            next_ns,
+        }
     }
 
     /// Advance all device clocks between steps without executing the CPU.
@@ -1324,6 +1386,7 @@ impl Machine {
     /// advance to the earliest next eligible deadline, never past another
     /// CPU's earlier opportunity.
     pub fn step_scheduled(&mut self) -> Result<ScheduledStep, SchedulerError> {
+        self.scheduled_clock_owned = true;
         if self.software_reset_requested() {
             let step = self.software_reset(self.cpu.pc(), self.cpu.npc(), None);
             return Ok(ScheduledStep {
@@ -1530,6 +1593,7 @@ impl Machine {
             iommu.reset();
         }
         self.scheduler.reset();
+        self.scheduled_clock_owned = false;
         Step::SoftwareReset {
             pc,
             npc,

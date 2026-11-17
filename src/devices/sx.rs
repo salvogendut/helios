@@ -161,6 +161,15 @@ impl Sx {
         self.trace = trace;
     }
 
+    /// Earliest retrace boundary relative to the current phase.
+    pub fn next_deadline_ns(&self) -> u64 {
+        if self.retrace_pending {
+            0
+        } else {
+            RETRACE_PERIOD_NS.saturating_sub(self.retrace_phase_ns)
+        }
+    }
+
     pub fn advance_ns(&mut self, ns: u64) {
         self.retrace_phase_ns = self.retrace_phase_ns.saturating_add(ns);
         while self.retrace_phase_ns >= RETRACE_PERIOD_NS {

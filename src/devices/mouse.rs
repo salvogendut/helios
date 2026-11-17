@@ -52,6 +52,18 @@ impl Mouse {
         self.queue.is_empty() && self.dx == 0 && self.dy == 0 && !self.changed
     }
 
+    /// Earliest queued packet byte or schedulable motion/button event.
+    pub(crate) fn next_deadline_ns(&self) -> Option<u64> {
+        let motion = self.dx != 0 || self.dy != 0 || self.changed;
+        if motion && self.queue.len() + 5 <= 32 {
+            return Some(0);
+        }
+        if self.queue.is_empty() {
+            return None;
+        }
+        Some(BYTE_NS.saturating_sub(self.phase))
+    }
+
     pub(crate) fn advance_ns(&mut self, ns: u64, serial: &mut Serial) {
         self.schedule();
         let phase = u128::from(self.phase) + u128::from(ns);

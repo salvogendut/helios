@@ -167,6 +167,22 @@ impl Esp {
         !matches!(self.work, Work::Idle | Work::Timeout)
     }
 
+    /// Earliest timed ESP event. Active phases need service at the current
+    /// boundary; selection timeout and reset-pulse expiry are future events.
+    pub(crate) fn next_deadline_ns(&self) -> Option<u64> {
+        let mut next = if self.needs_service() {
+            Some(0)
+        } else if self.work == Work::Timeout {
+            Some(self.selection_ns)
+        } else {
+            None
+        };
+        if self.reset_ns != 0 {
+            next = Some(next.map_or(self.reset_ns, |value| value.min(self.reset_ns)));
+        }
+        next
+    }
+
     pub fn advance_ns(&mut self, ns: u64) {
         self.reset_ns = self.reset_ns.saturating_sub(ns);
         if self.work == Work::Timeout {

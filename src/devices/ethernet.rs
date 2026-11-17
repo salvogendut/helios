@@ -239,6 +239,20 @@ impl Ethernet {
             && (self.loopback() || self.outgoing.len() < QUEUE_LIMIT)
     }
 
+    /// Earliest time this MAC can make progress without a guest register write.
+    pub(crate) fn next_deadline_ns(&self) -> Option<u64> {
+        if self.needs_service() {
+            return Some(0);
+        }
+        if self.csr[0] & 0x10 != 0
+            && self.csr[0] & 8 == 0
+            && (self.loopback() || self.outgoing.len() < QUEUE_LIMIT)
+        {
+            return Some(self.poll_ns);
+        }
+        None
+    }
+
     pub(crate) fn request(&mut self) -> Option<Transfer> {
         if self.phase == Phase::Idle && self.csr[0] & 0x20 != 0 {
             // Filter at most one queued frame per scheduling boundary.

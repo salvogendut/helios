@@ -287,6 +287,16 @@ impl Serial {
         self.ports[channel.index()].output.pop_front()
     }
 
+    /// Read-only query used by timed-device deadline accounting.
+    pub(crate) fn output_pending(&self, channel: Channel) -> bool {
+        !self.ports[channel.index()].output.is_empty()
+    }
+
+    /// Read-only peek at the next output byte for deadline accounting.
+    pub(crate) fn output_front(&self, channel: Channel) -> Option<u8> {
+        self.ports[channel.index()].output.front().copied()
+    }
+
     fn pending(&self) -> u8 {
         (self.ports[1].pending() << 3) | self.ports[0].pending()
     }

@@ -84,6 +84,29 @@ impl Keyboard {
             _ => {} // Undefined keyboard commands have no response.
         }
     }
+    fn next_byte_ns(&self) -> u64 {
+        (25_000_000u64.saturating_sub(self.phase)).div_ceil(3)
+    }
+
+    /// Earliest queued byte/command boundary. A layout command is blocked in
+    /// the same cases as `advance_ns`; do not report it as serviceable at zero
+    /// time while its response needs queue space.
+    pub(crate) fn next_deadline_ns(&self, serial: &Serial) -> Option<u64> {
+        let blocked_layout = !self.led_command
+            && self.queue.len() > 14
+            && (self.pending_command == Some(15) || serial.output_front(Channel::A) == Some(15));
+        if blocked_layout {
+            return Some(self.next_byte_ns());
+        }
+        if self.pending_command.is_some() || serial.output_pending(Channel::A) {
+            return Some(0);
+        }
+        if self.queue.is_empty() {
+            return None;
+        }
+        Some(self.next_byte_ns())
+    }
+
     pub(crate) fn advance_ns(&mut self, ns: u64, serial: &mut Serial) {
         // Reprogramming the host SCC is not a keyboard command. In particular,
         // an unsolicited ID here can race Solaris's reset and deliver ff ff

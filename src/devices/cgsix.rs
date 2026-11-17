@@ -182,6 +182,30 @@ impl Cgsix {
             };
         }
     }
+    /// Earliest retrace/blink boundary relative to the current frame phase.
+    /// This is a read-only query; it does not acknowledge or advance anything.
+    pub(crate) fn next_deadline_ns(&self) -> u64 {
+        const RATE: u128 = 105_561_000;
+        let phase = u128::from(self.phase);
+        let frame_delta = if phase == 0 {
+            FRAME_UNITS
+        } else {
+            FRAME_UNITS - phase
+        };
+        // VBLANK_UNITS is the 900 visible lines; the device latches
+        // vblank_pending when the phase crosses that boundary.
+        let vblank = VBLANK_UNITS;
+        let vblank_delta = if self.vblank_pending {
+            0
+        } else if phase < vblank {
+            vblank - phase
+        } else {
+            FRAME_UNITS - phase + vblank
+        };
+        let delta = frame_delta.min(vblank_delta);
+        u64::try_from(delta.div_ceil(RATE)).unwrap_or(u64::MAX)
+    }
+
     pub(crate) fn advance_ns(&mut self, ns: u64) {
         let elapsed = u128::from(self.phase) + u128::from(ns) * 105_561_000;
         if (elapsed + FRAME_UNITS - VBLANK_UNITS) / FRAME_UNITS

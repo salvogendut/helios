@@ -116,6 +116,25 @@ impl Floppy {
         }
     }
 
+    /// Earliest polling or seek-completion boundary relative to now.
+    pub(crate) fn next_deadline_ns(&self) -> Option<u64> {
+        if self.irq() {
+            return Some(0);
+        }
+        let mut earliest = None;
+        for motion in self.motions.iter().flatten() {
+            earliest = Some(earliest.map_or(motion.remaining_ns, |value: u64| {
+                value.min(motion.remaining_ns)
+            }));
+        }
+        if self.command.is_empty() && self.result.is_empty() {
+            if let Some(poll) = self.poll_ns {
+                earliest = Some(earliest.map_or(poll, |value| value.min(poll)));
+            }
+        }
+        earliest
+    }
+
     pub fn irq(&self) -> bool {
         (self.interrupt || !self.seek_results.is_empty()) && self.dor & 0x0c == 0x0c
     }

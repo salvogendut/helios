@@ -118,4 +118,8 @@
 
 - [Issue #5 device-service review](performance-issue5-device-service-review.md) — accepted held-reset IRQ correction, six promoted fixtures, matching boot evidence and a pinned SS-20 idle follow-up.
 
+- [Issue #5 foundation review](performance-issue5-idle-parking-foundation-review.md) — corrected foundation independently accepted; all ten promoted fixtures and 745/748 unique full-suite tests pass, with conditional loop proof and qualified performance evidence.
+- [Issue #5 idle-parking foundation](performance-issue5-idle-parking-foundation.md) — accepted logical clock/deadline query, promoted review fixtures, Solaris idle-loop boundary trace, fresh frontend baseline and active-work comparison; ready to commit, no sleeps or recognizer.
+- [Issue #5 idle-parking design review](performance-issue5-idle-parking-review.md) — eligibility, clock/deadline and wakeup corrections; PTY launch unblocked with 20 guest-verified transactions; time/deadline foundation is the next implementation slice.
+- [Issue #5 idle-parking design handoff](performance-issue5-idle-parking-handoff.md) — evidence, wakeup inventory, proposed core/frontend API and required measurements; review corrections remain before parking implementation and issue #5 stays open.
 - [Device-service readiness guards](performance-issue5-device-service.md) — ESP/Ethernet service predicates, matching guard-on/off boot outcomes and qualified local timing results.

@@ -119,7 +119,9 @@ fn ram_device_and_timing_changes_are_detected() {
     let timing = machine.diagnostic_snapshot();
     let timing_differences = device.differences(&timing);
     assert!(
-        timing_differences.contains(&"bus.device_ns") || timing_differences.contains(&"scheduler"),
+        timing_differences.contains(&"bus.logical")
+            || timing_differences.contains(&"bus.device_ns")
+            || timing_differences.contains(&"scheduler"),
         "{timing_differences:?}"
     );
 }
