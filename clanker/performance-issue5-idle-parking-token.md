@@ -1,6 +1,6 @@
 # Issue #5: core parking token and parked advancement
 
-Status: review patch applied, **pending final acceptance**, based on `2f903cd`.
+Status: core checkpoint **accepted and committed as `e3d87e3`**, based on `2f903cd`.
 The independent [token review](performance-issue5-idle-parking-token-review.md)
 records the final two MMU-proof details and provides the tested patch now
 applied here. The patch checks PTP2 descriptors created by earlier accesses and
@@ -10,6 +10,11 @@ prototype for the observed single-CPU SS-20 Solaris serial-idle boundary.
 **No frontend sleeping, host pacing, SMP parking or generic idle recognizer is
 included.** Issue #5 remains open. The accepted foundation review remains
 [`performance-issue5-idle-parking-foundation-review.md`](performance-issue5-idle-parking-foundation-review.md).
+
+The subsequent frontend trial below is separate and is now **accepted as a
+default-off experimental checkpoint**; see the
+[frontend parking review](performance-issue5-idle-parking-frontend-review.md)
+for its validation and remaining performance-measurement scope.
 
 ## Scope and boundary
 
@@ -143,6 +148,46 @@ boot-mode/PTP2/steady-state, PTP2-fill iteration effects, global-context
 diagnostics, pending software/serial work, the ESP deadline-to-IRQ transition
 and graphics installation/removal/replacement. The existing `tests/timebase.rs`
 and promoted `tests/timebase_deadlines.rs` remain green.
+
+## Real SS-20 Solaris idle confirmation
+
+A disposable SS-20 Solaris 2.6 disk was booted through original OBP, logged in
+as root, and allowed to reach serial idle. The run used normal `Machine::step`
+execution throughout; no parked interval advanced time and no host sleep was
+used. At 20 consecutive `f006fa24/f006fa28` boundaries with PSR `404000e0`:
+
+- token issuance and validation succeeded in **20/20** samples;
+- `advance_parked(token, 0)` returned `advanced_ns=0` in **20/20**;
+- CPU/MMU snapshots and RAM fingerprints were preserved across every query;
+- the next deadline remained the RTC/timer boundary, with deltas decreasing
+  from about **3.236 ms** to **3.209 ms** as normal execution progressed.
+
+A second headless core run (no SX device) also accepted 5/5 sampled boundaries.
+This confirms the proof matches the actual guest path and that boundary
+queries are observational. Evidence: `local/issue5-parking-real-2026-11-17/`
+(`real-idle.json`, `real.serial`, `headless.log`, `source-copy.sha256`).
+
+## Frontend opt-in trial
+
+The Heliacal worker has an opt-in `idle_parking` setting (default false) and a
+`--idle-parking` CLI switch, read at machine construction. Normal stepping
+reaches the exact proof boundary; the frontend drains console output, prepares
+a token and deadline, waits at most 2 ms, rechecks host work, then commits only
+bounded measured elapsed time. Host oversleep beyond that budget is discarded.
+BREAK, pending input/control and core readiness can cancel the opportunity.
+SMP never enters this path. The host clock and waits remain outside this core
+API, which accepts explicit virtual deltas and never sleeps.
+
+The final frontend implementation is independently accepted with 114 frontend
+tests, 14 additional protocol fixtures and standard frontend checks. The latest
+retained Solaris measurement, 24.79% worker CPU and 11.36/37.64 ms PTY
+median/p95, predates its final output-drain correction. It is earlier evidence,
+not a measurement of the accepted frontend revision. A fresh matching off/on
+comparison remains before final performance claims; the 10–15% CPU target and
+issue #5 are still open. See the
+[frontend trial](performance-issue5-idle-parking-frontend.md) and
+[review](performance-issue5-idle-parking-frontend-review.md) for exact evidence,
+historical corrections and scope. No graphical/X or SMP idle result is claimed.
 
 ## Measured token-validation overhead
 
