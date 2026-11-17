@@ -757,6 +757,7 @@ pub struct Machine {
     secondary_cpu: Option<ProcessorModuleState>,
     scheduler: SchedulerState,
     clock: CycleClock,
+    service_guards: bool,
 }
 
 fn snapshot_cpu(cpu: &Cpu) -> Cpu {
@@ -888,6 +889,7 @@ impl Machine {
             secondary_cpu: None,
             scheduler: SchedulerState::default(),
             clock: CycleClock::new(profile.cpu_clock_hz()),
+            service_guards: true,
         };
         machine.cpu.use_cpu_config(profile.cpu_config());
         machine.cpu.use_mmu_config(profile.mmu());
@@ -1155,6 +1157,7 @@ impl Machine {
             secondary_cpu: None,
             scheduler: SchedulerState::default(),
             clock: CycleClock::new(1_000_000_000 / STEP_NS),
+            service_guards: true,
         })
     }
 
@@ -1218,6 +1221,13 @@ impl Machine {
         self.bus.load_image(u64::from(address), bytes)
     }
 
+    /// Diagnostic/reference switch for device-service guards. Production
+    /// defaults to the exact readiness predicates; direct service APIs remain
+    /// unconditional.
+    pub fn set_device_service_guards(&mut self, enabled: bool) {
+        self.service_guards = enabled;
+    }
+
     pub fn scheduler_stats(&self) -> SchedulerStats {
         let mut stats = self.scheduler.stats;
         stats.virtual_ns = self.scheduler.virtual_ns;
@@ -1274,6 +1284,39 @@ impl Machine {
         self.reset();
     }
 
+    fn service_devices(&mut self) -> Result<(), DmaError> {
+        let (scsi, ethernet) = if self.service_guards {
+            match self.bus.devices() {
+                Some(devices) => (
+                    devices.esp.needs_service()
+                        || devices.esp.irq()
+                        || devices.scsi_dma.irq()
+                        || devices.scsi_dma.request_pending(),
+                    devices.ethernet.needs_service()
+                        || devices.ethernet.irq()
+                        || devices.ethernet_dma.irq(),
+                ),
+                None => (false, false),
+            }
+        } else {
+            (true, true)
+        };
+        if ethernet {
+            self.service_ethernet()?;
+        }
+        if scsi {
+            self.service_scsi_batch(16)?;
+        }
+        if !scsi {
+            if let Some(devices) = self.bus.devices_mut() {
+                if !devices.scsi_dma.reset_asserted() {
+                    devices.sync_interrupts();
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Execute one deterministic processor event. Device service occurs once
     /// per distinct deadline, then the earliest next-ready eligible hardware
     /// processor runs. Ties use hardware processor order 0 before 2. Only the
@@ -1321,9 +1364,7 @@ impl Machine {
         // Service each distinct scheduling boundary once. Tied processors at
         // the same deadline observe the same device snapshot.
         if self.scheduler.last_service_ns != Some(ready) {
-            self.service_ethernet().map_err(SchedulerError::Device)?;
-            self.service_scsi_batch(16)
-                .map_err(SchedulerError::Device)?;
+            self.service_devices().map_err(SchedulerError::Device)?;
             self.scheduler.last_service_ns = Some(ready);
         }
 
@@ -1440,13 +1481,7 @@ impl Machine {
         if self.software_reset_requested() {
             return Ok(self.software_reset(self.cpu.pc(), self.cpu.npc(), None));
         }
-        self.service_ethernet().map_err(|error| CpuFault {
-            pc: self.cpu.pc(),
-            npc: self.cpu.npc(),
-            instruction: None,
-            kind: FaultKind::DeviceDma(error),
-        })?;
-        self.service_scsi_batch(16).map_err(|error| CpuFault {
+        self.service_devices().map_err(|error| CpuFault {
             pc: self.cpu.pc(),
             npc: self.cpu.npc(),
             instruction: None,

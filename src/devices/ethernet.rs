@@ -225,6 +225,20 @@ impl Ethernet {
     fn loopback(&self) -> bool {
         self.mode & 0x44 == 0x44
     }
+    /// Exact cheap readiness test for the next `request()` call. It mirrors
+    /// the idle RX/TX entry conditions and preserves disabled/full queues.
+    pub(crate) fn needs_service(&self) -> bool {
+        if self.phase != Phase::Idle {
+            return true;
+        }
+        if self.csr[0] & 0x20 != 0 && !self.incoming.is_empty() {
+            return true;
+        }
+        self.csr[0] & 0x10 != 0
+            && (self.csr[0] & 8 != 0 || self.poll_ns == 0)
+            && (self.loopback() || self.outgoing.len() < QUEUE_LIMIT)
+    }
+
     pub(crate) fn request(&mut self) -> Option<Transfer> {
         if self.phase == Phase::Idle && self.csr[0] & 0x20 != 0 {
             // Filter at most one queued frame per scheduling boundary.

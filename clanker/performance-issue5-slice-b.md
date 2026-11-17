@@ -96,8 +96,8 @@ always returning an empty difference set.
 - `cargo fmt --all --check`
 - `cargo clippy --locked --offline --all-targets -- -D warnings`
 - `cargo clippy --locked --offline --all-targets --features perf-counters -- -D warnings`
-- `cargo test --locked --offline`: **720 normal tests**
-- `cargo test --locked --offline --features perf-counters`: **723 perf-counter tests**
+- `cargo test --locked --offline`: **727 normal tests**
+- `cargo test --locked --offline --features perf-counters`: **730 perf-counter tests**
 - `tests/differential.rs`: 17/17 pass
 - `tests/snapshot_clone.rs`: 2/2 pass
 - all four built-in demos pass

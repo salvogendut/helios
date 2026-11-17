@@ -159,6 +159,14 @@ impl Esp {
         self.irq
     }
 
+    /// True when the ESP state machine can make progress without a guest MMIO
+    /// write. Select, command, data, message, execute and completion phases all
+    /// need service; idle and the selection timeout (advanced by device time)
+    /// do not.
+    pub(crate) fn needs_service(&self) -> bool {
+        !matches!(self.work, Work::Idle | Work::Timeout)
+    }
+
     pub fn advance_ns(&mut self, ns: u64) {
         self.reset_ns = self.reset_ns.saturating_sub(ns);
         if self.work == Work::Timeout {

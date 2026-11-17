@@ -68,7 +68,7 @@ larger-page regression is removed, but these local microbenchmarks do not prove
 zero overhead in every guest phase. Per-slot generations do not by themselves
 reduce the WP=0 slot-zero fill storm, so no SS-5 guest speedup is claimed.
 
-Validation: **720 normal tests / 723 perf-counter tests**, formatting, both
+Validation: **727 normal tests / 730 perf-counter tests**, formatting, both
 Clippy configurations and all four demos pass. The corrected overlap fixtures
 are tracked in `tests/overlap.rs`.
 

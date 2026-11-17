@@ -115,3 +115,7 @@
 - [Issue #5 SS-5 page-walk investigation](performance-issue5-mmu-walk.md) — per-slot fast-cache generations; unsafe leaf-only walk shortcut removed; matched benchmark within +0.11%, WP=0 bottleneck remains open.
 
 - [SS-5 WP=0 investigation](ss5-wp0-investigation.md) — manual range semantics, OBP TRCR write trace, Solaris idle evidence and a WP=0 regression; replacement semantics unchanged.
+
+- [Issue #5 device-service review](performance-issue5-device-service-review.md) — accepted held-reset IRQ correction, six promoted fixtures, matching boot evidence and a pinned SS-20 idle follow-up.
+
+- [Device-service readiness guards](performance-issue5-device-service.md) — ESP/Ethernet service predicates, matching guard-on/off boot outcomes and qualified local timing results.

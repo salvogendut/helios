@@ -39,6 +39,10 @@ impl ScsiDma {
         self.scsi_irq = asserted && !self.reset_asserted();
     }
 
+    pub(crate) fn request_pending(&self) -> bool {
+        self.request
+    }
+
     pub fn irq(&self) -> bool {
         (self.interrupt_pending() || self.memory_error) && self.control & 0x10 != 0
     }
