@@ -1,12 +1,88 @@
 # Issue #5: opt-in Heliacal parking review
 
-Final re-review 2026-11-17 against Helios `e3d87e3` and the uncommitted Heliacal
-`src/emulator.rs`, `src/main.rs`, `src/serial_pty.rs` and `src/settings.rs`
-changes. The accepted core checkpoint is unchanged.
+Final implementation review 2026-11-17 against Helios `e3d87e3`, subsequently
+committed in Heliacal as `a88d769`; `2682872` adds the CLI help text. Helios
+`440128e` records the checkpoint and `19112c7` records the new measurements.
+The accepted core checkpoint is unchanged.
 **Accepted as a default-off experimental implementation checkpoint. The
 previous blocking behavior and Clippy findings are resolved.**
 Keep parking default-off and issue #5 open. This review makes no production
 changes, commits or pushes.
+
+## Committed checkpoint and matching measurement review
+
+The commits are present and both production worktrees were clean when reviewed.
+Compared with the independently accepted source hashes, only `src/main.rs`
+differs, and that difference is the `--help` text. The new parking test file is
+included in `a88d769`. The installed executable's `--help` correctly exposes
+the default-off, single-CPU SS-20 Solaris option. The implementation acceptance
+and previous 114-test/14-fixture validation still apply; no repeat of unrelated
+core tests was needed for documentation-only follow-ups.
+
+The new `local/issue5-parking-measure-2026-11-17/{off,on}/` evidence resolves
+the previous overwritten-run problem. Both manifests identify the same binary
+(`a06775bd1278bad31b53ec71616f8e15f6db4f74afd298d5348102b530230be9`), firmware,
+source disk and seed NVRAM. Each retained `source-copy.sha256` matches its
+initial disposable disk to the same source. The harnesses differ only in the
+parking flag; configs differ in that flag and their separate output paths.
+The installed binary has since been rebuilt with the help-only change; its
+different hash does not change the matching between the two measured arms.
+
+Independent recalculation from raw ticks and timestamps gives:
+
+| Observation | Off | On |
+| --- | ---: | ---: |
+| Worker CPU, one approximately 5 s window | 99.745958% | 23.586467% |
+| PTY median, 20 commands | 14.262984 ms | 14.608440 ms |
+| PTY nearest-rank p95 | 17.611651 ms | 29.602977 ms |
+| Largest measured PTY latency | 24.018961 ms | 40.739281 ms |
+
+That is a **76.35% relative reduction in worker CPU**, with +0.345 ms median
+and +11.991 ms p95 command latency in this pair. Each command token appears
+twice in the raw guest serial transcript (echo and shell output), and both
+host processes exit with status 0. Scope is headless SS-20/one CPU, 128 MiB,
+Solaris 2.6, networking disabled. One idle window and 20 transactions per arm
+do not establish sustained CPU use, a latency upper bound, desktop/SMP behavior
+or the proposed 10–15% CPU target. These measurement scripts quit through the
+host UI; they do not issue guest `sync`/`halt`, so they are not new clean guest
+shutdown or persistence evidence.
+
+Independent summary: `local/review-issue5-parking-frontend-2026-11-17/measurement-review.json`.
+The disposable disks are absent as reported. The two unused run-local PTY lock
+files were removed after checking that their aliases were gone and acquiring
+their locks; measurement logs/configs/manifests were preserved. No live PTY,
+source media or live configuration was changed.
+
+### Next work order: attribute the remaining idle CPU and latency tail
+
+Keep this accepted checkpoint and default-off behavior. The next return should
+be a measured cost breakdown and a targeted proposal, before another semantic
+optimization:
+
+1. Add opt-in aggregate diagnostics around existing parking boundaries. Count
+   candidates, proof successes/rejections, successful/cancelled commits and
+   wake reasons. Attribute host time to proof/token construction, commit
+   validation, normal execution, host input/network/output work, and waiting.
+   Record requested/actual wait, committed virtual time and discarded excess
+   host time. Avoid per-iteration logging and keep diagnostics out of the
+   ordinary disabled path.
+2. Corroborate that breakdown with a host-worker profile. Earlier synthetic
+   token construction and validation each cost roughly 110 microseconds, but
+   that does not prove they dominate this 23.6% real workload. Separate expensive
+   rejected candidates from successful parking before choosing a fix.
+3. Repeat matching off/on runs with multiple idle windows and more input trials
+   in separate immutable directories. Include input-write, worker observation,
+   output-publication and response timestamps to locate the latency tail. End
+   the disposable guest with `sync` and a clean halt, then exit the frontend.
+4. Report instrumentation overhead and a disabled-path active-work control.
+   Propose the smallest change supported by the profile, with the existing
+   core proof and all wakeup/event-boundary fixtures retained. Do not increase
+   the 2 ms wait, relax proof checks, enable parking by default or expand to SMP
+   merely to improve the CPU percentage.
+
+Issue #5 remains open. This checkpoint's correctness review is complete; the
+remaining work is measured tuning and broader acceptance, not reopening the
+resolved clock, BREAK or output-drain findings.
 
 ## Final re-review: accepted checkpoint
 
@@ -36,8 +112,8 @@ Independent validation of the submitted source also passes:
   55,758,848 outcomes, exit 0. This is a firmware non-parking control, not a
   fresh Solaris or desktop acceptance run.
 
-The new `src/emulator/parking_tests.rs` is currently untracked; include it in
-the checkpoint commit. The broader independent cases are retained below for
+The new `src/emulator/parking_tests.rs` is now included in `a88d769`.
+The broader independent cases are retained below for
 future promotion when extending this protocol. In particular, preserve the
 actual-worker ordering case and during-wait arrival cases, not only tests
 which call the output helper directly.
@@ -49,7 +125,7 @@ and reconstruction scripts. Production source hashes were unchanged throughout
 review. Temporary build and source copies are removed after validation;
 compact evidence is retained. No guest disks or live settings were used.
 
-### Performance and documentation scope
+### Earlier performance and documentation scope (superseded by the matching runs above)
 
 The quoted **24.79% CPU and 11.36/37.64 ms PTY median/p95 are from the preceding
 wait-first candidate**, before the final output-drain/context/test changes.

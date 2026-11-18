@@ -118,7 +118,10 @@
 
 - [Issue #5 device-service review](performance-issue5-device-service-review.md) — accepted held-reset IRQ correction, six promoted fixtures, matching boot evidence and a pinned SS-20 idle follow-up.
 
-- [Issue #5 frontend parking review](performance-issue5-idle-parking-frontend-review.md) — historical independent review snapshot for the accepted default-off checkpoint; 14/14 cases, 114 frontend tests, Clippy, formatting, SDL smoke, release and original-OBP display smoke pass.
+- [Issue #5 frontend parking review](performance-issue5-idle-parking-frontend-review.md) — committed default-off checkpoint accepted; 114 tests and 14 independent fixtures; matching 99.746%→23.586% worker CPU evidence verified, latency scope recorded, next work order is cost attribution before tuning.
+- [Issue #5 idle-parking profile](performance-issue5-idle-parking-profile.md) — uncommitted worker timing study; 74.2% CPU reduction verified, with overhead/phase/latency attribution corrections recorded in the review.
+- [Issue #5 profile isolation](performance-issue5-idle-parking-profile-isolation.md) — accepted default-off `parking-profile` feature checkpoint `9b21916`; twenty-pair arithmetic verified, reproduced release binaries, 114 tests per build and 14/17 review fixtures pass; ordinary-build slowdown resolved.
+- [Issue #5 idle-parking profile review](performance-issue5-idle-parking-profile-review.md) — historical overhead/phase findings and next measurement work order; the +4.19% ordinary-build regression is resolved by accepted compile-time isolation, with both idle regimes retained.
 - [Issue #5 parking-token review](performance-issue5-idle-parking-token-review.md) — final MMU-proof patch applied and all 27 fixtures promoted in accepted core checkpoint e3d87e3; 781/784 unique core tests pass.
 - [Issue #5 opt-in Heliacal parking](performance-issue5-idle-parking-frontend.md) — committed default-off checkpoint `a88d769`; bounded wait/recheck/commit, console drain, fresh matched off/on Solaris CPU/PTY measurements; issue #5 open.
 - [Issue #5 core parking token](performance-issue5-idle-parking-token.md) — accepted checkpoint e3d87e3; conditional proof, readiness, deadline and configuration invalidation validated; real Solaris admission confirmed; frontend trial reviewed separately.
