@@ -390,3 +390,35 @@ impl Timers {
             ))
     }
 }
+
+impl crate::diagnostic::Fingerprint for Counter {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u32(self.count);
+        digest.u32(self.limit);
+        digest.bool(self.pending);
+    }
+}
+
+impl crate::diagnostic::Fingerprint for UserTimer {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u64(self.count);
+        digest.bool(self.overflow);
+    }
+}
+
+impl crate::diagnostic::Fingerprint for ProcessorTimer {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.fingerprint(&self.processor);
+        digest.fingerprint(&self.user);
+        digest.bool(self.user_run);
+        digest.bool(self.user_mode);
+    }
+}
+
+impl crate::diagnostic::Fingerprint for Timers {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.fingerprint(&self.system);
+        digest.fingerprint(&self.processors);
+        digest.u16(self.phase_ns);
+    }
+}

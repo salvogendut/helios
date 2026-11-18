@@ -199,3 +199,12 @@ impl MxccState {
         Ok(())
     }
 }
+
+impl crate::diagnostic::Fingerprint for MxccState {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u8(self.mid);
+        digest.u32(self.identity);
+        digest.fingerprint(&self.data);
+        digest.fingerprint(&self.registers);
+    }
+}

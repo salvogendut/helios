@@ -137,3 +137,16 @@ impl Keyboard {
         }
     }
 }
+
+impl crate::diagnostic::Fingerprint for Keyboard {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.fingerprint(&self.queue);
+        digest.fingerprint(&self.pressed);
+        digest.u64(self.phase);
+        digest.bool(self.led_command);
+        digest.fingerprint(&self.pending_command);
+        digest.u8(self.leds);
+        digest.bool(self.bell);
+        digest.bool(self.click);
+    }
+}

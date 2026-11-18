@@ -101,6 +101,17 @@ impl Mouse {
     }
 }
 
+impl crate::diagnostic::Fingerprint for Mouse {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u8(self.buttons);
+        digest.i32(self.dx);
+        digest.i32(self.dy);
+        digest.bool(self.changed);
+        digest.fingerprint(&self.queue);
+        digest.u64(self.phase);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

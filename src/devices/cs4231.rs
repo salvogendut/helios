@@ -102,3 +102,10 @@ impl Cs4231 {
         Ok(())
     }
 }
+
+impl crate::diagnostic::Fingerprint for Cs4231 {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.fingerprint(&self.regs);
+        digest.fingerprint(&self.dregs);
+    }
+}

@@ -193,3 +193,29 @@ fn profile_reset_and_other_threads_preserve_token_and_machine() {
     assert!(m.validate_parking_token(&token));
     assert!(before.differences(&m.diagnostic_snapshot()).is_empty());
 }
+
+#[test]
+fn device_mutation_invalidates_a_token() {
+    let mut machine = idle_machine();
+    let token = machine.parking_token().unwrap();
+    machine.bus.devices_mut().unwrap().auxiliary.write(0x02);
+    assert_eq!(
+        machine.advance_parked(token, 1).unwrap_err(),
+        ParkingError::Stale
+    );
+}
+
+#[test]
+fn staged_serial_payload_invalidates_a_token() {
+    let mut machine = idle_machine();
+    let token = machine.parking_token().unwrap();
+    let serial = &mut machine.bus.devices_mut().unwrap().serial;
+    serial.write(4, 3).unwrap();
+    serial.write(4, 1).unwrap();
+    assert!(serial.receiver_enabled(helios::devices::serial::Channel::A));
+    assert!(serial.receive(helios::devices::serial::Channel::A, b'x'));
+    assert_eq!(
+        machine.advance_parked(token, 1).unwrap_err(),
+        ParkingError::Stale
+    );
+}

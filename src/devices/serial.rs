@@ -421,3 +421,28 @@ impl Serial {
         Ok(())
     }
 }
+
+impl crate::diagnostic::Fingerprint for Port {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.fingerprint(&self.wr);
+        digest.fingerprint(&self.rx);
+        digest.fingerprint(&self.output);
+        digest.fingerprint(&self.tx);
+        digest.bool(self.underrun);
+        digest.bool(self.break_active);
+        digest.fingerprint(&self.break_latch);
+        digest.bool(self.rx_pending);
+        digest.bool(self.rx_first_armed);
+        digest.bool(self.tx_pending);
+        digest.u64(self.receiver_epoch);
+    }
+}
+
+impl crate::diagnostic::Fingerprint for Serial {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.fingerprint(&self.ports);
+        digest.u8(self.pointer);
+        digest.u8(self.vector);
+        digest.u8(self.master);
+    }
+}

@@ -420,3 +420,31 @@ impl InterruptController {
         Ok(())
     }
 }
+
+impl crate::diagnostic::Fingerprint for TargetPolicy {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u8(match self {
+            Self::Ncr => 0,
+            Self::Mbus => 1,
+        });
+    }
+}
+
+impl crate::diagnostic::Fingerprint for Bank {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u32(self.soft);
+        digest.bool(self.cpu_timer);
+        digest.u32(self.level15_sources);
+        digest.u16(self.levels);
+    }
+}
+
+impl crate::diagnostic::Fingerprint for InterruptController {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u32(self.sources);
+        digest.u32(self.mask);
+        digest.u8(self.target);
+        digest.fingerprint(&self.policy);
+        digest.fingerprint(&self.banks);
+    }
+}

@@ -79,3 +79,10 @@ impl Ecc {
         Ok(())
     }
 }
+
+impl crate::diagnostic::Fingerprint for Ecc {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u32(self.version);
+        digest.fingerprint(&self.regs);
+    }
+}

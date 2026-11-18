@@ -264,3 +264,24 @@ impl Nvram {
         Ok(())
     }
 }
+
+impl crate::diagnostic::Fingerprint for Clock {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u8(self.second);
+        digest.u8(self.minute);
+        digest.u8(self.hour);
+        digest.u8(self.weekday);
+        digest.u8(self.date);
+        digest.u8(self.month);
+        digest.u8(self.year);
+        digest.bool(self.stopped);
+    }
+}
+
+impl crate::diagnostic::Fingerprint for Nvram {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u64(NVRAM_SIZE as u64);
+        digest.bytes(self.bytes.as_ref());
+        digest.fingerprint(&self.clock);
+    }
+}

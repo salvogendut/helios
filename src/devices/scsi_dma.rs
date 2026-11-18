@@ -186,3 +186,24 @@ impl ScsiDma {
         Ok(())
     }
 }
+
+impl crate::diagnostic::Fingerprint for ScsiDma {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u32(self.control);
+        digest.u32(self.address);
+        digest.u32(self.count);
+        digest.u32(self.next_address);
+        digest.u32(self.next_count);
+        for value in [
+            self.loaded,
+            self.next_loaded,
+            self.slave_error,
+            self.scsi_irq,
+            self.memory_error,
+            self.terminal_count,
+            self.request,
+        ] {
+            digest.bool(value);
+        }
+    }
+}

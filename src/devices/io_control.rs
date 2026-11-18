@@ -393,3 +393,36 @@ impl IoControl {
         }
     }
 }
+
+impl crate::diagnostic::Fingerprint for IoTlbFlush {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        match self {
+            Self::All => digest.u8(0),
+            Self::Page(page) => {
+                digest.u8(1);
+                digest.u32(*page);
+            }
+        }
+    }
+}
+
+impl crate::diagnostic::Fingerprint for IoControl {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u32(self.version);
+        digest.u32(self.control);
+        digest.u32(self.table_base);
+        digest.fingerprint(&self.slots);
+        digest.u32(self.arbitration);
+        digest.fingerprint(&self.flushes);
+        digest.u32(self.async_status);
+        digest.u32(self.async_address);
+        digest.bool(self.async_locked);
+        digest.u32(self.memory_status);
+        digest.u32(self.memory_address);
+        digest.bool(self.memory_status_locked);
+        digest.bool(self.memory_address_locked);
+        digest.u32(self.virtual_address_mask);
+        digest.u32(self.virtual_address_compare);
+        digest.u32(self.arbiter_enable);
+    }
+}

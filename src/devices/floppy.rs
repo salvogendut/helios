@@ -313,3 +313,31 @@ impl Floppy {
         Ok(())
     }
 }
+
+impl crate::diagnostic::Fingerprint for Motion {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u64(self.remaining_ns);
+        digest.u8(self.cylinder);
+        digest.u8(self.status);
+    }
+}
+
+impl crate::diagnostic::Fingerprint for Floppy {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u8(self.dor);
+        digest.u8(self.rate);
+        digest.fingerprint(&self.specify);
+        digest.u8(self.config);
+        digest.u8(self.pretrack);
+        digest.u8(self.perpendicular);
+        digest.bool(self.locked);
+        digest.fingerprint(&self.command);
+        digest.fingerprint(&self.result);
+        digest.fingerprint(&self.poll_ns);
+        digest.u8(self.reset_status);
+        digest.bool(self.interrupt);
+        digest.fingerprint(&self.cylinders);
+        digest.fingerprint(&self.motions);
+        digest.fingerprint(&self.seek_results);
+    }
+}

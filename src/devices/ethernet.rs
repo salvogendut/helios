@@ -447,3 +447,40 @@ fn crc(bytes: &[u8]) -> u32 {
     }
     value
 }
+
+impl crate::diagnostic::Fingerprint for Phase {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u8(match self {
+            Self::Idle => 0,
+            Self::Init => 1,
+            Self::TxDescriptor => 2,
+            Self::TxData => 3,
+            Self::TxStatus => 4,
+            Self::RxDescriptor => 5,
+            Self::RxData => 6,
+            Self::RxCount => 7,
+            Self::RxStatus => 8,
+        });
+    }
+}
+
+impl crate::diagnostic::Fingerprint for Ethernet {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u16(self.rap);
+        digest.fingerprint(&self.csr);
+        digest.bool(self.initialized);
+        digest.u16(self.mode);
+        digest.fingerprint(&self.mac);
+        digest.u64(self.filter);
+        digest.fingerprint(&self.rings);
+        digest.fingerprint(&self.lengths);
+        digest.fingerprint(&self.positions);
+        digest.fingerprint(&self.phase);
+        digest.fingerprint(&self.words);
+        digest.u64(self.index as u64);
+        digest.fingerprint(&self.packet);
+        digest.u64(self.poll_ns);
+        digest.fingerprint(&self.incoming);
+        digest.fingerprint(&self.outgoing);
+    }
+}

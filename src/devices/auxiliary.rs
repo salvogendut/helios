@@ -56,3 +56,12 @@ impl Auxiliary {
         Ok(())
     }
 }
+
+impl crate::diagnostic::Fingerprint for Auxiliary {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u8(self.outputs);
+        digest.bool(self.high_density);
+        digest.u64(self.terminal_count_pulses);
+        digest.u8(self.power_scratch);
+    }
+}

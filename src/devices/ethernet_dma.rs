@@ -118,3 +118,14 @@ impl EthernetDma {
         Ok(())
     }
 }
+
+impl crate::diagnostic::Fingerprint for EthernetDma {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u32(self.control);
+        digest.u32(self.base);
+        digest.u32(self.diagnostic);
+        digest.bool(self.slave_error);
+        digest.bool(self.memory_error);
+        digest.bool(self.mac_irq);
+    }
+}

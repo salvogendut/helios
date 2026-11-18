@@ -40,3 +40,10 @@ impl ResetControl {
         self.status |= WATCHDOG_STATUS;
     }
 }
+
+impl crate::diagnostic::Fingerprint for ResetControl {
+    fn fingerprint(&self, digest: &mut crate::diagnostic::Digest) {
+        digest.u32(self.status);
+        digest.bool(self.requested);
+    }
+}

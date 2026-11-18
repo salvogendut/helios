@@ -503,6 +503,31 @@ pub struct SystemBusState {
 
 fn devices_digest(devices: &Sun4mDevices) -> u64 {
     let mut digest = crate::diagnostic::Digest::new();
+    digest.fingerprint(&devices.auxiliary);
+    digest.fingerprint(&devices.cs4231);
+    digest.fingerprint(&devices.ecc);
+    digest.fingerprint(&devices.floppy);
+    digest.fingerprint(&devices.io_control);
+    digest.fingerprint(&devices.nvram);
+    digest.fingerprint(&devices.serial);
+    digest.fingerprint(&devices.keyboard_serial);
+    digest.fingerprint(&devices.keyboard);
+    digest.fingerprint(&devices.mouse);
+    digest.fingerprint(&devices.interrupts);
+    digest.fingerprint(&devices.timers);
+    digest.fingerprint(&devices.reset);
+    digest.fingerprint(&devices.scsi_dma);
+    digest.u64(devices.esp.diagnostic_digest());
+    digest.u64(devices.scsi.diagnostic_digest());
+    digest.fingerprint(&devices.ethernet_dma);
+    digest.fingerprint(&devices.ethernet);
+    digest.u32(devices.rtc_phase_ns);
+    digest.finish()
+}
+
+#[cfg(test)]
+fn devices_digest_reference(devices: &Sun4mDevices) -> u64 {
+    let mut digest = crate::diagnostic::Digest::new();
     digest.debug(&devices.auxiliary);
     digest.debug(&devices.cs4231);
     digest.debug(&devices.ecc);
@@ -586,7 +611,7 @@ impl SystemBus {
         let mut mxcc = crate::diagnostic::Digest::new();
         for installed in &self.mxccs {
             mxcc.byte(installed.mid);
-            mxcc.debug(&*installed.state.borrow());
+            mxcc.fingerprint(&*installed.state.borrow());
         }
         SystemBusState {
             layout: self.layout,
@@ -1217,7 +1242,7 @@ impl SystemBus {
         digest.u64(self.sx.as_ref().map_or(0, Sx::generation));
         for installed in &self.mxccs {
             digest.byte(installed.mid);
-            digest.debug(&*installed.state.borrow());
+            digest.fingerprint(&*installed.state.borrow());
         }
         digest.finish()
     }
@@ -2479,5 +2504,72 @@ impl Bus for SystemBus {
         self.memory
             .ldstub8(address)
             .map_err(|error| self.physical_error(error))
+    }
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::*;
+    use crate::devices::interrupt::Source;
+    use crate::devices::keyboard::Keyboard;
+    use crate::devices::nvram::Nvram;
+
+    fn digest_pair(label: &str, mutate: impl FnOnce(&mut Sun4mDevices)) -> (u64, u64) {
+        let mut bus = SystemBus::with_layout(Sun4mLayout::ss20());
+        bus.install_sun4m(Nvram::default()).unwrap();
+        let devices = bus.devices_mut().unwrap();
+        let before_typed = devices_digest(devices);
+        let before_reference = devices_digest_reference(devices);
+        mutate(devices);
+        let after_typed = devices_digest(devices);
+        let after_reference = devices_digest_reference(devices);
+        assert_ne!(
+            before_reference, after_reference,
+            "{label}: reference mutation was not observable"
+        );
+        assert_ne!(
+            before_typed, after_typed,
+            "{label}: typed digest omitted a fingerprinted field"
+        );
+        (before_typed, after_typed)
+    }
+
+    #[test]
+    fn typed_digest_tracks_each_device_class() {
+        digest_pair("aux", |devices| devices.auxiliary.write(0x02));
+        digest_pair("cs4231", |devices| devices.cs4231.write(0, 0x1234).unwrap());
+        digest_pair("ecc", |devices| devices.ecc.write(0, 0x1234).unwrap());
+        digest_pair("floppy", |devices| devices.floppy.write(2, 4).unwrap());
+        digest_pair("io", |devices| devices.io_control.write(0, 0x1234).unwrap());
+        digest_pair("nvram", |devices| devices.nvram.write(0x10, 0x5a).unwrap());
+        digest_pair("serial-b", |devices| devices.serial.write(0, 3).unwrap());
+        digest_pair("serial-b-reg", |devices| {
+            devices.serial.write(0, 1).unwrap()
+        });
+        digest_pair("kbd-serial", |devices| {
+            devices.keyboard_serial.write(0, 3).unwrap()
+        });
+        digest_pair("keyboard", |devices| {
+            devices.keyboard = Some(Keyboard::default());
+            assert!(devices.keyboard.as_mut().unwrap().key(1, true));
+        });
+        digest_pair("mouse", |devices| devices.mouse.motion(1, 2));
+        digest_pair("irq", |devices| {
+            devices.interrupts.set_source(Source::Serial, true)
+        });
+        digest_pair("timer", |devices| {
+            devices.timers.write_system(0, 100 << 9).unwrap()
+        });
+        digest_pair("reset", |devices| devices.reset.write(1));
+        digest_pair("scsi-dma", |devices| {
+            devices.scsi_dma.write(4, 0x1000).unwrap()
+        });
+        digest_pair("eth-dma", |devices| {
+            devices.ethernet_dma.write(4, 0x1000).unwrap()
+        });
+        digest_pair("ethernet", |devices| {
+            devices.ethernet.write(2, 1).unwrap();
+        });
+        digest_pair("rtc", |devices| devices.rtc_phase_ns = 1);
     }
 }
