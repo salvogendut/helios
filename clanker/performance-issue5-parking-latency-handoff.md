@@ -644,3 +644,13 @@ formatting and Clippy for both configurations. The remaining tracing changes
 in both repositories stay uncommitted and separate. The 40 ms bound and
 default-off setting remain; continuous input may keep the worker fully active,
 and #5 remains open.
+
+
+## Integration handoff
+
+The SCC/wait tracing was removed from both production worktrees after capture.
+Reproducible patches and apply/build instructions are retained under
+`local/issue5-jit-2026-11-18/tracing/`; raw evidence remains under
+`local/issue5-cwp-admission-2026-11-18/`. The production trees are clean at
+Helios `2358935` and Heliacal `682d85b`, with parking default-off, SS-20/UP only,
+the CWP proof, 2 ms cap and 40 ms serial-input grace.
