@@ -797,6 +797,24 @@ impl Cpu {
         })
     }
 
+    #[cfg(feature = "jit")]
+    pub(crate) fn execute_jit_op(&mut self, op: crate::jit::Op) {
+        use crate::jit::Operand;
+        match op {
+            crate::jit::Op::Sethi { rd, value } => self.write_reg(rd, value),
+            crate::jit::Op::Alu { op3, rd, rs1, rhs } => {
+                let b = match rhs {
+                    Operand::Register(index) => self.read_reg(index),
+                    Operand::Immediate(value) => value,
+                };
+                self.execute_alu(u32::from(op3), rd, rs1, b);
+            }
+        }
+        let next_pc = self.npc;
+        self.pc = next_pc;
+        self.npc = next_pc.wrapping_add(4);
+    }
+
     fn execute_decoded(&mut self, instruction: DecodedInstruction) {
         let mut next_pc = self.npc;
         let mut next_npc = self.npc.wrapping_add(4);

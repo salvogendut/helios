@@ -20,3 +20,6 @@ pub mod parking_profile;
 pub mod serial_host;
 pub mod system_bus;
 pub mod topology;
+
+#[cfg(feature = "jit")]
+pub mod jit;

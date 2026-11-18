@@ -1,6 +1,8 @@
 //! Bare-metal and sun4m harnesses with a polled console and NVRAM/RTC.
 //! Timers and interrupt delivery share a deterministic functional timebase.
 
+#[cfg(feature = "jit")]
+use crate::bus::AccessContext;
 use crate::bus::{BusError, Initiator, MapError};
 use crate::cpu::{Cpu, CpuConfig, CpuFault, FaultKind, Step};
 use crate::devices::{cgsix::Cgsix, mxcc::MxccState, nvram::Nvram, sx::Sx};
@@ -8,11 +10,13 @@ use crate::dma::DmaError;
 use crate::dram::{DramLayout, Ss5Dram};
 use crate::iommu::StandaloneIommu;
 use crate::mmu::MmuConfig;
+#[cfg(feature = "jit")]
+use crate::mmu::Width;
 use crate::system_bus::{Sun4mLayout, SystemBus, SystemBusState};
 use crate::topology::{
     ProcessorArbitration, ProcessorModule, ProcessorRunState, ProcessorTopology, PROCESSOR_MODULES,
 };
-#[cfg(feature = "parking-profile")]
+#[cfg(any(feature = "parking-profile", feature = "jit"))]
 use std::time::Instant;
 use std::{
     cell::RefCell,
@@ -1900,6 +1904,125 @@ impl Machine {
             completed += 1;
         }
         Ok(completed)
+    }
+
+    /// Experimental safe JIT block run. Device-equipped machines currently
+    /// use the interpreter so PROM wait accounting remains exact; device-free
+    /// bare-metal machines execute validated straight-line SETHI/ALU blocks.
+    #[cfg(feature = "jit")]
+    pub fn run_jit(&mut self, budget: u64) -> Result<crate::jit::RunStats, SchedulerError> {
+        let mut stats = crate::jit::RunStats::default();
+        let mut cache = crate::jit::Cache::default();
+        let mut force_fallback = false;
+        while stats.executed < budget {
+            if self.software_reset_requested() || self.cpu.error_state().is_some() {
+                break;
+            }
+            if force_fallback || self.bus.devices().is_some() || self.bus.interrupt_levels() != 0 {
+                let expected_pc = self.cpu.npc();
+                let expected_npc = expected_pc.wrapping_add(4);
+                match self.step() {
+                    Ok(step) => {
+                        stats.fallback_steps += 1;
+                        if matches!(step, Step::Executed { .. }) {
+                            stats.executed += 1;
+                            force_fallback =
+                                self.cpu.pc() != expected_pc || self.cpu.npc() != expected_npc;
+                        } else {
+                            stats.stopped = Some(step);
+                            break;
+                        }
+                    }
+                    Err(fault) => {
+                        return Err(SchedulerError::Cpu {
+                            processor: 0,
+                            fault,
+                        });
+                    }
+                }
+                continue;
+            }
+            let pc = self.cpu.pc();
+            let supervisor = self.cpu.psr() & crate::cpu::PSR_S != 0;
+            let key = crate::jit::Key {
+                pc,
+                supervisor,
+                mutation_epoch: self.bus.mutation_epoch(),
+                mmu_generation: self.cpu.mmu.execution_generation(),
+            };
+            let block = if let Some(block) = cache.get(&key).cloned() {
+                block
+            } else {
+                stats.compile_calls += 1;
+                let started = Instant::now();
+                let previous = self.bus.access_context();
+                self.bus
+                    .set_access_context(AccessContext::new(self.cpu.mmu.initiator(), supervisor));
+                let asi = if supervisor { 9 } else { 8 };
+                let mut words = Vec::with_capacity(crate::jit::MAX_BLOCK_INSNS);
+                for index in 0..crate::jit::MAX_BLOCK_INSNS {
+                    let address = pc.wrapping_add((index as u32) * 4);
+                    let Ok(word) = self.cpu.mmu.load(&mut self.bus, address, asi, Width::Word)
+                    else {
+                        break;
+                    };
+                    if crate::jit::decode(word).is_none() {
+                        break;
+                    }
+                    words.push(word);
+                }
+                self.bus.set_access_context(previous);
+                let block = crate::jit::compile(&words);
+                stats.compile_ns = stats.compile_ns.saturating_add(
+                    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                );
+                if !block.ops.is_empty() {
+                    stats.compiled_blocks += 1;
+                    stats.compiled_instructions += block.ops.len() as u64;
+                }
+                let key = crate::jit::Key {
+                    mmu_generation: self.cpu.mmu.execution_generation(),
+                    ..key
+                };
+                cache.insert(key, block.clone());
+                block
+            };
+            if block.ops.is_empty() {
+                let expected_pc = self.cpu.npc();
+                let expected_npc = expected_pc.wrapping_add(4);
+                match self.step() {
+                    Ok(step) => {
+                        stats.fallback_steps += 1;
+                        if matches!(step, Step::Executed { .. }) {
+                            stats.executed += 1;
+                            force_fallback =
+                                self.cpu.pc() != expected_pc || self.cpu.npc() != expected_npc;
+                        } else {
+                            stats.stopped = Some(step);
+                            break;
+                        }
+                    }
+                    Err(fault) => {
+                        return Err(SchedulerError::Cpu {
+                            processor: 0,
+                            fault,
+                        });
+                    }
+                }
+                continue;
+            }
+            let mut block_ns = 0u64;
+            for op in block.ops {
+                if stats.executed >= budget {
+                    break;
+                }
+                self.cpu.execute_jit_op(op);
+                block_ns = block_ns.saturating_add(self.clock.next_ns());
+                stats.executed += 1;
+            }
+            self.bus.advance_ns_fast(block_ns);
+        }
+        Ok(stats)
     }
 
     /// Single-CPU compatibility path for processor 0. Two-CPU callers must use

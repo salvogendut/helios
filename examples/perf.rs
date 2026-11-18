@@ -104,7 +104,7 @@ fn workload(mode: &str, iterations: u32) -> Workload {
     }
 }
 
-fn fixed(mode: &str, iterations: u32, decode_cache: bool) {
+fn fixed(mode: &str, iterations: u32, decode_cache: bool, jit: bool) {
     assert!(iterations != 0, "iterations must be nonzero");
     let workload = workload(mode, iterations);
     let mut machine = Machine::bare_metal(0x10000, 0).unwrap();
@@ -117,12 +117,26 @@ fn fixed(mode: &str, iterations: u32, decode_cache: bool) {
     let start = Instant::now();
     let mut traps = 0u64;
     let mut interrupts = 0u64;
-    for _ in 0..workload.loop_steps {
-        match machine.step().unwrap() {
-            Step::Executed { .. } => {}
-            Step::TrapTaken { .. } => traps += 1,
-            Step::InterruptTaken { .. } => interrupts += 1,
-            Step::SoftwareReset { .. } => panic!("unexpected reset"),
+    #[cfg(feature = "jit")]
+    let mut jit_stats = None;
+    if jit {
+        #[cfg(feature = "jit")]
+        {
+            let stats = machine.run_jit(workload.loop_steps).unwrap();
+            assert_eq!(stats.executed, workload.loop_steps, "{stats:?}");
+            assert_eq!(stats.stopped, None, "{stats:?}");
+            jit_stats = Some(stats);
+        }
+        #[cfg(not(feature = "jit"))]
+        panic!("build with --features jit");
+    } else {
+        for _ in 0..workload.loop_steps {
+            match machine.step().unwrap() {
+                Step::Executed { .. } => {}
+                Step::TrapTaken { .. } => traps += 1,
+                Step::InterruptTaken { .. } => interrupts += 1,
+                Step::SoftwareReset { .. } => panic!("unexpected reset"),
+            }
         }
     }
     let elapsed = start.elapsed();
@@ -153,14 +167,33 @@ fn fixed(mode: &str, iterations: u32, decode_cache: bool) {
         (Some(cpu), Some(util)) => (format!("{cpu:.6}"), format!("{util:.3}")),
         _ => ("unavailable".into(), "unavailable".into()),
     };
+    #[cfg(feature = "jit")]
+    let mut jit_text = String::new();
+    #[cfg(not(feature = "jit"))]
+    let jit_text = "";
+    #[cfg(feature = "jit")]
+    if let Some(stats) = jit_stats {
+        jit_text = format!(
+            " jit_blocks={} jit_instructions={} jit_calls={} jit_fallback={} jit_compile_ns={} jit_steady_ns_per_step={:.2}",
+            stats.compiled_blocks,
+            stats.compiled_instructions,
+            stats.compile_calls,
+            stats.fallback_steps,
+            stats.compile_ns,
+            (elapsed.as_nanos() as f64 - stats.compile_ns as f64).max(0.0)
+                / workload.loop_steps as f64
+        );
+    }
     println!(
-        "workload=fixed/{} iterations={iterations} steps={} executed={} traps={} interrupts={} decode_cache={} wall_s={:.6} host_cpu_s={} cpu_util={} ns_per_step={:.2} checksum=ok",
+        "workload=fixed/{} iterations={iterations} steps={} executed={} traps={} interrupts={} decode_cache={} jit={}{} wall_s={:.6} host_cpu_s={} cpu_util={} ns_per_step={:.2} checksum=ok",
         workload.name,
         workload.loop_steps,
         workload.loop_steps,
         traps,
         interrupts,
         if decode_cache { "on" } else { "off" },
+        if jit { "on" } else { "off" },
+        jit_text,
         elapsed.as_secs_f64(),
         cpu_text,
         util_text,
@@ -298,12 +331,14 @@ fn main() {
                 eprintln!("iterations must be nonzero");
                 std::process::exit(2);
             }
-            let decode_cache = args.get(4).map(String::as_str) == Some("cache");
-            fixed(mode, iterations, decode_cache);
+            let mode_flag = args.get(4).map(String::as_str);
+            let decode_cache = mode_flag == Some("cache");
+            let jit = mode_flag == Some("jit");
+            fixed(mode, iterations, decode_cache, jit);
         }
         _ => {
             eprintln!(
-                "usage: perf fixed <alu|memory> [iterations] [cache]\n\
+                "usage: perf fixed <alu|memory> [iterations] [cache|jit]\n\
                  perf compare <alu|memory> [iterations]\n\
                  Guest boot/scanout workloads use the supplied ROM, NVRAM and disk media."
             );

@@ -853,6 +853,11 @@ impl Srmmu {
         }
     }
 
+    #[cfg(feature = "jit")]
+    pub(crate) fn execution_generation(&self) -> u64 {
+        self.tlb_generation
+    }
+
     pub fn load(
         &mut self,
         bus: &mut impl Bus,

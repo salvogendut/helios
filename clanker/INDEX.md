@@ -141,3 +141,6 @@
 - [Issue #5 idle-parking design review](performance-issue5-idle-parking-review.md) — eligibility, clock/deadline and wakeup corrections; PTY launch unblocked with 20 guest-verified transactions; time/deadline foundation is the next implementation slice.
 - [Issue #5 idle-parking design handoff](performance-issue5-idle-parking-handoff.md) — evidence, wakeup inventory, proposed core/frontend API and required measurements; review corrections remain before parking implementation and issue #5 stays open.
 - [Device-service readiness guards](performance-issue5-device-service.md) — ESP/Ethernet service predicates, matching guard-on/off boot outcomes and qualified local timing results.
+
+- [Safe JIT prototype design](jit-prototype-design.md) — optional default-off straight-line SETHI/ALU block engine with MMU validation, conservative invalidation and interpreter fallback.
+- [Safe JIT prototype result](jit-prototype-results.md) — 1.37x on the fixed ALU workload; memory workload regresses, device machines stay on the interpreter; candidate awaits review.

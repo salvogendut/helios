@@ -10,6 +10,7 @@ publish = false
 default = []
 perf-counters = []
 parking-profile = []
+jit = []
 chd = ["dep:libchdman-rs"]
 host-icmp = ["dep:socket2"]
 
