@@ -1,5 +1,12 @@
 # Issue #5: idle-parking profile review and next-slice handoff
 
+Token-profile update 2026-11-18: core sub-profiling is committed as Helios
+`21c9d2e` / Heliacal `8e8d82a` and the three state-comparison fixtures are
+promoted; see
+[token sub-profile](performance-issue5-token-profile.md). Device digest is
+93.4–93.8% of token+advance elapsed, with timer overhead undetected. No
+optimization is implemented; digest encoding is the narrow proposal.
+
 Isolation accepted 2026-11-18: the default-off `parking-profile` feature resolves
 the ordinary-build slowdown. Independent source, binary, test and measurement
 checks pass; see [profile isolation](performance-issue5-idle-parking-profile-isolation.md).
