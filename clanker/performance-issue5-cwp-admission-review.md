@@ -6,7 +6,14 @@ an explicit command-response latency cost. Default-on/general latency
 acceptance remains open under issue #5. Earlier build-mismatch findings below
 are retained as history; the final section records the corrected evidence.
 This review changed documentation and local fixtures only, with no production
-code edits, commits, pushes or merges.
+code edits, commits, pushes or merges. The accepted checkpoint was subsequently
+committed as Helios `3a1cf6f` and Heliacal `e8e2cfc`, matching the reviewed
+production source hashes. Subsequent uncommitted changes add feature-gated
+SCC diagnostics; admission and wait policy are unchanged. Actual SCC tracing
+now supports read-to-production localization. The subsequent wait-chain audit
+supports a host-pacing tradeoff with nearly unchanged guest response time;
+the latency handoff specifies a bounded frontend input-grace prototype and
+its validation. Core proof and checkpoint acceptance are unchanged.
 
 ## Source and independent checks
 
@@ -280,7 +287,8 @@ without a separate duplicate target, and README/configuration docs describe
 default-off SS-20/UP scope and the measured latency tradeoff. Submitted
 frontend validation is **115 default / 119 profiling**, with clean Clippy.
 Production core/frontend code hashes still match the reviewed candidate;
-independent formatting checks pass. The checkpoint is ready to commit.
+independent formatting checks pass. The checkpoint is now committed at the
+revisions recorded above.
 No additional broad benchmark or proof round is required for this checkpoint.
 The next bounded task is [latency attribution](performance-issue5-parking-latency-handoff.md),
 with no timing-policy changes before the delay is located.

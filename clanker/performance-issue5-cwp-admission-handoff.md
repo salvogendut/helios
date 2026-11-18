@@ -1,6 +1,7 @@
 # Issue #5: admit proved idle loops across CWP 0–7
 
-Status: **accepted as an experimental, default-off checkpoint**, uncommitted.
+Status: **accepted as an experimental, default-off checkpoint**, committed
+as Helios `3a1cf6f` and Heliacal `e8e2cfc`.
 The correctly composed rerun establishes idle CPU savings and a command-
 response latency cost. Earlier wrong-frontend measurements remain historical
 evidence only. See the final [review](performance-issue5-cwp-admission-review.md)
@@ -195,7 +196,7 @@ The checkpoint is accepted with parking still disabled by default. The real
 CWP transition trigger and added command-response latency are unresolved;
 neither permits weakening proof or wakeup checks. Core human docs are updated;
 frontend CWP tests and the scope/latency user-doc note are now promoted and
-validated. The default-off checkpoint is ready to commit; no new broad
+validated. The default-off checkpoint is committed; no new broad
 benchmark is requested. Continue the separate bounded
 [latency attribution handoff](performance-issue5-parking-latency-handoff.md).
 No commit was made by review.
