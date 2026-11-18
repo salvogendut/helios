@@ -31,6 +31,18 @@ pub const DEFAULT_RAM_BYTES: usize = 128 * 1024 * 1024;
 pub const SOLARIS_IDLE_PC: u32 = 0xf006_fa24;
 pub const SOLARIS_IDLE_NPC: u32 = 0xf006_fa28;
 pub const SOLARIS_IDLE_PSR: u32 = 0x4040_00e0;
+pub const SOLARIS_IDLE_CWP_MASK: u32 = 0x1f;
+
+/// The mapped SS-20 Solaris idle boundary accepts only implemented register
+/// windows 0-7; every non-CWP PSR bit must match the captured value exactly.
+pub const fn solaris_idle_psr_matches(psr: u32) -> bool {
+    psr & !SOLARIS_IDLE_CWP_MASK == SOLARIS_IDLE_PSR & !SOLARIS_IDLE_CWP_MASK
+        && psr & SOLARIS_IDLE_CWP_MASK < 8
+}
+
+pub const fn solaris_idle_boundary(pc: u32, npc: u32, psr: u32) -> bool {
+    pc == SOLARIS_IDLE_PC && npc == SOLARIS_IDLE_NPC && solaris_idle_psr_matches(psr)
+}
 static NEXT_PARKING_OWNER: AtomicU64 = AtomicU64::new(1);
 /// SS5/85 processor clock.
 pub const CPU_CLOCK_HZ: u64 = 85_000_000;
@@ -1365,9 +1377,7 @@ impl Machine {
             }
             if self.cpu.error_state().is_some()
                 || self.software_reset_requested()
-                || self.cpu.pc() != SOLARIS_IDLE_PC
-                || self.cpu.npc() != SOLARIS_IDLE_NPC
-                || self.cpu.psr() != SOLARIS_IDLE_PSR
+                || !solaris_idle_boundary(self.cpu.pc(), self.cpu.npc(), self.cpu.psr())
             {
                 return Err(ParkingError::NotIdleBoundary);
             }
@@ -1451,9 +1461,7 @@ impl Machine {
             && self.secondary_cpu.is_none()
             && self.cpu.error_state().is_none()
             && !self.software_reset_requested()
-            && self.cpu.pc() == SOLARIS_IDLE_PC
-            && self.cpu.npc() == SOLARIS_IDLE_NPC
-            && self.cpu.psr() == SOLARIS_IDLE_PSR
+            && solaris_idle_boundary(self.cpu.pc(), self.cpu.npc(), self.cpu.psr())
             && self.bus.logical_ns() == token.virtual_ns
             && self.bus.deferred_ns() == token.deferred_ns
             && self.bus.mutation_epoch() == token.mutation_epoch

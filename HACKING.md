@@ -367,6 +367,9 @@ from clock equality; fresh/reset machines and direct `step` report no CPU
 deadline. `parking_token()`/`advance_parked()` are a separate, single-CPU
 SS-20 Solaris-boundary prototype: tokens are read-only to issue/validate,
 single-use, clipped to the earliest event, and never sleep or service the CPU.
+The shared boundary predicate accepts CWP 0–7 with every other PSR bit exact.
+It does not replace the mapped proof, and tokens retain the complete CPU
+snapshot: changing CWP, WIM or an inactive window invalidates an old token.
 `Machine::with_profile_processors` is the explicit one/two-module constructor;
 SS-5 rejects two. Default `with_profile` construction remains one CPU. CPU 2 is
 independently owned in `secondary_cpu`; it starts present but arbitration-

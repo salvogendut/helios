@@ -302,8 +302,11 @@ processor-ready deadlines folded into the same query.
 
 `Machine::parking_token()` is a narrow, core-only token API for the observed
 SPARCstation 20 Solaris 2.6 serial-idle boundary
-(`SOLARIS_IDLE_PC/NPC/PSR`). It is available only on an SS-20 with one CPU, exact supervisor/ET boundary
-state, the complete mapped idle instruction path, its three load dependencies,
+(`SOLARIS_IDLE_PC/NPC/PSR`). It is available only on an SS-20 with one CPU.
+`solaris_idle_boundary` accepts register windows CWP 0–7 while requiring
+every other PSR bit and PC/nPC to match exactly; encodings 8–31 are rejected.
+This cheap predicate is only a candidate check. Issuance still requires
+the complete mapped idle instruction path, its three load dependencies,
 steady `%o7`/`%l0` and MMU diagnostic state, and no pending/deliverable
 interrupt or pre-step service work. Boot mode, PTP2 override state and
 ambiguous fast-cache/TLB cases are refused conservatively; a TLB miss or
@@ -313,7 +316,10 @@ epoch. Token
 issuance and `validate_parking_token()` are read-only. A token is rejected as
 stale after CPU/MMU/FPU changes, bus-visible memory/mapping/device writes,
 external device-time or deferred-time advancement, reset, or use on another
-machine. The token is not `Clone`; `advance_parked()` consumes it.
+machine. The full CPU snapshot retains the actual CWP, WIM and every physical
+register window. Changing to another eligible window still invalidates an
+issued token; equality is never normalized by masking CWP. The token is not
+`Clone`; `advance_parked()` consumes it.
 
 `advance_parked(token, max_ns)` advances only virtual device time. It clips the
 interval to the earliest `timebase().next_ns` event, remembers whether that
