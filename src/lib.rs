@@ -15,6 +15,8 @@ pub mod machine;
 pub mod media;
 pub mod mmu;
 pub mod net;
+#[cfg(feature = "parking-profile")]
+pub mod parking_profile;
 pub mod serial_host;
 pub mod system_bus;
 pub mod topology;

@@ -9,6 +9,7 @@ publish = false
 [features]
 default = []
 perf-counters = []
+parking-profile = []
 chd = ["dep:libchdman-rs"]
 host-icmp = ["dep:socket2"]
 

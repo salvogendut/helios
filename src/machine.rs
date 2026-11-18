@@ -12,6 +12,8 @@ use crate::system_bus::{Sun4mLayout, SystemBus, SystemBusState};
 use crate::topology::{
     ProcessorArbitration, ProcessorModule, ProcessorRunState, ProcessorTopology, PROCESSOR_MODULES,
 };
+#[cfg(feature = "parking-profile")]
+use std::time::Instant;
 use std::{
     cell::RefCell,
     fmt,
@@ -1355,39 +1357,95 @@ impl Machine {
     /// boundary. This is a narrow core-only prototype, not a generic idle
     /// classifier. Querying it never mutates CPU, device, RAM or MMU state.
     pub fn parking_token(&self) -> Result<ParkingToken, ParkingError> {
-        if self.profile != MachineProfile::Ss20 || self.secondary_cpu.is_some() {
-            return Err(ParkingError::Unsupported);
-        }
-        if self.cpu.error_state().is_some()
-            || self.software_reset_requested()
-            || self.cpu.pc() != SOLARIS_IDLE_PC
-            || self.cpu.npc() != SOLARIS_IDLE_NPC
-            || self.cpu.psr() != SOLARIS_IDLE_PSR
-            || !self.idle_boundary_proof()
-        {
-            return Err(ParkingError::NotIdleBoundary);
-        }
-        if !self.bus.parking_ready() {
-            return Err(ParkingError::ServiceRequired);
-        }
-        Ok(ParkingToken {
-            owner: self.parking_owner,
-            reset_epoch: self.reset_epoch,
-            virtual_ns: self.bus.logical_ns(),
-            deferred_ns: self.bus.deferred_ns(),
-            mutation_epoch: self.bus.mutation_epoch(),
-            configuration_epoch: self.bus.configuration_epoch(),
-            device_digest: self.bus.parking_device_digest(),
-            arbitration: self.processor_arbitration(0),
-            cpu: snapshot_cpu(&self.cpu),
-        })
+        #[cfg(feature = "parking-profile")]
+        let started = Instant::now();
+        let result = (|| {
+            if self.profile != MachineProfile::Ss20 || self.secondary_cpu.is_some() {
+                return Err(ParkingError::Unsupported);
+            }
+            if self.cpu.error_state().is_some()
+                || self.software_reset_requested()
+                || self.cpu.pc() != SOLARIS_IDLE_PC
+                || self.cpu.npc() != SOLARIS_IDLE_NPC
+                || self.cpu.psr() != SOLARIS_IDLE_PSR
+            {
+                return Err(ParkingError::NotIdleBoundary);
+            }
+            #[cfg(feature = "parking-profile")]
+            let proof = crate::parking_profile::timed(
+                || self.idle_boundary_proof(),
+                |ns, ok| crate::parking_profile::proof(ns, *ok),
+            );
+            #[cfg(not(feature = "parking-profile"))]
+            let proof = self.idle_boundary_proof();
+            if !proof {
+                return Err(ParkingError::NotIdleBoundary);
+            }
+            #[cfg(feature = "parking-profile")]
+            let ready = crate::parking_profile::timed(
+                || self.bus.parking_ready(),
+                |ns, ok| crate::parking_profile::readiness(ns, *ok),
+            );
+            #[cfg(not(feature = "parking-profile"))]
+            let ready = self.bus.parking_ready();
+            if !ready {
+                return Err(ParkingError::ServiceRequired);
+            }
+            #[cfg(feature = "parking-profile")]
+            let device_digest = crate::parking_profile::timed(
+                || self.bus.parking_device_digest(),
+                |ns, _| crate::parking_profile::digest(ns),
+            );
+            #[cfg(not(feature = "parking-profile"))]
+            let device_digest = self.bus.parking_device_digest();
+            #[cfg(feature = "parking-profile")]
+            let arbitration = crate::parking_profile::timed(
+                || self.processor_arbitration(0),
+                |ns, _| crate::parking_profile::arbitration(ns),
+            );
+            #[cfg(not(feature = "parking-profile"))]
+            let arbitration = self.processor_arbitration(0);
+            #[cfg(feature = "parking-profile")]
+            let cpu = crate::parking_profile::timed(
+                || snapshot_cpu(&self.cpu),
+                |ns, _| crate::parking_profile::snapshot_cpu(ns),
+            );
+            #[cfg(not(feature = "parking-profile"))]
+            let cpu = snapshot_cpu(&self.cpu);
+            Ok(ParkingToken {
+                owner: self.parking_owner,
+                reset_epoch: self.reset_epoch,
+                virtual_ns: self.bus.logical_ns(),
+                deferred_ns: self.bus.deferred_ns(),
+                mutation_epoch: self.bus.mutation_epoch(),
+                configuration_epoch: self.bus.configuration_epoch(),
+                device_digest,
+                arbitration,
+                cpu,
+            })
+        })();
+        #[cfg(feature = "parking-profile")]
+        crate::parking_profile::token(
+            crate::parking_profile::nanos(started.elapsed()),
+            result.is_ok(),
+        );
+        result
     }
 
     /// Validate a token without consuming it or mutating the machine. The
     /// checks cover reset ownership, the exact boundary, CPU/MMU/FPU state,
     /// bus-visible memory/mapping/device writes, deferred time and device state.
     pub fn validate_parking_token(&self, token: &ParkingToken) -> bool {
-        token.owner == self.parking_owner
+        #[cfg(feature = "parking-profile")]
+        let started = Instant::now();
+        let result = self.validate_parking_token_impl(token);
+        #[cfg(feature = "parking-profile")]
+        crate::parking_profile::validate(crate::parking_profile::nanos(started.elapsed()), result);
+        result
+    }
+
+    fn validate_parking_token_impl(&self, token: &ParkingToken) -> bool {
+        if !(token.owner == self.parking_owner
             && token.reset_epoch == self.reset_epoch
             && self.profile == MachineProfile::Ss20
             && self.secondary_cpu.is_none()
@@ -1399,10 +1457,45 @@ impl Machine {
             && self.bus.logical_ns() == token.virtual_ns
             && self.bus.deferred_ns() == token.deferred_ns
             && self.bus.mutation_epoch() == token.mutation_epoch
-            && self.bus.configuration_epoch() == token.configuration_epoch
-            && self.bus.parking_device_digest() == token.device_digest
-            && self.processor_arbitration(0) == token.arbitration
-            && snapshot_cpu(&self.cpu) == token.cpu
+            && self.bus.configuration_epoch() == token.configuration_epoch)
+        {
+            return false;
+        }
+        #[cfg(feature = "parking-profile")]
+        let device_digest = crate::parking_profile::timed(
+            || self.bus.parking_device_digest(),
+            |ns, _| crate::parking_profile::digest(ns),
+        );
+        #[cfg(not(feature = "parking-profile"))]
+        let device_digest = self.bus.parking_device_digest();
+        if device_digest != token.device_digest {
+            return false;
+        }
+        #[cfg(feature = "parking-profile")]
+        let arbitration = crate::parking_profile::timed(
+            || self.processor_arbitration(0),
+            |ns, _| crate::parking_profile::arbitration(ns),
+        );
+        #[cfg(not(feature = "parking-profile"))]
+        let arbitration = self.processor_arbitration(0);
+        if arbitration != token.arbitration {
+            return false;
+        }
+        #[cfg(feature = "parking-profile")]
+        let cpu = crate::parking_profile::timed(
+            || snapshot_cpu(&self.cpu),
+            |ns, _| crate::parking_profile::snapshot_cpu(ns),
+        );
+        #[cfg(not(feature = "parking-profile"))]
+        let cpu = snapshot_cpu(&self.cpu);
+        #[cfg(feature = "parking-profile")]
+        let equal = crate::parking_profile::timed(
+            || cpu == token.cpu,
+            |ns, equal| crate::parking_profile::snapshot_eq(ns, *equal),
+        );
+        #[cfg(not(feature = "parking-profile"))]
+        let equal = cpu == token.cpu;
+        equal
     }
 
     /// Consume a validated token and advance devices by an explicit virtual
@@ -1414,17 +1507,66 @@ impl Machine {
         token: ParkingToken,
         max_ns: u64,
     ) -> Result<ParkedAdvance, ParkingError> {
-        if !self.validate_parking_token(&token) {
+        #[cfg(feature = "parking-profile")]
+        let started = Instant::now();
+        let result = self.advance_parked_impl(token, max_ns);
+        #[cfg(feature = "parking-profile")]
+        crate::parking_profile::advance(
+            crate::parking_profile::nanos(started.elapsed()),
+            result.is_ok(),
+        );
+        result
+    }
+
+    fn advance_parked_impl(
+        &mut self,
+        token: ParkingToken,
+        max_ns: u64,
+    ) -> Result<ParkedAdvance, ParkingError> {
+        #[cfg(feature = "parking-profile")]
+        let validation_started = Instant::now();
+        let valid = self.validate_parking_token_impl(&token);
+        #[cfg(feature = "parking-profile")]
+        crate::parking_profile::validate(
+            crate::parking_profile::nanos(validation_started.elapsed()),
+            valid,
+        );
+        if !valid {
             return Err(ParkingError::Stale);
         }
-        if !self.bus.parking_ready() {
+        #[cfg(feature = "parking-profile")]
+        let ready = crate::parking_profile::timed(
+            || self.bus.parking_ready(),
+            |ns, ok| crate::parking_profile::readiness(ns, *ok),
+        );
+        #[cfg(not(feature = "parking-profile"))]
+        let ready = self.bus.parking_ready();
+        if !ready {
             return Err(ParkingError::ServiceRequired);
         }
         let before = self.bus.logical_ns();
+        #[cfg(feature = "parking-profile")]
+        let next = crate::parking_profile::timed(
+            || self.timebase().next_ns,
+            |ns, _| crate::parking_profile::deadline(ns),
+        );
+        #[cfg(not(feature = "parking-profile"))]
         let next = self.timebase().next_ns;
         let actual = max_ns.min(next.map_or(max_ns, |event| event.saturating_sub(before)));
         let reached_event = next.is_some_and(|event| event <= before.saturating_add(actual));
+        #[cfg(feature = "parking-profile")]
+        crate::parking_profile::timed(
+            || self.advance_ns(actual),
+            |ns, ()| crate::parking_profile::advancement(ns),
+        );
+        #[cfg(not(feature = "parking-profile"))]
         self.advance_ns(actual);
+        #[cfg(feature = "parking-profile")]
+        let after = crate::parking_profile::timed(
+            || self.timebase(),
+            |ns, _| crate::parking_profile::deadline(ns),
+        );
+        #[cfg(not(feature = "parking-profile"))]
         let after = self.timebase();
         Ok(ParkedAdvance {
             requested_ns: max_ns,
