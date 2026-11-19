@@ -143,4 +143,5 @@
 - [Device-service readiness guards](performance-issue5-device-service.md) — ESP/Ethernet service predicates, matching guard-on/off boot outcomes and qualified local timing results.
 
 - [Safe JIT prototype design](jit-prototype-design.md) — optional default-off straight-line SETHI/ALU block engine with MMU validation, conservative invalidation and interpreter fallback.
-- [Safe JIT prototype result](jit-prototype-results.md) — 1.37x on the fixed ALU workload; memory workload regresses, device machines stay on the interpreter; candidate awaits review.
+- [Safe JIT prototype result](jit-prototype-results.md) — decoded experiment and isolated native x86-64 candidate; native ALU ~1.20x, review fixtures and invalidation boundaries pending native review.
+- [Issue #5 execution prototype review](jit-prototype-review.md) — merge blocked: decoded-block backend emits no native code; six independent failures reproduce speculative MMU effects, split-run delay-slot corruption and silent reset/error stops; bounded native-backend follow-up and retained fixtures.

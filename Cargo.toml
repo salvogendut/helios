@@ -11,11 +11,13 @@ default = []
 perf-counters = []
 parking-profile = []
 jit = []
+jit-native = ["jit", "dep:helios-jit-native"]
 chd = ["dep:libchdman-rs"]
 host-icmp = ["dep:socket2"]
 
 [dependencies]
 libchdman-rs = { version = "=0.289.5", optional = true }
+helios-jit-native = { path = "jit-native", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 socket2 = { version = "=0.6.5", optional = true }

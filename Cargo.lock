@@ -63,8 +63,16 @@ dependencies = [
 name = "helios"
 version = "0.1.0"
 dependencies = [
+ "helios-jit-native",
  "libchdman-rs",
  "socket2",
+]
+
+[[package]]
+name = "helios-jit-native"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

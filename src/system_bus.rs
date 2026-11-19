@@ -1185,6 +1185,11 @@ impl SystemBus {
     pub(crate) fn mutation_epoch(&self) -> u64 {
         self.mutation_epoch
     }
+    /// Ordinary DRAM range check for the bounded untranslated execution path.
+    #[cfg(feature = "jit")]
+    pub(crate) fn is_ram_range(&self, address: u64, len: u64) -> bool {
+        self.memory.is_writable_range(address, len)
+    }
 
     /// Lifetime/configuration generation for installed graphics and MXCC
     /// devices. Replacement at an equal per-device generation still changes it.

@@ -857,6 +857,13 @@ impl Srmmu {
     pub(crate) fn execution_generation(&self) -> u64 {
         self.tlb_generation
     }
+    /// Native/block execution is admitted only with translation and boot
+    /// mapping disabled. This avoids speculative MMU fetches before the
+    /// instruction boundary has been executed.
+    #[cfg(feature = "jit")]
+    pub(crate) fn untranslated_execution(&self) -> bool {
+        !self.boot_mode() && self.control & PCR_EN == 0
+    }
 
     pub fn load(
         &mut self,

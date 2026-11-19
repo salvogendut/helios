@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 pub const MAX_BLOCK_INSNS: usize = 16;
 pub const MAX_CACHE_ENTRIES: usize = 64;
+pub const MAX_COMPILE_ATTEMPTS: u64 = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operand {
@@ -71,6 +72,18 @@ pub struct RunStats {
     pub compile_calls: u64,
     pub fallback_steps: u64,
     pub compile_ns: u64,
+    pub stopped: Option<Step>,
+}
+
+#[cfg(feature = "jit-native")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativeRunStats {
+    pub executed: u64,
+    pub native_blocks: u64,
+    pub native_instructions: u64,
+    pub compile_calls: u64,
+    pub compile_ns: u64,
+    pub fallback_steps: u64,
     pub stopped: Option<Step>,
 }
 

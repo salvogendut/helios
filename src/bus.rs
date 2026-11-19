@@ -328,6 +328,15 @@ impl MemoryBus {
     pub fn map_ram(&mut self, base: u64, size: usize) -> Result<(), MapError> {
         self.map(base, size, false)
     }
+    #[cfg(feature = "jit")]
+    pub(crate) fn is_writable_range(&self, address: u64, len: u64) -> bool {
+        let Some(end) = address.checked_add(len) else {
+            return false;
+        };
+        self.regions
+            .iter()
+            .any(|region| !region.read_only && address >= region.base && end <= region.end)
+    }
 
     /// Import a raw big-endian image at the file/memory boundary.
     pub fn map_rom(&mut self, base: u64, bytes: &[u8]) -> Result<(), MapError> {

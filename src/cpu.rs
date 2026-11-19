@@ -419,6 +419,12 @@ impl Cpu {
     pub fn icc(&self) -> Icc {
         self.icc
     }
+    /// Apply condition codes from the optional native backend.
+    #[cfg(feature = "jit-native")]
+    pub fn set_icc(&mut self, icc: Icc) {
+        self.icc = icc;
+    }
+
     pub fn current_window(&self) -> usize {
         self.cwp
     }

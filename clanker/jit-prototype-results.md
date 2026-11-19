@@ -42,3 +42,31 @@ snapshot equality, self-modifying code, mapped fetch/remap, removed fetch
 permission, branch/fallback boundaries and device-machine interpreter fallback.
 Default tests: 814; with `jit`: 823. Formatting, Clippy and all four built-in
 demos pass. Evidence: `local/jit-issue5-2026-11-18/`.
+
+
+## Native candidate
+
+`jit-native` adds the isolated x86-64 emitter. Native admission is narrower
+than the decoded experiment: device-free, single-CPU, MMU-disabled writable
+RAM only. The review fixtures remain passing on the decoded/fallback path;
+native fixtures cover straight-line results, split branch entry, reset/error
+delivery and device fallback.
+
+Fixed ALU, 25M outcomes, identical optimized builds:
+
+| Run | Interpreter | Native |
+| --- | ---: | ---: |
+| 1 | 41.15 | 34.37 |
+| 2 | 41.52 | 34.26 |
+| 3 | 41.76 | 34.12 |
+
+Median **41.52 -> 34.26 ns/outcome**, about **1.21x**, with native compilation
+and register/ICC marshalling dominating the small three-instruction loop.
+Decoded-block remains faster than native for this short loop; the native path
+is the milestone candidate, not a claim of a large general speedup.
+
+The native cache stops admission after 64 compile attempts. The fixed memory
+workload therefore returns to the interpreter rather than compiling every
+store: median 54.00 -> 55.57 ns/outcome, a small fallback cost rather than the
+previous 2.56x regression. Memory operations are not JIT-compiled in this
+slice.

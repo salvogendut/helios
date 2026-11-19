@@ -56,3 +56,21 @@ instruction fallback and device/interrupt fallback. Release measurements use
 the same fixed ALU workload with the feature off and on, report compile time
 and block counts separately from steady execution, and never claim a Solaris
 boot speedup.
+
+
+## Native milestone
+
+The first attempt (`3ac11c0`) was a decoded-block interpreter. It remains the
+fallback experiment and does not satisfy this milestone. The native backend is
+the optional `helios-jit-native` path crate enabled by `jit-native`: it emits
+x86-64 code for the same SETHI/basic-ALU subset, owns mmap/mprotect and the
+native calling boundary, and keeps `unsafe_code = "forbid"` in the core crate.
+
+Native blocks are admitted only for a device-free, single-CPU machine with
+MMU and boot translation disabled and instruction words inside writable RAM.
+The core snapshots active registers/ICC, calls one generated block for the
+straight-line run, copies architectural state back, and advances the existing
+clock once per instruction. Unsupported words, nonsequential PC/nPC entries,
+devices, MMUs, traps, resets, latches and all other cases stay on the
+interpreter path. The cache is call-local, bounded by mutation epoch, and
+negative-caches unsupported branch words so fallback is not recompiled.

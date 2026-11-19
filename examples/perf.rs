@@ -104,7 +104,7 @@ fn workload(mode: &str, iterations: u32) -> Workload {
     }
 }
 
-fn fixed(mode: &str, iterations: u32, decode_cache: bool, jit: bool) {
+fn fixed(mode: &str, iterations: u32, decode_cache: bool, jit: bool, jit_native: bool) {
     assert!(iterations != 0, "iterations must be nonzero");
     let workload = workload(mode, iterations);
     let mut machine = Machine::bare_metal(0x10000, 0).unwrap();
@@ -119,7 +119,19 @@ fn fixed(mode: &str, iterations: u32, decode_cache: bool, jit: bool) {
     let mut interrupts = 0u64;
     #[cfg(feature = "jit")]
     let mut jit_stats = None;
-    if jit {
+    #[cfg(feature = "jit-native")]
+    let mut native_stats = None;
+    if jit_native {
+        #[cfg(feature = "jit-native")]
+        {
+            let stats = machine.run_jit_native(workload.loop_steps).unwrap();
+            assert_eq!(stats.executed, workload.loop_steps, "{stats:?}");
+            assert_eq!(stats.stopped, None, "{stats:?}");
+            native_stats = Some(stats);
+        }
+        #[cfg(not(feature = "jit-native"))]
+        panic!("build with --features jit-native");
+    } else if jit {
         #[cfg(feature = "jit")]
         {
             let stats = machine.run_jit(workload.loop_steps).unwrap();
@@ -171,6 +183,19 @@ fn fixed(mode: &str, iterations: u32, decode_cache: bool, jit: bool) {
     let mut jit_text = String::new();
     #[cfg(not(feature = "jit"))]
     let jit_text = "";
+    #[cfg(feature = "jit-native")]
+    if let Some(stats) = native_stats {
+        jit_text = format!(
+            " native_blocks={} native_instructions={} native_calls={} native_compile_ns={} native_fallback={} native_steady_ns_per_step={:.2}",
+            stats.native_blocks,
+            stats.native_instructions,
+            stats.compile_calls,
+            stats.compile_ns,
+            stats.fallback_steps,
+            (elapsed.as_nanos() as f64 - stats.compile_ns as f64).max(0.0)
+                / workload.loop_steps as f64
+        );
+    }
     #[cfg(feature = "jit")]
     if let Some(stats) = jit_stats {
         jit_text = format!(
@@ -192,7 +217,7 @@ fn fixed(mode: &str, iterations: u32, decode_cache: bool, jit: bool) {
         traps,
         interrupts,
         if decode_cache { "on" } else { "off" },
-        if jit { "on" } else { "off" },
+        if jit_native { "native" } else if jit { "on" } else { "off" },
         jit_text,
         elapsed.as_secs_f64(),
         cpu_text,
@@ -334,11 +359,12 @@ fn main() {
             let mode_flag = args.get(4).map(String::as_str);
             let decode_cache = mode_flag == Some("cache");
             let jit = mode_flag == Some("jit");
-            fixed(mode, iterations, decode_cache, jit);
+            let jit_native = mode_flag == Some("jit-native");
+            fixed(mode, iterations, decode_cache, jit, jit_native);
         }
         _ => {
             eprintln!(
-                "usage: perf fixed <alu|memory> [iterations] [cache|jit]\n\
+                "usage: perf fixed <alu|memory> [iterations] [cache|jit|jit-native]\n\
                  perf compare <alu|memory> [iterations]\n\
                  Guest boot/scanout workloads use the supplied ROM, NVRAM and disk media."
             );

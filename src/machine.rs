@@ -3,6 +3,8 @@
 
 #[cfg(feature = "jit")]
 use crate::bus::AccessContext;
+#[cfg(feature = "jit-native")]
+use crate::bus::Bus;
 use crate::bus::{BusError, Initiator, MapError};
 use crate::cpu::{Cpu, CpuConfig, CpuFault, FaultKind, Step};
 use crate::devices::{cgsix::Cgsix, mxcc::MxccState, nvram::Nvram, sx::Sx};
@@ -870,6 +872,21 @@ pub struct Machine {
     profile: MachineProfile,
     parking_owner: u64,
     reset_epoch: u64,
+}
+
+#[cfg(feature = "jit-native")]
+fn pack_icc(icc: crate::cpu::Icc) -> u32 {
+    u32::from(icc.n) | (u32::from(icc.z) << 1) | (u32::from(icc.v) << 2) | (u32::from(icc.c) << 3)
+}
+
+#[cfg(feature = "jit-native")]
+fn unpack_icc(bits: u32) -> crate::cpu::Icc {
+    crate::cpu::Icc {
+        n: bits & 1 != 0,
+        z: bits & 2 != 0,
+        v: bits & 4 != 0,
+        c: bits & 8 != 0,
+    }
 }
 
 fn snapshot_cpu(cpu: &Cpu) -> Cpu {
@@ -1913,12 +1930,28 @@ impl Machine {
     pub fn run_jit(&mut self, budget: u64) -> Result<crate::jit::RunStats, SchedulerError> {
         let mut stats = crate::jit::RunStats::default();
         let mut cache = crate::jit::Cache::default();
-        let mut force_fallback = false;
+        let pc = self.cpu.pc();
+        let mut force_fallback = self.cpu.npc() != pc.wrapping_add(4);
+        if self.software_reset_requested() {
+            let step = self.step().map_err(|fault| SchedulerError::Cpu {
+                processor: 0,
+                fault,
+            })?;
+            stats.stopped = Some(step);
+            return Ok(stats);
+        }
+        if self.cpu.error_state().is_some() {
+            let fault = self.step().unwrap_err();
+            return Err(SchedulerError::Cpu {
+                processor: 0,
+                fault,
+            });
+        }
+        let mut jit_eligible = self.bus.devices().is_none()
+            && self.secondary_cpu.is_none()
+            && self.cpu.mmu.untranslated_execution();
         while stats.executed < budget {
-            if self.software_reset_requested() || self.cpu.error_state().is_some() {
-                break;
-            }
-            if force_fallback || self.bus.devices().is_some() || self.bus.interrupt_levels() != 0 {
+            if force_fallback || !jit_eligible || self.bus.interrupt_levels() != 0 {
                 let expected_pc = self.cpu.npc();
                 let expected_npc = expected_pc.wrapping_add(4);
                 match self.step() {
@@ -1943,6 +1976,16 @@ impl Machine {
                 continue;
             }
             let pc = self.cpu.pc();
+            let max_words = usize::try_from(budget - stats.executed)
+                .unwrap_or(usize::MAX)
+                .clamp(1, crate::jit::MAX_BLOCK_INSNS);
+            if !self.bus.is_ram_range(
+                u64::from(pc),
+                u64::try_from(max_words * 4).unwrap_or(u64::MAX),
+            ) {
+                force_fallback = true;
+                continue;
+            }
             let supervisor = self.cpu.psr() & crate::cpu::PSR_S != 0;
             let key = crate::jit::Key {
                 pc,
@@ -1954,13 +1997,18 @@ impl Machine {
                 block
             } else {
                 stats.compile_calls += 1;
+                if stats.compile_calls > crate::jit::MAX_COMPILE_ATTEMPTS {
+                    jit_eligible = false;
+                    force_fallback = true;
+                    continue;
+                }
                 let started = Instant::now();
                 let previous = self.bus.access_context();
                 self.bus
                     .set_access_context(AccessContext::new(self.cpu.mmu.initiator(), supervisor));
                 let asi = if supervisor { 9 } else { 8 };
-                let mut words = Vec::with_capacity(crate::jit::MAX_BLOCK_INSNS);
-                for index in 0..crate::jit::MAX_BLOCK_INSNS {
+                let mut words = Vec::with_capacity(max_words);
+                for index in 0..max_words {
                     let address = pc.wrapping_add((index as u32) * 4);
                     let Ok(word) = self.cpu.mmu.load(&mut self.bus, address, asi, Width::Word)
                     else {
@@ -2021,6 +2069,150 @@ impl Machine {
                 stats.executed += 1;
             }
             self.bus.advance_ns_fast(block_ns);
+        }
+        Ok(stats)
+    }
+
+    /// Native straight-line SETHI/ALU backend. Admission is intentionally
+    /// narrow: device-free, single-CPU, MMU/boot-translation-disabled ordinary
+    /// RAM. Everything else uses the interpreter boundary.
+    #[cfg(feature = "jit-native")]
+    pub fn run_jit_native(
+        &mut self,
+        budget: u64,
+    ) -> Result<crate::jit::NativeRunStats, SchedulerError> {
+        let mut stats = crate::jit::NativeRunStats::default();
+        let mut cache: helios_jit_native::Cache = helios_jit_native::Cache::new();
+        let pc = self.cpu.pc();
+        let mut force_fallback = self.cpu.npc() != pc.wrapping_add(4);
+        if self.software_reset_requested() {
+            let step = self.step().map_err(|fault| SchedulerError::Cpu {
+                processor: 0,
+                fault,
+            })?;
+            stats.stopped = Some(step);
+            return Ok(stats);
+        }
+        if self.cpu.error_state().is_some() {
+            let fault = self.step().unwrap_err();
+            return Err(SchedulerError::Cpu {
+                processor: 0,
+                fault,
+            });
+        }
+        let mut eligible = self.bus.devices().is_none()
+            && self.secondary_cpu.is_none()
+            && self.cpu.mmu.untranslated_execution();
+        while stats.executed < budget {
+            if force_fallback || !eligible || self.bus.interrupt_levels() != 0 {
+                let expected_pc = self.cpu.npc();
+                let expected_npc = expected_pc.wrapping_add(4);
+                match self.step() {
+                    Ok(step) => {
+                        stats.fallback_steps += 1;
+                        if matches!(step, Step::Executed { .. }) {
+                            stats.executed += 1;
+                            force_fallback =
+                                self.cpu.pc() != expected_pc || self.cpu.npc() != expected_npc;
+                        } else {
+                            stats.stopped = Some(step);
+                            break;
+                        }
+                    }
+                    Err(fault) => {
+                        return Err(SchedulerError::Cpu {
+                            processor: 0,
+                            fault,
+                        });
+                    }
+                }
+                continue;
+            }
+            let pc = self.cpu.pc();
+            let max_words = usize::try_from(budget - stats.executed)
+                .unwrap_or(usize::MAX)
+                .clamp(1, helios_jit_native::MAX_BLOCK_INSNS);
+            if !self.bus.is_ram_range(
+                u64::from(pc),
+                u64::try_from(max_words * 4).unwrap_or(u64::MAX),
+            ) {
+                force_fallback = true;
+                continue;
+            }
+            let key = (pc, self.bus.mutation_epoch());
+            if let std::collections::hash_map::Entry::Vacant(entry) = cache.entry(key) {
+                stats.compile_calls += 1;
+                if stats.compile_calls > crate::jit::MAX_COMPILE_ATTEMPTS {
+                    eligible = false;
+                    force_fallback = true;
+                    continue;
+                }
+                let started = Instant::now();
+                let mut words = Vec::with_capacity(max_words);
+                for index in 0..max_words {
+                    let Ok(word) = self.bus.read32(u64::from(pc) + (index as u64) * 4) else {
+                        break;
+                    };
+                    if helios_jit_native::decode(word).is_none() {
+                        break;
+                    }
+                    words.push(word);
+                }
+                let block = helios_jit_native::compile(&words);
+                stats.compile_ns = stats.compile_ns.saturating_add(
+                    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                );
+                if block.is_some() {
+                    stats.native_blocks += 1;
+                    stats.native_instructions += words.len() as u64;
+                }
+                entry.insert(block);
+            }
+            let Some(block) = cache.get(&key).and_then(Option::as_ref) else {
+                let expected_pc = self.cpu.npc();
+                let expected_npc = expected_pc.wrapping_add(4);
+                match self.step() {
+                    Ok(step) => {
+                        stats.fallback_steps += 1;
+                        if matches!(step, Step::Executed { .. }) {
+                            stats.executed += 1;
+                            force_fallback =
+                                self.cpu.pc() != expected_pc || self.cpu.npc() != expected_npc;
+                        } else {
+                            stats.stopped = Some(step);
+                            break;
+                        }
+                    }
+                    Err(fault) => {
+                        return Err(SchedulerError::Cpu {
+                            processor: 0,
+                            fault,
+                        });
+                    }
+                }
+                continue;
+            };
+            let mut state = helios_jit_native::State::default();
+            for (index, slot) in state.regs.iter_mut().enumerate() {
+                *slot = self.cpu.read_reg(index as u8);
+            }
+            state.icc = pack_icc(self.cpu.icc());
+            block.execute(&mut state);
+            for (index, value) in state.regs.iter().enumerate().skip(1) {
+                self.cpu.write_reg(index as u8, *value);
+            }
+            self.cpu.set_icc(unpack_icc(state.icc));
+            let count = block.instructions() as u64;
+            self.cpu.set_pc_npc(
+                pc.wrapping_add((count as u32).wrapping_mul(4)),
+                pc.wrapping_add((count as u32).wrapping_add(1).wrapping_mul(4)),
+            );
+            let mut block_ns = 0u64;
+            for _ in 0..count {
+                block_ns = block_ns.saturating_add(self.clock.next_ns());
+            }
+            self.bus.advance_ns_fast(block_ns);
+            stats.executed += count;
         }
         Ok(stats)
     }
