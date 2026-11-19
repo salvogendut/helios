@@ -298,3 +298,24 @@ did not justify another Solaris boot: held-reset improved 93.68→89.26 ns while
 the short branch loop regressed 81.34→86.09; the ADD/load gain did not
 reproduce. The experiment ends here; the Solaris command remains 358.2 ms JIT
 versus 156.9 ms interpreted (141.2 ms target).
+
+## Count-only span result prototype
+
+Added `Machine::step_native_span_count`, sharing the detailed span execution
+and keeping only the outcome count, native-instruction count and first outcome
+needed for reset attribution. The detailed API remains the reference.
+
+Three alternating release pairs, 2.4M outcomes per arm, count-only versus
+detailed JIT caller:
+
+| Loop | Detailed | Count-only |
+| --- | ---: | ---: |
+| Short ADD/branch | 76.79 | 67.40 |
+| ADD + word LD | 105.94 | 91.52 |
+| Fourteen ADDs | 38.30 | 34.35 |
+| Long loop, DMA reset held | 79.70 | 55.79 |
+
+The short loop improved in all three pairs (76.48/76.79/76.82 versus
+67.69/67.40/67.04 ns/outcome), and all loops improved. Checksums, native
+counts and clocks match. This supports trying the count-only API in Heliacal,
+but no frontend change or Solaris run is included here.

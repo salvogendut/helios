@@ -2401,9 +2401,13 @@ impl Machine {
         let was_error = self.cpu.error_state().is_some();
         let native_before = self.native_execution_count();
         self.bus.begin_cpu_step();
-        let result =
-            self.cpu
-                .step_native_span_with_interrupts(&mut self.bus, pending, &mut span_time, max);
+        let result = self.cpu.step_native_span_with_interrupts(
+            &mut self.bus,
+            pending,
+            &mut span_time,
+            max,
+            false,
+        );
         let wait_ns = self.bus.finish_cpu_step(result.is_ok());
         if !was_error && self.cpu.error_state().is_some() {
             if let Some(devices) = self.bus.devices_mut() {
@@ -2438,6 +2442,65 @@ impl Machine {
             }
         }
         Ok(outcome)
+    }
+
+    /// Count-only span result for callers that do not need per-instruction Steps.
+    #[cfg(feature = "jit-native")]
+    pub fn step_native_span_count(
+        &mut self,
+        budget: std::num::NonZeroUsize,
+    ) -> Result<crate::jit::NativeSpanCount, CpuFault> {
+        if self.software_reset_requested()
+            || !self.native_execution_enabled()
+            || self.secondary_cpu.is_some()
+            || !self.service_guards
+        {
+            return self.step().map(|step| crate::jit::NativeSpanCount {
+                outcomes: 1,
+                native_instructions: 0,
+                first: Some(step),
+            });
+        }
+        self.service_devices().map_err(|error| CpuFault {
+            pc: self.cpu.pc(),
+            npc: self.cpu.npc(),
+            instruction: None,
+            kind: FaultKind::DeviceDma(error),
+        })?;
+        let pending = self.bus.interrupt_levels();
+        let max = budget.get().min(helios_jit_native::MAX_BLOCK_INSNS);
+        let mut phase = self.clock;
+        let mut cumulative = 0u64;
+        let mut computed = 0usize;
+        let mut times = [0u64; helios_jit_native::MAX_BLOCK_INSNS];
+        let mut span_time = |count: usize| {
+            while computed < count {
+                cumulative = cumulative.saturating_add(phase.next_ns());
+                times[computed] = cumulative;
+                computed += 1;
+            }
+            times[count - 1]
+        };
+        self.bus.begin_cpu_step();
+        let result = self.cpu.step_native_span_with_interrupts(
+            &mut self.bus,
+            pending,
+            &mut span_time,
+            max,
+            true,
+        );
+        let wait_ns = self.bus.finish_cpu_step(result.is_ok());
+        let outcome = result?;
+        let retired = outcome.len();
+        self.bus.advance_ns_fast(self.clock.next_ns() + wait_ns);
+        for _ in 1..retired {
+            self.bus.advance_ns_fast(self.clock.next_ns());
+        }
+        Ok(crate::jit::NativeSpanCount {
+            outcomes: retired,
+            native_instructions: outcome.native_instructions,
+            first: outcome.get(0),
+        })
     }
 
     /// Compatibility wrapper for the original two-outcome API.

@@ -110,6 +110,14 @@ pub struct NativeSpanStep {
 }
 
 #[cfg(feature = "jit-native")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativeSpanCount {
+    pub outcomes: usize,
+    pub native_instructions: u8,
+    pub first: Option<Step>,
+}
+
+#[cfg(feature = "jit-native")]
 impl Default for NativeSpanStep {
     fn default() -> Self {
         Self {
@@ -124,6 +132,13 @@ impl Default for NativeSpanStep {
 impl NativeSpanStep {
     pub fn push(&mut self, step: Step) {
         self.steps[usize::from(self.len)] = Some(step);
+        self.len += 1;
+    }
+
+    pub fn record(&mut self, step: Step, store: bool) {
+        if store || self.len == 0 {
+            self.steps[usize::from(self.len)] = Some(step);
+        }
         self.len += 1;
     }
 

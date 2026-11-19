@@ -969,6 +969,7 @@ impl Cpu {
         pending: u16,
         span_time: &mut dyn FnMut(usize) -> u64,
         budget: usize,
+        count_only: bool,
     ) -> Result<crate::jit::NativeSpanStep, CpuFault> {
         let previous = bus.access_context();
         let context = AccessContext::new(self.mmu.initiator(), self.psr_control & PSR_S != 0);
@@ -978,7 +979,7 @@ impl Cpu {
                 Fetch::Word(word) => word,
                 Fetch::Event(event) => {
                     let mut outcome = crate::jit::NativeSpanStep::default();
-                    outcome.push(event);
+                    outcome.record(event, !count_only);
                     return Ok(outcome);
                 }
             };
@@ -1069,15 +1070,18 @@ impl Cpu {
                         let mut outcome = crate::jit::NativeSpanStep::default();
                         for (index, instruction) in words.iter().take(retired).enumerate() {
                             let pc = start_pc.wrapping_add((index as u32) * 4);
-                            outcome.push(Step::Executed {
-                                pc,
-                                npc: if with_slot && index == count - 1 {
-                                    self.pc
-                                } else {
-                                    pc.wrapping_add(4)
+                            outcome.record(
+                                Step::Executed {
+                                    pc,
+                                    npc: if with_slot && index == count - 1 {
+                                        self.pc
+                                    } else {
+                                        pc.wrapping_add(4)
+                                    },
+                                    instruction: *instruction,
                                 },
-                                instruction: *instruction,
-                            });
+                                !count_only,
+                            );
                         }
                         outcome.native_instructions = retired as u8;
                         return Ok(outcome);
@@ -1087,7 +1091,7 @@ impl Cpu {
             self.execute_fetched(bus, instruction, !self.decode_cache.interpret_span_fallback)
                 .map(|step| {
                     let mut outcome = crate::jit::NativeSpanStep::default();
-                    outcome.push(step);
+                    outcome.record(step, !count_only);
                     outcome
                 })
         })();
