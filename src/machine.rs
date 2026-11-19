@@ -2143,6 +2143,9 @@ impl Machine {
                             });
                         }
                     }
+                    eligible = self.bus.devices().is_none()
+                        && self.secondary_cpu.is_none()
+                        && self.cpu.mmu.untranslated_execution();
                     continue;
                 }
                 let pc = self.cpu.pc();
@@ -2150,7 +2153,7 @@ impl Machine {
                     .unwrap_or(usize::MAX)
                     .clamp(1, helios_jit_native::MAX_BLOCK_INSNS);
                 let last_byte = u64::from(pc) + (max_words as u64) * 4 - 1;
-                if last_byte > u64::from(self.cpu.mmu.config().physical_mask)
+                if last_byte > self.cpu.mmu.config().physical_mask
                     || !self.bus.is_ram_range(
                         u64::from(pc),
                         u64::try_from(max_words * 4).unwrap_or(u64::MAX),
@@ -2193,6 +2196,9 @@ impl Machine {
                                 });
                             }
                         }
+                        eligible = self.bus.devices().is_none()
+                            && self.secondary_cpu.is_none()
+                            && self.cpu.mmu.untranslated_execution();
                         continue;
                     }
                     if let crate::jit::NativeLookup::Miss = engine.validate(pc, &words, epoch) {
@@ -2249,16 +2255,16 @@ impl Machine {
                 let outputs = block.outputs();
                 let sets_icc = block.sets_icc();
                 let mut state = helios_jit_native::State::default();
-                for index in 0..32 {
+                for (index, slot) in state.regs.iter_mut().enumerate() {
                     if inputs & (1u32 << index) != 0 {
-                        state.regs[index] = self.cpu.read_reg(index as u8);
+                        *slot = self.cpu.read_reg(index as u8);
                     }
                 }
                 state.icc = pack_icc(self.cpu.icc());
                 block.execute(&mut state);
-                for index in 0..32 {
+                for (index, value) in state.regs.iter().enumerate() {
                     if outputs & (1u32 << index) != 0 {
-                        self.cpu.write_reg(index as u8, state.regs[index]);
+                        self.cpu.write_reg(index as u8, *value);
                     }
                 }
                 if sets_icc {

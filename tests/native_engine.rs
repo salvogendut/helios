@@ -21,14 +21,13 @@ fn persistent_cache_reuses_blocks_and_counts_executed_instructions() {
     assert_eq!(first.native_instructions, 2);
     assert_eq!(first.fallback_steps, 0);
     assert_eq!(first.compiled_instructions, 2);
-    let compiles = first.compile_calls;
+    assert!(first.compile_calls > 0);
     machine.cpu.set_pc_npc(0, 4);
     let second = machine.run_jit_native(2).unwrap();
     assert_eq!(second.executed, 2);
     assert_eq!(second.native_instructions, 2);
     assert_eq!(second.compile_calls, 0);
     assert!(second.cache_hits > 0);
-    let _ = compiles;
     assert_eq!(machine.cpu.read_reg(1), 2);
     assert_eq!(machine.cpu.read_reg(2), 4);
 }
@@ -36,7 +35,7 @@ fn persistent_cache_reuses_blocks_and_counts_executed_instructions() {
 #[test]
 fn ordinary_data_writes_do_not_evict_native_code() {
     let mut machine = bare(&[0x8200_6001]);
-    let first = machine.run_jit_native(1).unwrap();
+    let _first = machine.run_jit_native(1).unwrap();
     machine.bus.write32(0x800, 0x1234_5678).unwrap();
     machine.cpu.set_pc_npc(0, 4);
     let second = machine.run_jit_native(1).unwrap();

@@ -124,25 +124,6 @@ pub fn compile(words: &[u32]) -> Block {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decoder_stops_at_unsupported_instruction() {
-        let block = compile(&[0x0100_0000, 0x8400_a001, 0x0100_0000, 0x81c3_e008]);
-        assert_eq!(block.ops.len(), 3);
-        assert!(matches!(block.ops[0], Op::Sethi { .. }));
-        assert!(matches!(block.ops[1], Op::Alu { .. }));
-    }
-
-    #[test]
-    fn decoder_rejects_memory_and_branch_words() {
-        assert!(decode(0xc400_6000).is_none());
-        assert!(decode(0x12bf_fffd).is_none());
-    }
-}
-
 #[cfg(feature = "jit-native")]
 pub const MAX_ENGINE_ENTRIES: usize = 256;
 
@@ -163,23 +144,12 @@ pub enum NativeLookup<'a> {
 }
 
 #[cfg(feature = "jit-native")]
+#[derive(Default)]
 pub struct NativeEngine {
     entries: Vec<NativeEntry>,
     tick: u64,
     pub hits: u64,
     pub evictions: u64,
-}
-
-#[cfg(feature = "jit-native")]
-impl Default for NativeEngine {
-    fn default() -> Self {
-        Self {
-            entries: Vec::new(),
-            tick: 0,
-            hits: 0,
-            evictions: 0,
-        }
-    }
 }
 
 #[cfg(feature = "jit-native")]
@@ -259,5 +229,24 @@ impl NativeEngine {
             block,
             last_used: tick,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decoder_stops_at_unsupported_instruction() {
+        let block = compile(&[0x0100_0000, 0x8400_a001, 0x0100_0000, 0x81c3_e008]);
+        assert_eq!(block.ops.len(), 3);
+        assert!(matches!(block.ops[0], Op::Sethi { .. }));
+        assert!(matches!(block.ops[1], Op::Alu { .. }));
+    }
+
+    #[test]
+    fn decoder_rejects_memory_and_branch_words() {
+        assert!(decode(0xc400_6000).is_none());
+        assert!(decode(0x12bf_fffd).is_none());
     }
 }
