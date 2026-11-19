@@ -267,3 +267,23 @@ The three-pair same-binary Solaris comparison missed the acceleration gate:
 boot median 77.54 s versus 163.20 s and fixed command 156.9 ms versus 358.2 ms
 (threshold 141.2 ms). All guests returned 4950 and halted cleanly. Branches
 remain unmerged; no accelerated-workstation claim is made.
+
+## Lazy clock projection experiment
+
+The span path now computes guest-cycle projections only after the live fetch,
+opcode eligibility and post-fetch device/deferred-time limit are known, caching
+only the requested cumulative cycle times. Benchmarked on the four existing
+SS-20 loops, three alternating pairs, 2.4M outcomes per arm:
+
+| Loop | Interpreter | JIT |
+| --- | ---: | ---: |
+| Isolated ADD/branch | 54.15 | 80.70 |
+| ADD+word LD | 65.78 | 112.10 |
+| Fourteen ADDs | 55.36 | 42.37 |
+| Long loop, DMA reset held | 49.88 | 92.33 |
+
+Compared with the prior probe, rejected-DMA improved 94.6→92.3 and
+ADD+load 113.1→112.1; isolated and long loops were unchanged/slightly worse.
+Only the long loop remains faster than the interpreter. The change is retained
+for its bounded-rejection benefit; the 10% Solaris gate remains missed and no
+new guest boot was run.

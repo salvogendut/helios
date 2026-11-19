@@ -967,7 +967,7 @@ impl Cpu {
         &mut self,
         bus: &mut crate::system_bus::SystemBus,
         pending: u16,
-        span_times: &[u64],
+        span_time: &mut dyn FnMut(usize) -> u64,
         budget: usize,
     ) -> Result<crate::jit::NativeSpanStep, CpuFault> {
         let previous = bus.access_context();
@@ -989,13 +989,18 @@ impl Cpu {
                 && self.pc & !0xfff == self.npc & !0xfff
                 && helios_jit_native::decode(instruction).is_some()
             {
-                let limit = bus.native_span_time_limit().and_then(|last_ns| {
-                    span_times
-                        .iter()
-                        .rposition(|&ns| ns <= last_ns)
-                        .map(|i| i + 2)
+                let limit = bus.native_span_time_limit().map(|last_ns| {
+                    let mut limit = 0;
+                    for count in 2..=budget.min(helios_jit_native::MAX_BLOCK_INSNS) {
+                        if span_time(count) <= last_ns {
+                            limit = count;
+                        } else {
+                            break;
+                        }
+                    }
+                    limit
                 });
-                if let Some(limit) = limit {
+                if let Some(limit) = limit.filter(|limit| *limit >= 2) {
                     let mut words = [0u32; helios_jit_native::MAX_BLOCK_INSNS];
                     let mut proofs = [None; helios_jit_native::MAX_BLOCK_INSNS];
                     let mut available = 0usize;
@@ -1014,7 +1019,7 @@ impl Cpu {
                         if index == 1
                             && proof.word >> 30 == 3
                             && matches!((proof.word >> 19) & 63, 0 | 4)
-                            && bus.native_pair_ready(span_times[0])
+                            && bus.native_pair_ready(span_time(2))
                         {
                             if let Some(out) = self.try_ram_pair(bus, instruction, proof)? {
                                 return Ok(out);
@@ -1041,8 +1046,7 @@ impl Cpu {
                         }
                     }
                     for count in (2..=available).rev() {
-                        let ns = span_times.get(count - 2).copied();
-                        if !ns.is_some_and(|ns| bus.native_pair_ready(ns)) {
+                        if !bus.native_pair_ready(span_time(count)) {
                             continue;
                         }
                         let with_slot = slot_index == Some(count - 1);

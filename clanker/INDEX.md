@@ -161,3 +161,4 @@
 - [Native branch and memory handoff](workstation-jit-branch-memory.md) covers the committed checkpoint, measured fallback opcodes in Solaris, and a branch fixture for the next implementation.
 - [Terminal Bicc review](workstation-jit-bicc-exit-review.md) covers native branch accounting, compiler input validation, split-slot interrupt and trap results, a tested correction and the first fusion fixture.
 - [Workstation JIT Solaris acceptance](workstation-jit-ram-gate.md) records the native word LD/ST patch, MMU parity, and the decision from three matched SS-20 pairs.
+- [Workstation JIT dispatch after word LD/ST](workstation-jit-dispatch-review.md) compares the current branch on four fixed loops and gives the next bounded experiment.
