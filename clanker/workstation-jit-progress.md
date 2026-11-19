@@ -244,3 +244,12 @@ trap, annul, relocation, ICC-changing slot and page-edge cases. The proposed
 three-outcome CMP/BNE/delay-slot fusion is not implemented yet: generated
 branch code still returns at the branch, so the fixture remains a failing
 next step. Word LD/ST and matched Solaris reruns also remain open.
+
+## Delay-slot fusion
+
+Adopted the reviewed fusion patch. An ALU/SETHI prefix, terminal integer Bicc
+and one eligible same-page ALU/SETHI delay slot execute in one native call;
+the generated code saves the branch exit before the slot, preserves conditional
+writeback for annulled slots, and keeps split behavior at budget/deadline/page
+edges. The supplied three-outcome, annul, trap/interrupt, relocation and
+cache-reuse tests pass. Word LD/ST native execution remains unimplemented.

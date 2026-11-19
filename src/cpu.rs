@@ -380,7 +380,11 @@ impl DecodeCache {
     }
 
     #[cfg(feature = "jit-native")]
-    fn native_span(&mut self, words: &[u32]) -> Option<Rc<helios_jit_native::NativeBlock>> {
+    fn native_span(
+        &mut self,
+        words: &[u32],
+        with_slot: bool,
+    ) -> Option<Rc<helios_jit_native::NativeBlock>> {
         if let Some(entry) = self.native_spans.get(words) {
             #[cfg(feature = "jit-profile")]
             {
@@ -397,7 +401,12 @@ impl DecodeCache {
         }
         #[cfg(feature = "jit-profile")]
         let start = std::time::Instant::now();
-        let block = helios_jit_native::compile_span(words).map(Rc::new);
+        let block = if with_slot {
+            helios_jit_native::compile_span_with_slot(words)
+        } else {
+            helios_jit_native::compile_span(words)
+        }
+        .map(Rc::new);
         #[cfg(feature = "jit-profile")]
         {
             let stats = &mut self.phase.counts.spans;
@@ -752,7 +761,7 @@ impl Cpu {
     }
 
     #[cfg(feature = "jit-native")]
-    fn execute_native_block(&mut self, block: &helios_jit_native::NativeBlock) {
+    fn execute_native_block(&mut self, block: &helios_jit_native::NativeBlock) -> usize {
         let mut state = helios_jit_native::State::default();
         for (index, slot) in state.regs.iter_mut().enumerate() {
             if block.inputs() & (1u32 << index) != 0 {
@@ -761,12 +770,15 @@ impl Cpu {
         }
         state.icc = pack_native_icc(self.icc);
         let exit = block.execute(&mut state);
+        let through_branch = block.instructions() - usize::from(block.has_delay_slot());
+        let slot_executed = block.has_delay_slot() && exit.is_some_and(|pair| pair.pc_delta == 4);
+        let retired = through_branch + usize::from(slot_executed);
         #[cfg(feature = "jit-profile")]
         {
-            self.decode_cache.phase.counts.calls_by_length[block.instructions() - 1] += 1;
+            self.decode_cache.phase.counts.calls_by_length[retired - 1] += 1;
         }
         self.decode_cache.native_calls = self.decode_cache.native_calls.wrapping_add(1);
-        if block.instructions() >= 2 {
+        if retired >= 2 {
             self.decode_cache.native_span_calls =
                 self.decode_cache.native_span_calls.wrapping_add(1);
         }
@@ -778,22 +790,23 @@ impl Cpu {
         if block.sets_icc() {
             self.icc = unpack_native_icc(state.icc);
         }
-        let sequential_pc = self
-            .npc
-            .wrapping_add(((block.instructions() - 1) as u32) * 4);
+        let sequential_pc = self.npc.wrapping_add(((through_branch - 1) as u32) * 4);
         if let Some(exit) = exit {
             // A terminal branch follows at least one straight-line instruction.
             let branch_pc = sequential_pc.wrapping_sub(4);
             self.pc = branch_pc.wrapping_add(exit.pc_delta);
             self.npc = branch_pc.wrapping_add(exit.npc_delta);
+            if slot_executed {
+                self.pc = self.npc;
+                self.npc = self.pc.wrapping_add(4);
+            }
         } else {
             self.pc = sequential_pc;
             self.npc = sequential_pc.wrapping_add(4);
         }
-        self.decode_cache.native_count = self
-            .decode_cache
-            .native_count
-            .wrapping_add(block.instructions() as u64);
+        self.decode_cache.native_count =
+            self.decode_cache.native_count.wrapping_add(retired as u64);
+        retired
     }
 
     /// Bounded translated span for the ordinary UP boundary. `span_times`
@@ -835,6 +848,7 @@ impl Cpu {
                     let mut words = [0u32; helios_jit_native::MAX_BLOCK_INSNS];
                     let mut proofs = [None; helios_jit_native::MAX_BLOCK_INSNS];
                     let mut available = 0usize;
+                    let mut slot_index = None;
                     for index in 0..limit {
                         let address = self.pc.wrapping_add((index as u32) * 4);
                         if address & !0xfff != self.pc & !0xfff {
@@ -849,11 +863,21 @@ impl Cpu {
                         let Some(op) = helios_jit_native::decode_span(proof.word) else {
                             break;
                         };
+                        let in_slot = slot_index == Some(index);
+                        if in_slot && matches!(op, helios_jit_native::Op::Branch { .. }) {
+                            break;
+                        }
                         words[index] = proof.word;
                         proofs[index] = Some(proof);
                         available += 1;
-                        if matches!(op, helios_jit_native::Op::Branch { .. }) {
+                        if in_slot {
                             break;
+                        }
+                        if matches!(op, helios_jit_native::Op::Branch { .. }) {
+                            if !op.can_fuse_delay_slot() {
+                                break;
+                            }
+                            slot_index = Some(index + 1);
                         }
                     }
                     for count in (2..=available).rev() {
@@ -861,24 +885,37 @@ impl Cpu {
                         if !ns.is_some_and(|ns| bus.native_pair_ready(ns)) {
                             continue;
                         }
-                        let Some(block) = self.decode_cache.native_span(&words[..count]) else {
+                        let with_slot = slot_index == Some(count - 1);
+                        let Some(block) = self.decode_cache.native_span(&words[..count], with_slot)
+                        else {
                             continue;
                         };
-                        for proof in proofs[1..count].iter().filter_map(|proof| *proof) {
+                        let through_branch = count - usize::from(with_slot);
+                        for proof in proofs[1..through_branch].iter().filter_map(|proof| *proof) {
                             self.mmu.complete_native_fetch(bus, proof);
                         }
                         let start_pc = self.pc;
-                        self.execute_native_block(&block);
+                        let retired = self.execute_native_block(&block);
+                        if with_slot && retired == count {
+                            // Only ALU/SETHI can have run between the proof and
+                            // this completion. Annulled slots have no fetch effects.
+                            self.mmu
+                                .complete_native_fetch(bus, proofs[count - 1].unwrap());
+                        }
                         let mut outcome = crate::jit::NativeSpanStep::default();
-                        for (index, instruction) in words.iter().take(count).enumerate() {
+                        for (index, instruction) in words.iter().take(retired).enumerate() {
                             let pc = start_pc.wrapping_add((index as u32) * 4);
                             outcome.push(Step::Executed {
                                 pc,
-                                npc: pc.wrapping_add(4),
+                                npc: if with_slot && index == count - 1 {
+                                    self.pc
+                                } else {
+                                    pc.wrapping_add(4)
+                                },
                                 instruction: *instruction,
                             });
                         }
-                        outcome.native_instructions = count as u8;
+                        outcome.native_instructions = retired as u8;
                         return Ok(outcome);
                     }
                 }

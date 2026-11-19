@@ -244,3 +244,173 @@ fn same_cached_span_relocates_at_two_virtual_addresses() {
         assert_eq!((b.cpu.pc(), b.cpu.npc()), (VA + offset + 8, VA + offset));
     }
 }
+
+#[test]
+fn fused_branch_slot_uses_the_pre_slot_flags() {
+    let words = [CMP_G1_ONE, 0x12bf_ffff, 0x80a0_2000]; // BNE backwards; CMP %g0,0 in the slot
+    for input in [1, 2] {
+        let mut reference = program(0, &words, input, false);
+        let mut actual = program(0, &words, input, true);
+        let before = actual.native_execution_calls();
+        let out = actual
+            .step_native_span(NonZeroUsize::new(3).unwrap())
+            .unwrap();
+        assert_eq!((out.len(), out.native_instructions), (3, 3));
+        assert_eq!(actual.native_execution_calls() - before, 1);
+        let chosen = if input == 1 { VA + 12 } else { VA };
+        assert_eq!(
+            out.get(2),
+            Some(Step::Executed {
+                pc: VA + 8,
+                npc: chosen,
+                instruction: words[2]
+            })
+        );
+        assert_eq!((actual.cpu.pc(), actual.cpu.npc()), (chosen, chosen + 4));
+        assert!(actual.cpu.icc().z);
+        for step in out.iter() {
+            assert_eq!(step, reference.step().unwrap());
+        }
+        same_state(&reference, &actual);
+    }
+}
+
+fn compare_one_span(reference: &mut Machine, actual: &mut Machine, budget: usize, retired: usize) {
+    let calls = actual.native_execution_calls();
+    let total = actual.native_execution_count();
+    #[cfg(feature = "jit-profile")]
+    let phase = actual.cpu.jit_phase();
+    let result = actual
+        .step_native_span(NonZeroUsize::new(budget).unwrap())
+        .unwrap();
+    assert_eq!(
+        (result.len(), usize::from(result.native_instructions)),
+        (retired, retired)
+    );
+    assert_eq!(actual.native_execution_calls() - calls, 1);
+    assert_eq!(actual.native_execution_count() - total, retired as u64);
+    #[cfg(feature = "jit-profile")]
+    {
+        let counts = actual.cpu.jit_phase().since(&phase).unwrap();
+        assert_eq!(counts.calls_by_length[retired - 1], 1);
+        assert_eq!(counts.native_instructions(), retired as u64);
+    }
+    for step in result.iter() {
+        assert_eq!(step, reference.step().unwrap());
+    }
+    same_state(reference, actual);
+}
+
+#[test]
+fn conditional_annul_preserves_slot_only_destinations_and_fetch_counts_on_reuse() {
+    // Slot writes %g5 without reading it. Verify preservation on the untaken path.
+    let words = [CMP_G1_ONE, 0x32bf_ffff, 0x0b00_0001]; // BNE,a; SETHI 1,%g5
+    let mut reference = program(0, &words, 2, false);
+    let mut actual = program(0, &words, 2, true);
+    for input in [2u32, 1, 2, 1] {
+        for m in [&mut reference, &mut actual] {
+            m.cpu.set_pc_npc(VA, VA + 4);
+            m.cpu.write_reg(1, input);
+            m.cpu.write_reg(5, 0xdead_beef);
+        }
+        compare_one_span(
+            &mut reference,
+            &mut actual,
+            3,
+            if input == 2 { 3 } else { 2 },
+        );
+        let (pc, value) = if input == 2 {
+            (VA, 0x400)
+        } else {
+            (VA + 12, 0xdead_beef)
+        };
+        assert_eq!(
+            (actual.cpu.pc(), actual.cpu.npc(), actual.cpu.read_reg(5)),
+            (pc, pc + 4, value)
+        );
+    }
+}
+
+#[test]
+fn annulled_branch_to_its_own_slot_executes_that_address_only_as_the_target() {
+    for (branch, retired) in [(0x3080_0001, 2), (0x1080_0001, 3)] {
+        // BA,a .+4; BA .+4
+        let words = [CMP_G1_ONE, branch, INC_G2];
+        let mut reference = program(0, &words, 2, false);
+        let mut actual = program(0, &words, 2, true);
+        compare_one_span(&mut reference, &mut actual, 3, retired);
+        assert_eq!((actual.cpu.pc(), actual.cpu.npc()), (VA + 8, VA + 12));
+        assert_eq!(actual.cpu.read_reg(2), (retired - 2) as u32);
+        compare_prefix(&mut reference, &mut actual, 1);
+        assert_eq!(actual.cpu.read_reg(2), (retired - 1) as u32);
+    }
+}
+
+#[test]
+fn warm_slot_respects_a_shorter_budget_and_observes_replacement_code() {
+    let words = [CMP_G1_ONE, 0x12bf_ffff, INC_G2];
+    let mut a = program(0, &words, 2, false);
+    let mut b = program(0, &words, 2, true);
+    compare_one_span(&mut a, &mut b, 16, 3);
+    for m in [&mut a, &mut b] {
+        m.cpu.set_pc_npc(VA, VA + 4);
+    }
+    compare_one_span(&mut a, &mut b, 2, 2);
+    assert_eq!(b.cpu.read_reg(2), 1);
+    for m in [&mut a, &mut b] {
+        m.bus.write32(PA + 8, 0x8400_a007).unwrap(); // add %g2,7,%g2
+    }
+    compare_prefix(&mut a, &mut b, 1);
+    assert_eq!(b.cpu.read_reg(2), 8);
+    compare_one_span(&mut a, &mut b, 3, 3);
+    assert_eq!(b.cpu.read_reg(2), 15);
+}
+
+#[test]
+fn deferred_device_service_splits_a_warm_fused_slot() {
+    let words = [CMP_G1_ONE, 0x12bf_ffff, INC_G2];
+    let mut a = program(0, &words, 2, false);
+    let mut b = program(0, &words, 2, true);
+    compare_one_span(&mut a, &mut b, 3, 3);
+    for _ in 0..14 {
+        compare_prefix(&mut a, &mut b, 1);
+    }
+    assert_eq!(b.bus.deferred_ns(), 1700);
+    for m in [&mut a, &mut b] {
+        m.cpu.set_pc_npc(VA, VA + 4);
+    }
+    compare_one_span(&mut a, &mut b, 3, 2);
+    assert_eq!(b.bus.deferred_ns(), 1900);
+    compare_prefix(&mut a, &mut b, 1);
+    assert_eq!(b.bus.deferred_ns(), 0);
+}
+
+#[test]
+fn maximum_length_slot_at_end_of_page_keeps_dynamic_histogram_length() {
+    let mut words = [0x0100_0000; 16];
+    words[13] = CMP_G1_ONE;
+    words[14] = 0x32bf_ffff;
+    words[15] = INC_G2;
+    for (input, retired) in [(2, 16), (1, 15)] {
+        let mut a = program(0xfc0, &words, input, false);
+        let mut b = program(0xfc0, &words, input, true);
+        compare_one_span(&mut a, &mut b, 32, retired);
+        assert_eq!(b.cpu.read_reg(2), u32::from(input == 2));
+    }
+}
+
+#[test]
+fn unsupported_or_unmapped_slot_falls_back_to_the_branch_exit() {
+    for (offset, slot) in [
+        (0, 0u32),
+        (0, 0xc200_8000),
+        (0, 0x1080_0004),
+        (0xff8, INC_G2),
+    ] {
+        let words = [CMP_G1_ONE, 0x12bf_ffff, slot];
+        let mut a = program(offset, &words, 2, false);
+        let mut b = program(offset, &words, 2, true);
+        compare_one_span(&mut a, &mut b, 3, 2);
+        assert_eq!((b.cpu.pc(), b.cpu.npc()), (VA + offset + 8, VA + offset));
+    }
+}

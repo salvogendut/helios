@@ -1,4 +1,4 @@
-//! Native x86-64 SETHI/ALU blocks and translated spans with terminal Bicc exits.
+//! Native x86-64 SETHI/ALU blocks and translated Bicc spans with optional delay slots.
 //!
 //! The core crate forbids unsafe code. This optional backend owns its small
 //! executable-memory and calling-boundary audit. It never runs in the default
@@ -77,20 +77,43 @@ pub fn decode_span(word: u32) -> Option<Op> {
 
 /// Compile the whole span. An optional Bicc ends an ALU/SETHI prefix.
 pub fn compile_span(words: &[u32]) -> Option<NativeBlock> {
+    compile_translated(words, false)
+}
+
+/// Compile an ALU/SETHI prefix, a Bicc and one possibly executed ALU/SETHI slot.
+pub fn compile_span_with_slot(words: &[u32]) -> Option<NativeBlock> {
+    compile_translated(words, true)
+}
+
+fn compile_translated(words: &[u32], with_slot: bool) -> Option<NativeBlock> {
     if words.is_empty() || words.len() > MAX_BLOCK_INSNS {
         return None;
     }
-    let (last, prefix) = words.split_last()?;
+    let (body, slot) = words.split_at(words.len() - usize::from(with_slot));
+    let (last, prefix) = body.split_last()?;
     let mut ops = Vec::with_capacity(words.len());
     for &word in prefix {
         ops.push(decode(word)?);
     }
-    ops.push(if prefix.is_empty() {
+    let tail = if prefix.is_empty() {
         decode(*last)?
     } else {
         decode_span(*last)?
-    });
-    NativeBlock::emit(&ops)
+    };
+    ops.push(tail);
+    if let [word] = slot {
+        if !tail.can_fuse_delay_slot() {
+            return None;
+        }
+        ops.push(decode(*word)?);
+    }
+    NativeBlock::emit(&ops, with_slot)
+}
+
+impl Op {
+    pub fn can_fuse_delay_slot(self) -> bool {
+        matches!(self, Self::Branch { condition, annul, .. } if !annul || !matches!(condition, 0 | 8))
+    }
 }
 
 pub fn compile(words: &[u32]) -> Option<NativeBlock> {
@@ -101,7 +124,7 @@ pub fn compile(words: &[u32]) -> Option<NativeBlock> {
     if ops.is_empty() {
         return None;
     }
-    NativeBlock::emit(&ops)
+    NativeBlock::emit(&ops, false)
 }
 
 #[cfg(all(unix, target_arch = "x86_64"))]
@@ -154,7 +177,7 @@ impl Drop for Executable {
     }
 }
 
-/// Guest PC and nPC deltas relative to the address of a terminal branch.
+/// Guest PC and nPC immediately after Bicc, as deltas from its address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BranchExit {
     pub pc_delta: u32,
@@ -165,6 +188,7 @@ pub struct NativeBlock {
     #[cfg(all(unix, target_arch = "x86_64"))]
     code: Executable,
     instructions: usize,
+    has_delay_slot: bool,
     #[cfg(all(unix, target_arch = "x86_64"))]
     has_branch_exit: bool,
     inputs: u32,
@@ -173,8 +197,13 @@ pub struct NativeBlock {
 }
 
 impl NativeBlock {
+    /// Number of encoded guest instructions, including any conditional slot.
     pub fn instructions(&self) -> usize {
         self.instructions
+    }
+
+    pub fn has_delay_slot(&self) -> bool {
+        self.has_delay_slot
     }
 
     pub fn inputs(&self) -> u32 {
@@ -190,12 +219,26 @@ impl NativeBlock {
     }
 
     #[cfg(all(unix, target_arch = "x86_64"))]
-    fn emit(ops: &[Op]) -> Option<Self> {
+    fn emit(ops: &[Op], with_slot: bool) -> Option<Self> {
+        let (body, slot) = ops.split_at(ops.len() - usize::from(with_slot));
         let mut code = Vec::new();
-        for op in ops {
-            emit_op(&mut code, *op)?;
+        for &op in body {
+            emit_op(&mut code, op)?;
         }
-        let has_branch_exit = matches!(ops.last(), Some(Op::Branch { .. }));
+        let conditional_slot =
+            with_slot && matches!(body.last(), Some(Op::Branch { annul: true, .. }));
+        if let [op] = slot {
+            if conditional_slot {
+                // The native Bicc returns PC delta 4 on a taken conditional
+                // branch and 8 on its annulled fall-through. Return before
+                // touching any slot register on that fall-through.
+                code.extend([0x83, 0xf8, 4, 0x74, 1, 0xc3]); // cmp eax,4; je +1; ret
+            }
+            code.extend([0x49, 0x89, 0xc0]); // mov r8,rax (pre-slot branch exit)
+            emit_op(&mut code, *op)?; // ALU/SETHI only clobbers rax, rcx, rdx
+            code.extend([0x4c, 0x89, 0xc0]); // mov rax,r8
+        }
+        let has_branch_exit = matches!(body.last(), Some(Op::Branch { .. }));
         if !has_branch_exit {
             code.extend([0x31, 0xc0]); // Return a defined zero for a straight-line block.
         }
@@ -228,9 +271,18 @@ impl NativeBlock {
                 }
             }
         }
+        if conditional_slot {
+            // The core writes back the block's static output mask. Seed a
+            // slot-only destination from the guest in case the slot is skipped.
+            match slot[0] {
+                Op::Alu { rd, .. } | Op::Sethi { rd, .. } => inputs |= 1u32 << rd,
+                Op::Branch { .. } => return None,
+            }
+        }
         Some(Self {
             code: Executable::new(&code)?,
             instructions: ops.len(),
+            has_delay_slot: with_slot,
             has_branch_exit,
             inputs,
             outputs: outputs & !1,
@@ -239,11 +291,12 @@ impl NativeBlock {
     }
 
     #[cfg(not(all(unix, target_arch = "x86_64")))]
-    fn emit(_ops: &[Op]) -> Option<Self> {
+    fn emit(_ops: &[Op], _with_slot: bool) -> Option<Self> {
         None
     }
 
-    /// Runs the block and returns the exit selected by a terminal native Bicc.
+    /// Returns the PC/nPC offsets selected by Bicc before its optional slot.
+    /// For a block with a slot, PC delta 4 indicates that it executed.
     pub fn execute(&self, state: &mut State) -> Option<BranchExit> {
         #[cfg(all(unix, target_arch = "x86_64"))]
         {

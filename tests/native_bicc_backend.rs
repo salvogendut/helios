@@ -110,3 +110,62 @@ fn single_word_and_straight_line_contracts() {
     assert_eq!(compile(&[INC_G2]).unwrap().execute(&mut state), None);
     assert_eq!(state.regs[2], 1);
 }
+
+#[test]
+fn slot_compiler_accepts_exactly_one_alu_slot_after_a_supported_branch() {
+    use helios_jit_native::compile_span_with_slot;
+    let branch = 0x12bf_ffff;
+    for invalid in [
+        &[][..],
+        &[branch, INC_G2],
+        &[NOP, NOP, INC_G2],
+        &[NOP, BA_A, INC_G2],
+        &[NOP, 0x2080_0004, INC_G2],
+        &[NOP, branch, BA_A],
+        &[NOP, branch, 0xc200_8000],
+        &[NOP, branch, INC_G2, NOP],
+        &[NOP; MAX_BLOCK_INSNS + 1],
+    ] {
+        assert!(compile_span_with_slot(invalid).is_none(), "{invalid:x?}");
+    }
+    let words = [NOP, branch, INC_G2];
+    assert!(compile_span(&words).is_none());
+    assert!(compile(&words).is_none());
+    assert!(compile_span_with_slot(&words).unwrap().has_delay_slot());
+}
+
+#[test]
+fn native_slot_changes_icc_only_when_executed_and_returns_the_pre_slot_exit() {
+    use helios_jit_native::{compile_span_with_slot, BranchExit};
+    // Read Z for BE,a, then have the slot overwrite both Z and its destination.
+    let words = [NOP, 0x22bf_ffff, 0x8a80_2001]; // ADDcc %g0,1,%g5
+    let block = compile_span_with_slot(&words).unwrap();
+    for (bits, expected_exit, expected_icc, expected_reg) in [
+        (
+            2,
+            BranchExit {
+                pc_delta: 4,
+                npc_delta: 0xffff_fffc,
+            },
+            0,
+            1,
+        ),
+        (
+            9,
+            BranchExit {
+                pc_delta: 8,
+                npc_delta: 12,
+            },
+            9,
+            0xdead_beef,
+        ),
+    ] {
+        let mut s = State {
+            icc: bits,
+            ..State::default()
+        };
+        s.regs[5] = 0xdead_beef;
+        assert_eq!(block.execute(&mut s), Some(expected_exit));
+        assert_eq!((s.icc, s.regs[5]), (expected_icc, expected_reg));
+    }
+}

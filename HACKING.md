@@ -407,7 +407,14 @@ worker. Read `machine.cpu.jit_phase()` at each phase boundary and call
 A rejected delta means the interval needs a fresh baseline. Sample CPU 2
 separately on a dual machine.
 
-Histogram entries count actual native calls of lengths 1 through 16.
+Translated spans may execute a supported integer branch and one same-page
+SETHI or ALU delay instruction in a single call. The branch selects the
+slot's incoming nPC before the slot writes registers or ICC. An annulled
+slot contributes zero fetches, elapsed guest cycles and retired instructions.
+The budget, device deadline and validated fetch path must admit the full
+possible span. Otherwise the machine can stop at the branch.
+
+Histogram entries count actual native calls of retired lengths 1 through 16.
 Multiply each count by its length to get native retirements, then add
 `interpreted` for all retired instructions. Traps and interrupts count
 separate outcomes. Interpret `cpu_errors` as CPU error returns, including
