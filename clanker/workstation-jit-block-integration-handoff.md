@@ -3,6 +3,12 @@
 2026-11-19. Continue `feat/workstation-jit` in both repositories.
 Starting points: Helios `83939df`, Heliacal `219278b`.
 
+Implementation update: `787b5ca`/`60ecaad` adds the span and worker paths.
+The [integration review](workstation-jit-span-integration-review.md) records
+the measured warmed allocations and the still-missing phase/worker coverage.
+Use that follow-up before extending opcode coverage; the requirements below
+remain the original acceptance contract.
+
 ## Review result and next deliverable
 
 The adopted core/test files match the tested translated-pair patch byte for

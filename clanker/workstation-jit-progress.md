@@ -66,9 +66,10 @@ Matching bounded 100-iteration fixed-work probes with parking off:
 - interpreter bridge disabled: 0.1488 s
 - `--execution jit` one-instruction bridge: 0.5650 s
 
-The bridge is roughly 3.8x slower and therefore misses the 10% target. The
-measured bottleneck is per-instruction engine/cache/call overhead, not guest
-coverage. The next focused pass is the assigned block-batching step: execute
+The bridge is roughly 3.8x slower and therefore misses the 10% target. Native
+dispatch costs and guest coverage are candidates; their individual runtime
+contributions were not measured in that run. The next focused pass is the
+assigned block-batching step: execute
 proven straight-line spans through the shared fetch/device boundary, then add
 branch/delay and integer memory coverage. Checkpoint 3 remains open; do not
 merge this branch as accelerated workstation execution.
@@ -156,3 +157,27 @@ length >=2. This demonstrates multi-instruction native execution inside the
 guest, but not acceleration: the bounded useful-work probe was 0.617 s versus
 0.154 s interpreter on the same feature-enabled binary. Branch/delay and
 memory coverage plus the 10% gate remain open; branches stay unmerged.
+
+### Independent span-integration review
+
+At `787b5ca`/`60ecaad`, 23 focused tests pass, including six new native-disabled
+oracle cases. A warmed allocation probe measures four heap allocations per
+16-instruction span and per branch/held-reset fallback. The shutdown totals
+imply 95.95% single-instruction calls and a mean multi-span length of 2.535;
+these are cumulative run totals, not useful-work deltas. New frontend worker
+regressions and phase counters are still missing. See the
+[review and bounded follow-up](workstation-jit-span-integration-review.md)
+before extending opcode coverage. Production behavior was not changed by
+this review.
+
+
+## Span overhead corrections
+
+The span path now uses fixed-capacity arrays for cycle times, words and fetch
+proofs, and an inline `NativeSpanStep` outcome record; warm spans, one-word
+fallback, and budget-one calls no longer allocate heap storage. Span proof
+lookahead is capped by the largest device/deferred-time-fitting length before
+examining words, and an unsupported first opcode falls directly to the
+already-fetched interpreter/bridge path. Six independent warmed-span fixtures
+cover budgets 1/2/3/15/16/17, unsupported interior suffixes, page-edge faults,
+late code writes, deferred-time shortening, exact outcomes and MMU counters.

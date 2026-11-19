@@ -735,10 +735,9 @@ impl Cpu {
             let instruction = match self.fetch_instruction(bus, pending)? {
                 Fetch::Word(word) => word,
                 Fetch::Event(event) => {
-                    return Ok(crate::jit::NativeSpanStep {
-                        steps: vec![event],
-                        native_instructions: 0,
-                    });
+                    let mut outcome = crate::jit::NativeSpanStep::default();
+                    outcome.push(event);
+                    return Ok(outcome);
                 }
             };
             let asi = if self.psr_control & PSR_S != 0 { 9 } else { 8 };
@@ -748,57 +747,70 @@ impl Cpu {
                 && self.pc & !0xfff == self.npc & !0xfff
             {
                 let max = budget.min(helios_jit_native::MAX_BLOCK_INSNS);
-                let mut words = Vec::with_capacity(max);
-                let mut proofs = Vec::with_capacity(max);
-                for index in 0..max {
-                    let address = self.pc.wrapping_add((index as u32) * 4);
-                    if address & !0xfff != self.pc & !0xfff {
+                let mut limit = 0usize;
+                for count in (2..=max).rev() {
+                    if span_times
+                        .get(count - 2)
+                        .copied()
+                        .is_some_and(|ns| bus.native_pair_ready(ns))
+                    {
+                        limit = count;
                         break;
                     }
-                    let Some(proof) = self.mmu.native_fetch_proof(bus, address, asi) else {
-                        break;
-                    };
-                    if index == 0 && proof.word != instruction {
-                        break;
-                    }
-                    if helios_jit_native::decode(proof.word).is_none() {
-                        break;
-                    }
-                    words.push(proof.word);
-                    proofs.push(proof);
                 }
-                for count in (2..=words.len()).rev() {
-                    let ns = span_times.get(count - 2).copied();
-                    if !ns.is_some_and(|ns| bus.native_pair_ready(ns)) {
-                        continue;
+                if limit >= 2 && helios_jit_native::decode(instruction).is_some() {
+                    let mut words = [0u32; helios_jit_native::MAX_BLOCK_INSNS];
+                    let mut proofs = [None; helios_jit_native::MAX_BLOCK_INSNS];
+                    let mut available = 0usize;
+                    for index in 0..limit {
+                        let address = self.pc.wrapping_add((index as u32) * 4);
+                        if address & !0xfff != self.pc & !0xfff {
+                            break;
+                        }
+                        let Some(proof) = self.mmu.native_fetch_proof(bus, address, asi) else {
+                            break;
+                        };
+                        if index == 0 && proof.word != instruction {
+                            break;
+                        }
+                        if helios_jit_native::decode(proof.word).is_none() {
+                            break;
+                        }
+                        words[index] = proof.word;
+                        proofs[index] = Some(proof);
+                        available += 1;
                     }
-                    let Some(block) = self.decode_cache.native_span(&words[..count]) else {
-                        continue;
-                    };
-                    for proof in proofs.iter().skip(1).take(count - 1) {
-                        self.mmu.complete_native_fetch(bus, *proof);
+                    for count in (2..=available).rev() {
+                        let ns = span_times.get(count - 2).copied();
+                        if !ns.is_some_and(|ns| bus.native_pair_ready(ns)) {
+                            continue;
+                        }
+                        let Some(block) = self.decode_cache.native_span(&words[..count]) else {
+                            continue;
+                        };
+                        for proof in proofs[1..count].iter().filter_map(|proof| *proof) {
+                            self.mmu.complete_native_fetch(bus, proof);
+                        }
+                        self.execute_native_block(&block);
+                        let mut outcome = crate::jit::NativeSpanStep::default();
+                        for (index, instruction) in words.iter().take(count).enumerate() {
+                            let pc = self.pc.wrapping_sub(((count - index) as u32) * 4);
+                            outcome.push(Step::Executed {
+                                pc,
+                                npc: pc.wrapping_add(4),
+                                instruction: *instruction,
+                            });
+                        }
+                        outcome.native_instructions = count as u8;
+                        return Ok(outcome);
                     }
-                    self.execute_native_block(&block);
-                    let mut steps = Vec::with_capacity(count);
-                    for (index, instruction) in words.iter().take(count).enumerate() {
-                        let pc = self.pc.wrapping_sub(((count - index) as u32) * 4);
-                        steps.push(Step::Executed {
-                            pc,
-                            npc: pc.wrapping_add(4),
-                            instruction: *instruction,
-                        });
-                    }
-                    return Ok(crate::jit::NativeSpanStep {
-                        steps,
-                        native_instructions: count as u8,
-                    });
                 }
             }
-            self.execute_fetched(bus, instruction)
-                .map(|step| crate::jit::NativeSpanStep {
-                    steps: vec![step],
-                    native_instructions: 0,
-                })
+            self.execute_fetched(bus, instruction).map(|step| {
+                let mut outcome = crate::jit::NativeSpanStep::default();
+                outcome.push(step);
+                outcome
+            })
         })();
         bus.set_access_context(previous);
         result

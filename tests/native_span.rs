@@ -53,7 +53,7 @@ fn run_span(budget: usize) -> (Machine, usize, u64) {
     let result = actual
         .step_native_span(NonZeroUsize::new(budget).unwrap())
         .unwrap();
-    for (index, step) in result.steps.iter().enumerate() {
+    for (index, step) in result.iter().enumerate() {
         assert!(matches!(step, Step::Executed { .. }), "{index}");
     }
     assert_eq!(actual.native_execution_calls() - calls, 1);
@@ -63,11 +63,7 @@ fn run_span(budget: usize) -> (Machine, usize, u64) {
             .differences(&actual.diagnostic_snapshot()),
         Vec::<&'static str>::new()
     );
-    (
-        actual,
-        result.steps.len(),
-        u64::from(result.native_instructions),
-    )
+    (actual, result.len(), u64::from(result.native_instructions))
 }
 
 #[test]
@@ -101,7 +97,7 @@ fn unsupported_suffix_shortens_the_span() {
     let result = actual
         .step_native_span(NonZeroUsize::new(16).unwrap())
         .unwrap();
-    assert_eq!(result.steps.len(), 16);
+    assert_eq!(result.len(), 16);
     assert_eq!(u64::from(result.native_instructions), 16);
     assert_eq!(actual.native_execution_calls() - calls, 1);
     assert_eq!(

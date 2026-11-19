@@ -2348,9 +2348,10 @@ impl Machine {
             || !self.native_execution_enabled()
             || self.secondary_cpu.is_some()
         {
-            return self.step().map(|step| crate::jit::NativeSpanStep {
-                steps: vec![step],
-                native_instructions: 0,
+            return self.step().map(|step| {
+                let mut outcome = crate::jit::NativeSpanStep::default();
+                outcome.push(step);
+                outcome
             });
         }
         self.service_devices().map_err(|error| CpuFault {
@@ -2361,23 +2362,31 @@ impl Machine {
         })?;
         let pending = self.bus.interrupt_levels();
         let max = budget.get().min(helios_jit_native::MAX_BLOCK_INSNS);
-        let mut span_times = Vec::with_capacity(max.saturating_sub(1));
+        let mut span_times = [0u64; helios_jit_native::MAX_BLOCK_INSNS];
+        let span_times_len = if self.service_guards {
+            max.saturating_sub(1)
+        } else {
+            0
+        };
         if self.service_guards && max >= 2 {
             let mut phase = self.clock;
             let mut total = 0u64;
             for count in 1..=max {
                 total = total.saturating_add(phase.next_ns());
                 if count >= 2 {
-                    span_times.push(total);
+                    span_times[count - 2] = total;
                 }
             }
         }
         let was_error = self.cpu.error_state().is_some();
         let native_before = self.native_execution_count();
         self.bus.begin_cpu_step();
-        let result =
-            self.cpu
-                .step_native_span_with_interrupts(&mut self.bus, pending, &span_times, max);
+        let result = self.cpu.step_native_span_with_interrupts(
+            &mut self.bus,
+            pending,
+            &span_times[..span_times_len],
+            max,
+        );
         let wait_ns = self.bus.finish_cpu_step(result.is_ok());
         if !was_error && self.cpu.error_state().is_some() {
             if let Some(devices) = self.bus.devices_mut() {
@@ -2386,7 +2395,6 @@ impl Machine {
         }
         let mut outcome = result?;
         let retired = outcome
-            .steps
             .iter()
             .filter(|step| matches!(step, Step::Executed { .. }))
             .count();
@@ -2405,11 +2413,11 @@ impl Machine {
                 pc,
                 npc,
                 instruction,
-            }) = outcome.steps.first().copied()
+            }) = outcome.get(0)
             {
                 let reset = self.software_reset(pc, npc, Some(instruction));
-                outcome.steps = vec![reset];
-                outcome.native_instructions = 0;
+                outcome = crate::jit::NativeSpanStep::default();
+                outcome.push(reset);
             }
         }
         Ok(outcome)
@@ -2423,11 +2431,10 @@ impl Machine {
     ) -> Result<crate::jit::NativePairStep, CpuFault> {
         let outcome =
             self.step_native_span(std::num::NonZeroUsize::new(budget.get().min(2)).unwrap())?;
-        let mut steps = outcome.steps.into_iter();
-        let first = steps.next().expect("span always returns an outcome");
+        let first = outcome.get(0).expect("span always returns an outcome");
         Ok(crate::jit::NativePairStep {
             first,
-            second: steps.next(),
+            second: outcome.get(1),
             native_instructions: outcome.native_instructions,
         })
     }

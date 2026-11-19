@@ -102,10 +102,49 @@ pub struct NativePairStep {
 }
 
 #[cfg(feature = "jit-native")]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NativeSpanStep {
-    pub steps: Vec<Step>,
+    steps: [Option<Step>; helios_jit_native::MAX_BLOCK_INSNS],
+    len: u8,
     pub native_instructions: u8,
+}
+
+#[cfg(feature = "jit-native")]
+impl Default for NativeSpanStep {
+    fn default() -> Self {
+        Self {
+            steps: [None; helios_jit_native::MAX_BLOCK_INSNS],
+            len: 0,
+            native_instructions: 0,
+        }
+    }
+}
+
+#[cfg(feature = "jit-native")]
+impl NativeSpanStep {
+    pub fn push(&mut self, step: Step) {
+        self.steps[usize::from(self.len)] = Some(step);
+        self.len += 1;
+    }
+
+    pub fn len(&self) -> usize {
+        usize::from(self.len)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn get(&self, index: usize) -> Option<Step> {
+        self.steps.get(index).copied().flatten()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Step> + '_ {
+        self.steps
+            .iter()
+            .take(usize::from(self.len))
+            .filter_map(|step| *step)
+    }
 }
 
 pub fn decode(word: u32) -> Option<Op> {
