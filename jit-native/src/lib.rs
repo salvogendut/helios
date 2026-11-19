@@ -26,6 +26,11 @@ pub enum Op {
         rs1: u8,
         rhs: Operand,
     },
+    Branch {
+        condition: u8,
+        annul: bool,
+        displacement: u32,
+    },
 }
 
 #[repr(C)]
@@ -57,6 +62,28 @@ pub fn decode(word: u32) -> Option<Op> {
         }
         _ => None,
     }
+}
+
+pub fn decode_span(word: u32) -> Option<Op> {
+    if word >> 30 == 0 && (word >> 22) & 7 == 2 {
+        return Some(Op::Branch {
+            condition: ((word >> 25) & 15) as u8,
+            annul: word & (1 << 29) != 0,
+            displacement: ((word << 10) as i32 >> 8) as u32,
+        });
+    }
+    decode(word)
+}
+
+pub fn compile_span(words: &[u32]) -> Option<NativeBlock> {
+    let mut ops = Vec::new();
+    for &word in words.iter().take(MAX_BLOCK_INSNS) {
+        ops.push(decode_span(word)?);
+    }
+    if ops.is_empty() {
+        return None;
+    }
+    NativeBlock::emit(&ops)
 }
 
 pub fn compile(words: &[u32]) -> Option<NativeBlock> {
@@ -159,6 +186,7 @@ impl NativeBlock {
         let mut sets_icc = false;
         for op in ops {
             match *op {
+                Op::Branch { .. } => {}
                 Op::Sethi { rd, .. } => {
                     outputs |= 1u32 << rd;
                     written |= 1u32 << rd;
@@ -222,6 +250,7 @@ impl std::fmt::Debug for NativeBlock {
 #[cfg(all(unix, target_arch = "x86_64"))]
 fn emit_op(code: &mut Vec<u8>, op: Op) -> Option<()> {
     match op {
+        Op::Branch { .. } => code.push(0x90),
         Op::Sethi { rd, value } => {
             if rd != 0 {
                 // mov dword ptr [rdi + 4*rd], imm32
@@ -324,5 +353,16 @@ mod tests {
         assert_eq!(state.regs[2], 0x1000 - 1);
         assert_eq!(state.icc & 8, 0);
         assert_eq!(state.icc & 4, 0);
+    }
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+    #[test]
+    fn branch_span_compiles() {
+        let words = [0x80a0_6001, 0x12bf_ffff];
+        assert!(decode_span(words[1]).is_some());
+        assert!(compile_span(&words).is_some());
     }
 }

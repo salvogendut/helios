@@ -158,3 +158,4 @@
 - [Span overhead correction review](workstation-jit-span-overhead-review.md) — `dd95120`: 23 focused checks pass and all six warmed allocation cases are zero; Heliacal's old outcome API breaks its native build, with a tested one-line patch and the pending integrated measurement/test work order.
 - [Single-instruction fallback comparison](workstation-jit-fallback-comparison.md) — frontend fix adopted at `6bd8e80`, four measured SS-20 guest loops, two experimental patches and the remaining Solaris comparison.
 - [Reset and Solaris phase measurements](workstation-jit-phase-review.md) — reset-policy fix, phase counters, worker-budget and lifecycle tests, and three paired Solaris runs. Median boot was 79.21 s interpreted and 126.60 s with JIT.
+- [Native branch and memory handoff](workstation-jit-branch-memory.md) covers the committed checkpoint, measured fallback opcodes in Solaris, and a branch fixture for the next implementation.

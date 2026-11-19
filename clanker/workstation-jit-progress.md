@@ -205,8 +205,31 @@ Three matched original-OBP SS-20 Solaris pairs on one release binary measured
 79.21 s versus 126.60 s boot-to-login and 155 ms versus 265 ms for the fixed
 command (interpreter versus JIT). JIT missed the 10% target in every pair.
 Instrumentation showed only 4.79% of command instructions retired natively;
-91.1% of native calls covered just two or three instructions, with control-flow
-and memory fallbacks dominating.
+91.1% of native calls covered just two or three instructions. Of the
+interpreted command fallbacks, 24.7% were control flow, 24.4% were memory
+instructions, and 50.9% fell outside those categories. A subsequent
+[opcode breakdown and implementation handoff](workstation-jit-branch-memory.md)
+identifies the most frequent forms.
 
 Integer branch/delay-slot and RAM load/store native coverage remain
 unimplemented. Both branches stay unmerged; no acceleration claim.
+
+## Integer branch exit prototype
+
+The translated span may now end at an integer Bicc. The ALU/CMP prefix and the
+branch are admitted in one native call; the host applies the branch condition
+to the post-span ICC and leaves the exact taken/untaken/annulled PC/nPC for the
+next delay-slot outcome. The supplied three-fixture branch exit case passes,
+including fresh ICC, side-effecting delay slots and an unmapped page-edge slot.
+Word LD/ST native execution, delay-slot fusion and the matched Solaris rerun
+remain outstanding.
+
+### Branch exit implementation
+
+The supplied `bicc_exit.rs` fixture now passes: a CMP/ALU prefix and its terminal
+integer Bicc are admitted in one native call, and the host applies the
+post-span ICC to leave the exact taken/untaken/annulled PC/nPC for the delay
+slot. Fresh ICC, side-effecting slot and unmapped page-edge slot cases pass.
+The bare-metal one-instruction native callers still reject branches. Integer
+LD/ST native coverage is not implemented; the matched Solaris target remains
+unmet.

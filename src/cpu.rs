@@ -397,7 +397,7 @@ impl DecodeCache {
         }
         #[cfg(feature = "jit-profile")]
         let start = std::time::Instant::now();
-        let block = helios_jit_native::compile(words).map(Rc::new);
+        let block = helios_jit_native::compile_span(words).map(Rc::new);
         #[cfg(feature = "jit-profile")]
         {
             let stats = &mut self.phase.counts.spans;
@@ -815,7 +815,7 @@ impl Cpu {
                 && budget >= 2
                 && self.pc.checked_add(4) == Some(self.npc)
                 && self.pc & !0xfff == self.npc & !0xfff
-                && helios_jit_native::decode(instruction).is_some()
+                && helios_jit_native::decode_span(instruction).is_some()
             {
                 let limit = bus.native_span_time_limit().and_then(|last_ns| {
                     span_times
@@ -838,12 +838,15 @@ impl Cpu {
                         if index == 0 && proof.word != instruction {
                             break;
                         }
-                        if helios_jit_native::decode(proof.word).is_none() {
+                        let Some(op) = helios_jit_native::decode_span(proof.word) else {
                             break;
-                        }
+                        };
                         words[index] = proof.word;
                         proofs[index] = Some(proof);
                         available += 1;
+                        if matches!(op, helios_jit_native::Op::Branch { .. }) {
+                            break;
+                        }
                     }
                     for count in (2..=available).rev() {
                         let ns = span_times.get(count - 2).copied();
@@ -857,9 +860,31 @@ impl Cpu {
                             self.mmu.complete_native_fetch(bus, proof);
                         }
                         self.execute_native_block(&block);
+                        let start_pc = self.pc.wrapping_sub((count as u32) * 4);
+                        if let Some(helios_jit_native::Op::Branch {
+                            condition,
+                            annul,
+                            displacement,
+                        }) = helios_jit_native::decode_span(words[count - 1])
+                        {
+                            let branch_pc = start_pc.wrapping_add(((count - 1) as u32) * 4);
+                            let taken = self.icc.matches(u32::from(condition));
+                            let mut next_pc = branch_pc.wrapping_add(4);
+                            let mut next_npc = if taken {
+                                branch_pc.wrapping_add(displacement)
+                            } else {
+                                branch_pc.wrapping_add(8)
+                            };
+                            if annul && (!taken || condition == 8) {
+                                next_pc = next_npc;
+                                next_npc = next_pc.wrapping_add(4);
+                            }
+                            self.pc = next_pc;
+                            self.npc = next_npc;
+                        }
                         let mut outcome = crate::jit::NativeSpanStep::default();
                         for (index, instruction) in words.iter().take(count).enumerate() {
-                            let pc = self.pc.wrapping_sub(((count - index) as u32) * 4);
+                            let pc = start_pc.wrapping_add((index as u32) * 4);
                             outcome.push(Step::Executed {
                                 pc,
                                 npc: pc.wrapping_add(4),
