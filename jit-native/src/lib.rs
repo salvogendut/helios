@@ -177,6 +177,101 @@ impl Drop for Executable {
     }
 }
 
+/// A register-only prefix followed by an ordinary aligned word transfer.
+pub struct WordPair {
+    #[cfg(all(unix, target_arch = "x86_64"))]
+    code: Executable,
+    pub inputs: u32,
+    pub outputs: u32,
+    pub sets_icc: bool,
+}
+
+/// Only a borrowed backing word can reach generated code. Guest address bits
+/// never serve as a host address; the core resolves the post-prefix address.
+pub fn compile_word_pair(first: u32, last: u32, little: bool) -> Option<WordPair> {
+    let prefix = decode(first)?;
+    let store = match (last >> 30, (last >> 19) & 63) {
+        (3, 0) => false,
+        (3, 4) => true,
+        _ => return None,
+    };
+    #[cfg(all(unix, target_arch = "x86_64"))]
+    {
+        let mut code = Vec::new();
+        emit_op(&mut code, prefix)?;
+        let rd = ((last >> 25) & 31) as u8;
+        let (prefix_rd, mut inputs, sets_icc) = match prefix {
+            Op::Sethi { rd, .. } => (rd, 0, false),
+            Op::Alu { rd, rs1, rhs, op3 } => {
+                let inputs = (1u32 << rs1)
+                    | match rhs {
+                        Operand::Register(r) => 1u32 << r,
+                        Operand::Immediate(_) => 0,
+                    };
+                (rd, inputs, op3 & 16 != 0)
+            }
+            Op::Branch { .. } => return None,
+        };
+        let mut outputs = 1u32 << prefix_rd;
+        if store {
+            if prefix_rd != rd {
+                inputs |= 1u32 << rd;
+            }
+            code.extend([0x8b, 0x47, rd * 4]); // mov eax,[rdi+4*rd]
+        } else {
+            outputs |= 1u32 << rd;
+            code.extend([0x8b, 0x06]); // mov eax,[rsi]
+        }
+        if little {
+            code.extend([0x0f, 0xc8]);
+        } // bswap eax
+        if store {
+            code.extend([0x89, 0x06]); // mov [rsi],eax
+        } else if rd != 0 {
+            code.extend([0x89, 0x47, rd * 4]); // mov [rdi+4*rd],eax
+        }
+        code.push(0xc3);
+        Some(WordPair {
+            code: Executable::new(&code)?,
+            inputs,
+            outputs: outputs & !1,
+            sets_icc,
+        })
+    }
+    #[cfg(not(all(unix, target_arch = "x86_64")))]
+    {
+        let _ = (prefix, store, little);
+        None
+    }
+}
+
+impl WordPair {
+    pub fn execute(&self, state: &mut State, word: &mut u32) {
+        #[cfg(all(unix, target_arch = "x86_64"))]
+        {
+            // This entry point is created only by compile_word_pair. The two
+            // exclusive borrows cover the entire call; no pointer is retained.
+            let run = unsafe {
+                std::mem::transmute::<*mut u8, extern "C" fn(*mut State, *mut u32)>(self.code.ptr)
+            };
+            run(state, word);
+        }
+        #[cfg(not(all(unix, target_arch = "x86_64")))]
+        {
+            let _ = (state, word);
+            unreachable!("native backend unavailable");
+        }
+    }
+}
+impl std::fmt::Debug for WordPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WordPair")
+            .field("inputs", &self.inputs)
+            .field("outputs", &self.outputs)
+            .finish()
+    }
+}
+
 /// Guest PC and nPC immediately after Bicc, as deltas from its address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BranchExit {

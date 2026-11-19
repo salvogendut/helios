@@ -935,6 +935,89 @@ impl Srmmu {
         })
     }
 
+    /// Admission has no guest-visible effects. A rejected pair will fetch
+    /// the data instruction normally when it reaches its own boundary.
+    #[cfg(feature = "jit-native")]
+    pub(crate) fn native_word_ready(
+        &self,
+        bus: &crate::system_bus::SystemBus,
+        address: u32,
+        asi: u8,
+        write: bool,
+    ) -> bool {
+        if address & 3 != 0
+            || self.boot_mode()
+            || self.control & PCR_EN == 0
+            || self.check_tlb_diagnostic().is_err()
+        {
+            return false;
+        }
+        let access = Access {
+            address,
+            asi,
+            write,
+        };
+        let Some(index) = self.fast_data.get(
+            address,
+            self.context,
+            access.supervisor(),
+            self.tlb_generation,
+            &self.slot_generations,
+        ) else {
+            return false;
+        };
+        let e = self.tlb[index];
+        e.level == 3
+            && e.offset_mask == 0xfff
+            && e.pte_address.is_some()
+            && e.pte & REFERENCED != 0
+            && (!write || (e.pte & MODIFIED != 0 && e.lower & 1 != 0))
+            && !e.firmware_page
+            && e.matches(
+                address,
+                self.context,
+                access.supervisor(),
+                self.config.context_mask,
+            )
+            && Self::permission(access, e).is_ok()
+            && bus.dram_contains_storage(self.translation(access, e).physical, 4)
+    }
+
+    /// Perform the ordinary translation exactly once. Fast-hit statistics and
+    /// the guest-visible D-TLB diagnostic view belong to translate().
+    #[cfg(feature = "jit-native")]
+    pub(crate) fn native_word<'a>(
+        &mut self,
+        bus: &'a mut crate::system_bus::SystemBus,
+        address: u32,
+        asi: u8,
+        write: bool,
+    ) -> Result<&'a mut u32, MemoryError> {
+        let access = Access {
+            address,
+            asi,
+            write,
+        };
+        self.sync_io_flushes(bus);
+        let tr = self.translate(bus, access)?;
+        self.request(
+            bus,
+            tr.physical,
+            if write {
+                Width::Word.store_kind()
+            } else {
+                MemoryRequestKind::Read
+            },
+            true,
+            tr.cacheable,
+        );
+        bus.native_dram_word(tr.physical, write)
+            .ok_or(MemoryError::Bus(BusError {
+                address: tr.physical,
+                kind: BusErrorKind::Unsupported("native word left installed DRAM"),
+            }))
+    }
+
     /// Complete the effects of a proven fast instruction read. For this
     /// narrow path touch/record_diag_view/fill_ptp2 are no-ops and the DRAM
     /// read has no side effects; the request latch and counters still matter.

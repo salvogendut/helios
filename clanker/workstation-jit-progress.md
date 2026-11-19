@@ -253,3 +253,17 @@ the generated code saves the branch exit before the slot, preserves conditional
 writeback for annulled slots, and keeps split behavior at budget/deadline/page
 edges. The supplied three-outcome, annul, trap/interrupt, relocation and
 cache-reuse tests pass. Word LD/ST native execution remains unimplemented.
+
+## Native word RAM access and gate result
+
+Adopted the reviewed native word LD/ST patch. An ALU/SETHI prefix followed by
+an aligned ordinary word load/store executes in one native call using the
+post-prefix effective address and a warm permitted DRAM mapping. The eight
+focused fixtures pass, including exact MMU counters, aliasing store
+invalidation, alignment/fault atomicity, dirty-bit transition, protected store
+and MXCC fallback.
+
+The three-pair same-binary Solaris comparison missed the acceleration gate:
+boot median 77.54 s versus 163.20 s and fixed command 156.9 ms versus 358.2 ms
+(threshold 141.2 ms). All guests returned 4950 and halted cleanly. Branches
+remain unmerged; no accelerated-workstation claim is made.

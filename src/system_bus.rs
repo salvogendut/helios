@@ -1236,6 +1236,18 @@ impl SystemBus {
         self.configuration_epoch
     }
 
+    #[cfg(feature = "jit-native")]
+    pub(crate) fn native_dram_word(&mut self, address: u64, write: bool) -> Option<&mut u32> {
+        if !self.dram_contains_storage(address, 4) || address & 3 != 0 {
+            return None;
+        }
+        if write {
+            self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+            self.note_code_range(address, 4);
+        }
+        self.dram.as_mut()?.backing_word(address)
+    }
+
     /// Read-only ordinary-RAM word peek for parking-token proof validation.
     /// Returns None for empty banks, video overlap or unmapped/non-RAM targets.
     pub(crate) fn peek_ram_word(&self, address: u64) -> Option<u32> {

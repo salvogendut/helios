@@ -281,6 +281,8 @@ struct DecodeCache {
     native_words: HashMap<u32, Option<Rc<helios_jit_native::NativeBlock>>>,
     #[cfg(feature = "jit-native")]
     native_spans: HashMap<Vec<u32>, Option<Rc<helios_jit_native::NativeBlock>>>,
+    #[cfg(feature = "jit-native")]
+    ram_pairs: HashMap<([u32; 2], bool), Rc<helios_jit_native::WordPair>>,
 }
 
 impl Default for DecodeCache {
@@ -304,6 +306,8 @@ impl Default for DecodeCache {
             native_words: HashMap::new(),
             #[cfg(feature = "jit-native")]
             native_spans: HashMap::new(),
+            #[cfg(feature = "jit-native")]
+            ram_pairs: HashMap::new(),
         }
     }
 }
@@ -346,6 +350,7 @@ impl DecodeCache {
         if !enabled {
             self.native_words.clear();
             self.native_spans.clear();
+            self.ram_pairs.clear();
         }
     }
 
@@ -377,6 +382,42 @@ impl DecodeCache {
         }
         self.native_words.insert(word, block.clone());
         block
+    }
+
+    #[cfg(feature = "jit-native")]
+    fn ram_pair(
+        &mut self,
+        words: [u32; 2],
+        little: bool,
+    ) -> Option<Rc<helios_jit_native::WordPair>> {
+        let key = (words, little);
+        if let Some(pair) = self.ram_pairs.get(&key) {
+            #[cfg(feature = "jit-profile")]
+            {
+                self.phase.counts.spans.hits += 1;
+            }
+            return Some(Rc::clone(pair));
+        }
+        #[cfg(feature = "jit-profile")]
+        let start = std::time::Instant::now();
+        let compiled = helios_jit_native::compile_word_pair(words[0], words[1], little);
+        #[cfg(feature = "jit-profile")]
+        {
+            let stats = &mut self.phase.counts.spans;
+            stats.misses += 1;
+            stats.compiled += u64::from(compiled.is_some());
+            stats.compile_ns += start.elapsed().as_nanos() as u64;
+        }
+        let pair = Rc::new(compiled?);
+        if self.ram_pairs.len() >= 256 {
+            #[cfg(feature = "jit-profile")]
+            {
+                self.phase.counts.spans.evicted_entries += self.ram_pairs.len() as u64;
+            }
+            self.ram_pairs.clear();
+        }
+        self.ram_pairs.insert(key, Rc::clone(&pair));
+        Some(pair)
     }
 
     #[cfg(feature = "jit-native")]
@@ -809,6 +850,116 @@ impl Cpu {
         retired
     }
 
+    /// Resolve a register operand as it will be seen by the second instruction.
+    /// Only a straight-line integer prefix can reach this path.
+    #[cfg(feature = "jit-native")]
+    fn reg_after_prefix(&self, reg: u8, prefix: helios_jit_native::Op) -> u32 {
+        use helios_jit_native::{Op, Operand};
+        if reg == 0 {
+            return 0;
+        }
+        match prefix {
+            Op::Sethi { rd, value } if rd == reg => value,
+            Op::Alu { rd, op3, rs1, rhs } if rd == reg => {
+                let a = self.read_reg(rs1);
+                let b = match rhs {
+                    Operand::Immediate(value) => value,
+                    Operand::Register(r) => self.read_reg(r),
+                };
+                match op3 & 15 {
+                    0 => a.wrapping_add(b),
+                    1 => a & b,
+                    2 => a | b,
+                    3 => a ^ b,
+                    4 => a.wrapping_sub(b),
+                    _ => unreachable!("unsupported native ALU prefix"),
+                }
+            }
+            _ => self.read_reg(reg),
+        }
+    }
+
+    #[cfg(feature = "jit-native")]
+    fn try_ram_pair(
+        &mut self,
+        bus: &mut crate::system_bus::SystemBus,
+        first: u32,
+        fetch: crate::mmu::NativeFetch,
+    ) -> Result<Option<crate::jit::NativeSpanStep>, CpuFault> {
+        let last = fetch.word;
+        let prefix = helios_jit_native::decode(first).expect("validated prefix");
+        let base = self.reg_after_prefix(((last >> 14) & 31) as u8, prefix);
+        let offset = if last & (1 << 13) != 0 {
+            ((last << 19) as i32 >> 19) as u32
+        } else {
+            self.reg_after_prefix((last & 31) as u8, prefix)
+        };
+        let address = base.wrapping_add(offset);
+        let asi = if self.psr_control & PSR_S != 0 {
+            11
+        } else {
+            10
+        };
+        let write = last & (4 << 19) != 0;
+        if !self.mmu.native_word_ready(bus, address, asi, write) {
+            return Ok(None);
+        }
+        let Some(pair) = self
+            .decode_cache
+            .ram_pair([first, last], self.psr_control & PSR_DE != 0)
+        else {
+            return Ok(None);
+        };
+        let mut state = helios_jit_native::State {
+            icc: pack_native_icc(self.icc),
+            ..Default::default()
+        };
+        for (reg, value) in state.regs.iter_mut().enumerate() {
+            if pair.inputs & (1 << reg) != 0 {
+                *value = self.read_reg(reg as u8);
+            }
+        }
+        // Commit the second fetch before the single architectural data request.
+        self.mmu.complete_native_fetch(bus, fetch);
+        let word = self
+            .mmu
+            .native_word(bus, address, asi, write)
+            .map_err(|error| CpuFault {
+                pc: self.npc,
+                npc: self.npc.wrapping_add(4),
+                instruction: Some(last),
+                kind: Self::memory_fault(error, false),
+            })?;
+        pair.execute(&mut state, word);
+        for (reg, value) in state.regs.iter().enumerate() {
+            if pair.outputs & (1 << reg) != 0 {
+                self.write_reg(reg as u8, *value);
+            }
+        }
+        if pair.sets_icc {
+            self.icc = unpack_native_icc(state.icc);
+        }
+        let mut out = crate::jit::NativeSpanStep::default();
+        for instruction in [first, last] {
+            out.push(Step::Executed {
+                pc: self.pc,
+                npc: self.npc,
+                instruction,
+            });
+            self.pc = self.npc;
+            self.npc = self.pc.wrapping_add(4);
+        }
+        out.native_instructions = 2;
+        self.decode_cache.native_count = self.decode_cache.native_count.wrapping_add(2);
+        self.decode_cache.native_calls = self.decode_cache.native_calls.wrapping_add(1);
+        self.decode_cache.native_span_calls = self.decode_cache.native_span_calls.wrapping_add(1);
+        #[cfg(feature = "jit-profile")]
+        {
+            self.decode_cache.phase.counts.calls_by_length[1] += 1;
+        }
+        Ok(Some(out))
+    }
+
     /// Bounded translated span for the ordinary UP boundary. `span_times`
     /// contains cumulative guest nanoseconds for spans of length 2..=16.
     #[cfg(feature = "jit-native")]
@@ -859,6 +1010,15 @@ impl Cpu {
                         };
                         if index == 0 && proof.word != instruction {
                             break;
+                        }
+                        if index == 1
+                            && proof.word >> 30 == 3
+                            && matches!((proof.word >> 19) & 63, 0 | 4)
+                            && bus.native_pair_ready(span_times[0])
+                        {
+                            if let Some(out) = self.try_ram_pair(bus, instruction, proof)? {
+                                return Ok(out);
+                            }
                         }
                         let Some(op) = helios_jit_native::decode_span(proof.word) else {
                             break;
