@@ -88,3 +88,14 @@ a time, so checkpoint 3's branch/delay-slot and integer-memory coverage, native
 block length/counter evidence, and the 10% real-workload target are not met.
 The measured one-instruction bridge remains 3.8x slower on the bounded useful
 work probe. The branch must not be merged as accelerated workstation JIT.
+
+### Block-path blocking invariant
+
+A translated block that skips the live fetch cannot observe permission removal
+after warming. Minimal reproducer: map VA `0x1234_5000` to RAM through the SS5
+page tables with PTE `0x088e`, execute an ADD there, change the leaf to
+`0x0882` (no execute), and execute again. The reference step raises one
+InstructionMmu/Protection fault; a warm-cache block without a justified fetch
+effect model would execute stale native code instead. The block path therefore
+needs a mapping/permission generation or an equivalent validated fetch-effect
+contract before it can replace the bridge. No block path is claimed here.
