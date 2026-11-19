@@ -72,3 +72,19 @@ coverage. The next focused pass is the assigned block-batching step: execute
 proven straight-line spans through the shared fetch/device boundary, then add
 branch/delay and integer memory coverage. Checkpoint 3 remains open; do not
 merge this branch as accelerated workstation execution.
+
+## Checkpoint 2 review corrections and checkpoint 3 status
+
+- Native enablement is now interpreter-only on any dual-CPU machine; CPU 0 and
+  CPU 2 both remain interpreted and reset/replacement preserve that scope.
+- Heliacal now rejects explicit native selection in feature-off builds, exposes
+  the execution row when Tinker is enabled in Advanced, and retains interpreter
+  as the default. Help documents `--execution interpreter|jit`.
+- The promoted bridge fixtures compare translated SS-20 state, permission and
+  next-page faults, resets, dual-CPU scope and the prior fetch/fault cases.
+
+Block batching is still absent. Heliacal continues calling one ordinary step at
+a time, so checkpoint 3's branch/delay-slot and integer-memory coverage, native
+block length/counter evidence, and the 10% real-workload target are not met.
+The measured one-instruction bridge remains 3.8x slower on the bounded useful
+work probe. The branch must not be merged as accelerated workstation JIT.
