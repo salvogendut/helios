@@ -1288,6 +1288,20 @@ impl SystemBus {
             })
     }
 
+    #[cfg(feature = "jit-native")]
+    pub(crate) fn native_span_time_limit(&self) -> Option<u64> {
+        if self.prom_cycles != Some(0) || !self.parking_ready() {
+            return None;
+        }
+        let limit = 1999u64.checked_sub(self.device_ns)?;
+        match self.next_device_deadline_ns() {
+            Some(deadline) => {
+                Some(limit.min(deadline.checked_sub(self.logical_ns)?.checked_sub(1)?))
+            }
+            None => Some(limit),
+        }
+    }
+
     /// Fingerprint of non-RAM device state for parking-token validation.
     pub(crate) fn parking_device_digest(&self) -> u64 {
         let mut digest = crate::diagnostic::Digest::new();

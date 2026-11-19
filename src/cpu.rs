@@ -268,6 +268,8 @@ struct DecodeCache {
     #[cfg(feature = "jit-native")]
     native_enabled: bool,
     #[cfg(feature = "jit-native")]
+    interpret_span_fallback: bool,
+    #[cfg(feature = "jit-native")]
     native_count: u64,
     #[cfg(feature = "jit-native")]
     native_calls: u64,
@@ -286,6 +288,8 @@ impl Default for DecodeCache {
             enabled: false,
             #[cfg(feature = "jit-native")]
             native_enabled: false,
+            #[cfg(feature = "jit-native")]
+            interpret_span_fallback: false,
             #[cfg(feature = "jit-native")]
             native_count: 0,
             #[cfg(feature = "jit-native")]
@@ -474,6 +478,11 @@ impl Cpu {
     }
 
     #[cfg(feature = "jit-native")]
+    pub fn set_interpret_span_fallback(&mut self, enabled: bool) {
+        self.decode_cache.interpret_span_fallback = enabled;
+    }
+
+    #[cfg(feature = "jit-native")]
     pub fn native_execution_count(&self) -> u64 {
         self.decode_cache.native_count
     }
@@ -646,20 +655,25 @@ impl Cpu {
 
     fn step_inner(&mut self, bus: &mut impl Bus, pending: u16) -> Result<Step, CpuFault> {
         match self.fetch_instruction(bus, pending)? {
-            Fetch::Word(instruction) => self.execute_fetched(bus, instruction),
+            Fetch::Word(instruction) => self.execute_fetched(bus, instruction, true),
             Fetch::Event(event) => Ok(event),
         }
     }
 
     #[inline(always)]
-    fn execute_fetched(&mut self, bus: &mut impl Bus, instruction: u32) -> Result<Step, CpuFault> {
+    fn execute_fetched(
+        &mut self,
+        bus: &mut impl Bus,
+        instruction: u32,
+        _allow_native_word: bool,
+    ) -> Result<Step, CpuFault> {
         let step = Step::Executed {
             pc: self.pc,
             npc: self.npc,
             instruction,
         };
         #[cfg(feature = "jit-native")]
-        if self.decode_cache.native_enabled {
+        if _allow_native_word && self.decode_cache.native_enabled {
             if let Some(block) = self.decode_cache.native_word(instruction) {
                 self.execute_native_block(&block);
                 return Ok(step);
@@ -745,20 +759,15 @@ impl Cpu {
                 && budget >= 2
                 && self.pc.checked_add(4) == Some(self.npc)
                 && self.pc & !0xfff == self.npc & !0xfff
+                && helios_jit_native::decode(instruction).is_some()
             {
-                let max = budget.min(helios_jit_native::MAX_BLOCK_INSNS);
-                let mut limit = 0usize;
-                for count in (2..=max).rev() {
-                    if span_times
-                        .get(count - 2)
-                        .copied()
-                        .is_some_and(|ns| bus.native_pair_ready(ns))
-                    {
-                        limit = count;
-                        break;
-                    }
-                }
-                if limit >= 2 && helios_jit_native::decode(instruction).is_some() {
+                let limit = bus.native_span_time_limit().and_then(|last_ns| {
+                    span_times
+                        .iter()
+                        .rposition(|&ns| ns <= last_ns)
+                        .map(|i| i + 2)
+                });
+                if let Some(limit) = limit {
                     let mut words = [0u32; helios_jit_native::MAX_BLOCK_INSNS];
                     let mut proofs = [None; helios_jit_native::MAX_BLOCK_INSNS];
                     let mut available = 0usize;
@@ -806,11 +815,12 @@ impl Cpu {
                     }
                 }
             }
-            self.execute_fetched(bus, instruction).map(|step| {
-                let mut outcome = crate::jit::NativeSpanStep::default();
-                outcome.push(step);
-                outcome
-            })
+            self.execute_fetched(bus, instruction, !self.decode_cache.interpret_span_fallback)
+                .map(|step| {
+                    let mut outcome = crate::jit::NativeSpanStep::default();
+                    outcome.push(step);
+                    outcome
+                })
         })();
         bus.set_access_context(previous);
         result

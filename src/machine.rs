@@ -876,6 +876,8 @@ pub struct Machine {
     native_engine: Option<crate::jit::NativeEngine>,
     #[cfg(feature = "jit-native")]
     native_execution: bool,
+    #[cfg(feature = "jit-native")]
+    interpret_span_fallback: bool,
 }
 
 #[cfg(feature = "jit-native")]
@@ -1031,6 +1033,8 @@ impl Machine {
             native_engine: None,
             #[cfg(feature = "jit-native")]
             native_execution: false,
+            #[cfg(feature = "jit-native")]
+            interpret_span_fallback: false,
         };
         machine.cpu.use_cpu_config(profile.cpu_config());
         machine.cpu.use_mmu_config(profile.mmu());
@@ -1180,6 +1184,12 @@ impl Machine {
         if let Some(secondary) = self.secondary_cpu.as_mut() {
             secondary.cpu.set_native_execution_enabled(false);
         }
+    }
+
+    #[cfg(feature = "jit-native")]
+    pub fn set_interpret_span_fallback(&mut self, enabled: bool) {
+        self.interpret_span_fallback = enabled;
+        self.cpu.set_interpret_span_fallback(enabled);
     }
 
     #[cfg(feature = "jit-native")]
@@ -1347,6 +1357,8 @@ impl Machine {
             native_engine: None,
             #[cfg(feature = "jit-native")]
             native_execution: false,
+            #[cfg(feature = "jit-native")]
+            interpret_span_fallback: false,
         })
     }
 
