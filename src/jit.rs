@@ -117,6 +117,63 @@ pub struct NativeSpanCount {
     pub first: Option<Step>,
 }
 
+/// Both consumers retire the same span. The detailed caller materializes
+/// each Step and the worker only materializes the first one.
+#[cfg(feature = "jit-native")]
+pub(crate) trait SpanOutput: Copy {
+    fn from_steps(count: usize, native: u8, at: impl Fn(usize) -> Step) -> Self;
+    fn summary(&self) -> NativeSpanCount;
+    fn set_native_count(&mut self, count: u8);
+
+    fn single(step: Step) -> Self {
+        Self::from_steps(1, 0, |_| step)
+    }
+}
+
+#[cfg(feature = "jit-native")]
+impl SpanOutput for NativeSpanStep {
+    fn from_steps(count: usize, native: u8, at: impl Fn(usize) -> Step) -> Self {
+        let mut result = Self {
+            native_instructions: native,
+            ..Self::default()
+        };
+        for index in 0..count {
+            result.push(at(index));
+        }
+        result
+    }
+
+    fn summary(&self) -> NativeSpanCount {
+        NativeSpanCount {
+            outcomes: self.len(),
+            native_instructions: self.native_instructions,
+            first: self.get(0),
+        }
+    }
+
+    fn set_native_count(&mut self, count: u8) {
+        self.native_instructions = count;
+    }
+}
+
+#[cfg(feature = "jit-native")]
+impl SpanOutput for NativeSpanCount {
+    fn from_steps(count: usize, native: u8, at: impl Fn(usize) -> Step) -> Self {
+        Self {
+            outcomes: count,
+            native_instructions: native,
+            first: Some(at(0)),
+        }
+    }
+
+    fn summary(&self) -> NativeSpanCount {
+        *self
+    }
+    fn set_native_count(&mut self, count: u8) {
+        self.native_instructions = count;
+    }
+}
+
 #[cfg(feature = "jit-native")]
 impl Default for NativeSpanStep {
     fn default() -> Self {

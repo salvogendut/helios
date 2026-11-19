@@ -880,12 +880,12 @@ impl Cpu {
     }
 
     #[cfg(feature = "jit-native")]
-    fn try_ram_pair(
+    fn try_ram_pair<R: crate::jit::SpanOutput>(
         &mut self,
         bus: &mut crate::system_bus::SystemBus,
         first: u32,
         fetch: crate::mmu::NativeFetch,
-    ) -> Result<Option<crate::jit::NativeSpanStep>, CpuFault> {
+    ) -> Result<Option<R>, CpuFault> {
         let last = fetch.word;
         let prefix = helios_jit_native::decode(first).expect("validated prefix");
         let base = self.reg_after_prefix(((last >> 14) & 31) as u8, prefix);
@@ -939,17 +939,16 @@ impl Cpu {
         if pair.sets_icc {
             self.icc = unpack_native_icc(state.icc);
         }
-        let mut out = crate::jit::NativeSpanStep::default();
-        for instruction in [first, last] {
-            out.push(Step::Executed {
-                pc: self.pc,
-                npc: self.npc,
-                instruction,
-            });
-            self.pc = self.npc;
-            self.npc = self.pc.wrapping_add(4);
-        }
-        out.native_instructions = 2;
+        let out = R::from_steps(2, 2, |index| {
+            let pc = if index == 0 { self.pc } else { self.npc };
+            Step::Executed {
+                pc,
+                npc: pc.wrapping_add(4),
+                instruction: [first, last][index],
+            }
+        });
+        self.pc = self.npc.wrapping_add(4);
+        self.npc = self.pc.wrapping_add(4);
         self.decode_cache.native_count = self.decode_cache.native_count.wrapping_add(2);
         self.decode_cache.native_calls = self.decode_cache.native_calls.wrapping_add(1);
         self.decode_cache.native_span_calls = self.decode_cache.native_span_calls.wrapping_add(1);
@@ -960,28 +959,23 @@ impl Cpu {
         Ok(Some(out))
     }
 
-    /// Bounded translated span for the ordinary UP boundary. `span_times`
-    /// contains cumulative guest nanoseconds for spans of length 2..=16.
+    /// Bounded translated span for the ordinary UP boundary. `span_time`
+    /// projects cumulative guest nanoseconds for a candidate span length.
     #[cfg(feature = "jit-native")]
-    pub(crate) fn step_native_span_with_interrupts(
+    pub(crate) fn step_native_span_with_interrupts<R: crate::jit::SpanOutput>(
         &mut self,
         bus: &mut crate::system_bus::SystemBus,
         pending: u16,
         span_time: &mut dyn FnMut(usize) -> u64,
         budget: usize,
-        count_only: bool,
-    ) -> Result<crate::jit::NativeSpanStep, CpuFault> {
+    ) -> Result<R, CpuFault> {
         let previous = bus.access_context();
         let context = AccessContext::new(self.mmu.initiator(), self.psr_control & PSR_S != 0);
         bus.set_access_context(context);
         let result = (|| {
             let instruction = match self.fetch_instruction(bus, pending)? {
                 Fetch::Word(word) => word,
-                Fetch::Event(event) => {
-                    let mut outcome = crate::jit::NativeSpanStep::default();
-                    outcome.record(event, !count_only);
-                    return Ok(outcome);
-                }
+                Fetch::Event(event) => return Ok(R::single(event)),
             };
             let asi = if self.psr_control & PSR_S != 0 { 9 } else { 8 };
             if self.decode_cache.native_enabled
@@ -1067,39 +1061,29 @@ impl Cpu {
                             self.mmu
                                 .complete_native_fetch(bus, proofs[count - 1].unwrap());
                         }
-                        let mut outcome = crate::jit::NativeSpanStep::default();
-                        for (index, instruction) in words.iter().take(retired).enumerate() {
+                        return Ok(R::from_steps(retired, retired as u8, |index| {
                             let pc = start_pc.wrapping_add((index as u32) * 4);
-                            outcome.record(
-                                Step::Executed {
-                                    pc,
-                                    npc: if with_slot && index == count - 1 {
-                                        self.pc
-                                    } else {
-                                        pc.wrapping_add(4)
-                                    },
-                                    instruction: *instruction,
+                            Step::Executed {
+                                pc,
+                                npc: if with_slot && index == count - 1 {
+                                    self.pc
+                                } else {
+                                    pc.wrapping_add(4)
                                 },
-                                !count_only,
-                            );
-                        }
-                        outcome.native_instructions = retired as u8;
-                        return Ok(outcome);
+                                instruction: words[index],
+                            }
+                        }));
                     }
                 }
             }
             self.execute_fetched(bus, instruction, !self.decode_cache.interpret_span_fallback)
-                .map(|step| {
-                    let mut outcome = crate::jit::NativeSpanStep::default();
-                    outcome.record(step, !count_only);
-                    outcome
-                })
+                .map(R::single)
         })();
         #[cfg(feature = "jit-profile")]
         self.decode_cache
             .phase
             .counts
-            .boundary(result.map(|out| out.get(0).expect("CPU returned an empty span")));
+            .boundary(result.map(|out| out.summary().first.expect("CPU returned an empty span")));
         bus.set_access_context(previous);
         result
     }

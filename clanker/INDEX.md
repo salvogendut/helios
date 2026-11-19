@@ -163,3 +163,4 @@
 - [Workstation JIT Solaris acceptance](workstation-jit-ram-gate.md) records the native word LD/ST patch, MMU parity, and the decision from three matched SS-20 pairs.
 - [Workstation JIT dispatch after word LD/ST](workstation-jit-dispatch-review.md) compares the current branch on four fixed loops and gives the next bounded experiment.
 - [Lazy clock projection review](workstation-jit-lazy-clock-review.md) records the reference-mode regression, its tested correction and the four-loop comparison.
+- [Count-only span review](workstation-jit-count-only-review.md) covers reset, watchdog and native-accounting differences, the shared correction and the Heliacal worker change.
