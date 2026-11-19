@@ -1,4 +1,4 @@
-//! Isolated native x86-64 backend for straight-line SETHI/ALU blocks.
+//! Native x86-64 SETHI/ALU blocks and translated spans with terminal Bicc exits.
 //!
 //! The core crate forbids unsafe code. This optional backend owns its small
 //! executable-memory and calling-boundary audit. It never runs in the default
@@ -75,14 +75,21 @@ pub fn decode_span(word: u32) -> Option<Op> {
     decode(word)
 }
 
+/// Compile the whole span. An optional Bicc ends an ALU/SETHI prefix.
 pub fn compile_span(words: &[u32]) -> Option<NativeBlock> {
-    let mut ops = Vec::new();
-    for &word in words.iter().take(MAX_BLOCK_INSNS) {
-        ops.push(decode_span(word)?);
-    }
-    if ops.is_empty() {
+    if words.is_empty() || words.len() > MAX_BLOCK_INSNS {
         return None;
     }
+    let (last, prefix) = words.split_last()?;
+    let mut ops = Vec::with_capacity(words.len());
+    for &word in prefix {
+        ops.push(decode(word)?);
+    }
+    ops.push(if prefix.is_empty() {
+        decode(*last)?
+    } else {
+        decode_span(*last)?
+    });
     NativeBlock::emit(&ops)
 }
 
@@ -133,8 +140,8 @@ impl Executable {
         })
     }
 
-    fn entry(&self) -> extern "C" fn(*mut State) {
-        unsafe { std::mem::transmute::<*mut u8, extern "C" fn(*mut State)>(self.ptr) }
+    fn entry(&self) -> extern "C" fn(*mut State) -> u64 {
+        unsafe { std::mem::transmute::<*mut u8, extern "C" fn(*mut State) -> u64>(self.ptr) }
     }
 }
 
@@ -147,10 +154,19 @@ impl Drop for Executable {
     }
 }
 
+/// Guest PC and nPC deltas relative to the address of a terminal branch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BranchExit {
+    pub pc_delta: u32,
+    pub npc_delta: u32,
+}
+
 pub struct NativeBlock {
     #[cfg(all(unix, target_arch = "x86_64"))]
     code: Executable,
     instructions: usize,
+    #[cfg(all(unix, target_arch = "x86_64"))]
+    has_branch_exit: bool,
     inputs: u32,
     outputs: u32,
     sets_icc: bool,
@@ -178,6 +194,10 @@ impl NativeBlock {
         let mut code = Vec::new();
         for op in ops {
             emit_op(&mut code, *op)?;
+        }
+        let has_branch_exit = matches!(ops.last(), Some(Op::Branch { .. }));
+        if !has_branch_exit {
+            code.extend([0x31, 0xc0]); // Return a defined zero for a straight-line block.
         }
         code.push(0xc3);
         let mut written = 0u32;
@@ -211,6 +231,7 @@ impl NativeBlock {
         Some(Self {
             code: Executable::new(&code)?,
             instructions: ops.len(),
+            has_branch_exit,
             inputs,
             outputs: outputs & !1,
             sets_icc,
@@ -222,11 +243,16 @@ impl NativeBlock {
         None
     }
 
-    pub fn execute(&self, state: &mut State) {
+    /// Runs the block and returns the exit selected by a terminal native Bicc.
+    pub fn execute(&self, state: &mut State) -> Option<BranchExit> {
         #[cfg(all(unix, target_arch = "x86_64"))]
         {
             let entry = self.code.entry();
-            entry(state as *mut State);
+            let deltas = entry(state as *mut State);
+            self.has_branch_exit.then_some(BranchExit {
+                pc_delta: deltas as u32,
+                npc_delta: (deltas >> 32) as u32,
+            })
         }
         #[cfg(not(all(unix, target_arch = "x86_64")))]
         {
@@ -250,7 +276,13 @@ impl std::fmt::Debug for NativeBlock {
 #[cfg(all(unix, target_arch = "x86_64"))]
 fn emit_op(code: &mut Vec<u8>, op: Op) -> Option<()> {
     match op {
-        Op::Branch { .. } => code.push(0x90),
+        Op::Branch {
+            condition,
+            annul,
+            displacement,
+        } => {
+            emit_branch_exit(code, condition, annul, displacement);
+        }
         Op::Sethi { rd, value } => {
             if rd != 0 {
                 // mov dword ptr [rdi + 4*rd], imm32
@@ -290,6 +322,39 @@ fn emit_op(code: &mut Vec<u8>, op: Op) -> Option<()> {
         }
     }
     Some(())
+}
+
+#[cfg(all(unix, target_arch = "x86_64"))]
+fn emit_branch_exit(code: &mut Vec<u8>, condition: u8, annul: bool, displacement: u32) {
+    // Bit i in each mask corresponds to packed ICC = i (N,Z,V,C from bit 0).
+    const N: u16 = 0xaaaa;
+    const Z: u16 = 0xcccc;
+    const V: u16 = 0xf0f0;
+    const C: u16 = 0xff00;
+    const CONDITIONS: [u16; 8] = [0, Z, Z | (N ^ V), N ^ V, C | Z, C, N, V];
+    let pack = |pc: u32, npc: u32| (u64::from(npc) << 32) | u64::from(pc);
+    let fallthrough = if annul { pack(8, 12) } else { pack(4, 8) };
+    let taken = if annul && condition == 8 {
+        pack(displacement, displacement.wrapping_add(4))
+    } else {
+        pack(4, displacement)
+    };
+    if condition == 0 || condition == 8 {
+        code.extend([0x48, 0xb8]); // movabs rax, selected exit
+        code.extend(if condition == 0 { fallthrough } else { taken }.to_le_bytes());
+        return;
+    }
+    let mask = CONDITIONS[usize::from(condition & 7)];
+    let mask = if condition & 8 == 0 { mask } else { !mask };
+    code.push(0xb8); // mov eax, truth table
+    code.extend(u32::from(mask).to_le_bytes());
+    code.extend([0x8b, 0x8f, 0x80, 0, 0, 0]); // mov ecx, [rdi + 128] (post-prefix ICC)
+    code.extend([0x0f, 0xa3, 0xc8]); // bt eax, ecx
+    code.extend([0x48, 0xb8]); // movabs rax, fallthrough exit (preserves CF)
+    code.extend(fallthrough.to_le_bytes());
+    code.extend([0x48, 0xba]); // movabs rdx, taken exit
+    code.extend(taken.to_le_bytes());
+    code.extend([0x48, 0x0f, 0x42, 0xc2]); // cmovc rax, rdx
 }
 
 #[cfg(all(unix, target_arch = "x86_64"))]
@@ -356,7 +421,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix, target_arch = "x86_64"))]
 mod span_tests {
     use super::*;
     #[test]

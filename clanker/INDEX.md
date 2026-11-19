@@ -159,3 +159,4 @@
 - [Single-instruction fallback comparison](workstation-jit-fallback-comparison.md) — frontend fix adopted at `6bd8e80`, four measured SS-20 guest loops, two experimental patches and the remaining Solaris comparison.
 - [Reset and Solaris phase measurements](workstation-jit-phase-review.md) — reset-policy fix, phase counters, worker-budget and lifecycle tests, and three paired Solaris runs. Median boot was 79.21 s interpreted and 126.60 s with JIT.
 - [Native branch and memory handoff](workstation-jit-branch-memory.md) covers the committed checkpoint, measured fallback opcodes in Solaris, and a branch fixture for the next implementation.
+- [Terminal Bicc review](workstation-jit-bicc-exit-review.md) covers native branch accounting, compiler input validation, split-slot interrupt and trap results, a tested correction and the first fusion fixture.

@@ -233,3 +233,14 @@ slot. Fresh ICC, side-effecting slot and unmapped page-edge slot cases pass.
 The bare-metal one-instruction native callers still reject branches. Integer
 LD/ST native coverage is not implemented; the matched Solaris target remains
 unmet.
+
+### Native branch lowering correction
+
+The reviewed native branch exit patch is applied: Bicc is lowered into
+generated code, returns relative PC/nPC deltas from the executing branch
+address, and the span compiler accepts only a terminal branch after a
+supported prefix. The seven supplied branch fixtures pass, including interrupt,
+trap, annul, relocation, ICC-changing slot and page-edge cases. The proposed
+three-outcome CMP/BNE/delay-slot fusion is not implemented yet: generated
+branch code still returns at the branch, so the fixture remains a failing
+next step. Word LD/ST and matched Solaris reruns also remain open.

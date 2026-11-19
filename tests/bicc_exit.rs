@@ -139,3 +139,108 @@ fn native_cmp_bne_exit_fits_one_two_outcome_call() {
     );
     assert_eq!((m.cpu.pc(), m.cpu.npc()), (VA + 8, VA));
 }
+
+fn with_traps(slot: u32, native: bool) -> Machine {
+    use helios::cpu::{PSR_ET, PSR_S};
+    let words = [
+        0x8188_6000,
+        0x0100_0000,
+        0x0100_0000,
+        0x0100_0000,
+        CMP_G1_ONE,
+        0x12bf_ffff,
+        slot,
+    ];
+    let mut m = program(0, &words, PSR_ET | PSR_S, native);
+    for _ in 0..4 {
+        m.step().unwrap();
+    }
+    m.cpu.write_reg(1, 2);
+    m
+}
+
+#[test]
+fn interrupt_between_branch_and_slot_saves_the_slot_and_target() {
+    let mut reference = with_traps(INC_G2, false);
+    let mut actual = with_traps(INC_G2, true);
+    compare_prefix(&mut reference, &mut actual, 2);
+    assert_eq!((actual.cpu.pc(), actual.cpu.npc()), (VA + 24, VA + 16));
+    for m in [&mut reference, &mut actual] {
+        let layout = m.bus.layout();
+        m.bus
+            .write32(layout.system_interrupt + 8, u32::MAX)
+            .unwrap();
+        m.bus
+            .write32(layout.cpu_interrupt + 8, 1 << (16 + 10))
+            .unwrap();
+    }
+    let before = actual.native_execution_count();
+    let out = actual
+        .step_native_span(NonZeroUsize::new(16).unwrap())
+        .unwrap();
+    let entry = reference.step().unwrap();
+    assert_eq!(out.get(0), Some(entry));
+    assert!(
+        matches!(entry, Step::InterruptTaken { level: 10, pc, npc, .. } if (pc,npc) == (VA+24,VA+16))
+    );
+    assert_eq!((out.len(), out.native_instructions), (1, 0));
+    assert_eq!(actual.cpu.read_reg(2), 0);
+    assert_eq!(actual.native_execution_count(), before);
+    assert_eq!(
+        (actual.cpu.read_reg(17), actual.cpu.read_reg(18)),
+        (VA + 24, VA + 16)
+    );
+    same_state(&reference, &actual);
+}
+
+#[test]
+fn fault_in_executed_slot_enters_guest_trap_at_the_exact_slot() {
+    let mut reference = with_traps(0, false); // UNIMP
+    let mut actual = with_traps(0, true);
+    compare_prefix(&mut reference, &mut actual, 2);
+    let out = actual
+        .step_native_span(NonZeroUsize::new(16).unwrap())
+        .unwrap();
+    let entry = reference.step().unwrap();
+    assert_eq!(out.get(0), Some(entry));
+    assert!(matches!(entry, Step::TrapTaken {trap_type: 2, fault,..} if
+        (fault.pc,fault.npc,fault.instruction)==(VA+24,VA+16,Some(0))));
+    assert_eq!((out.len(), out.native_instructions), (1, 0));
+    assert_eq!(
+        (actual.cpu.read_reg(17), actual.cpu.read_reg(18)),
+        (VA + 24, VA + 16)
+    );
+    same_state(&reference, &actual);
+}
+
+#[test]
+fn slot_that_changes_icc_cannot_reverse_the_chosen_target() {
+    // CMP %g1,1 gives NZ, the slot CMP %g0,0 then gives Z.
+    let words = [CMP_G1_ONE, 0x12bf_ffff, 0x80a0_2000];
+    let mut reference = program(0, &words, 2, false);
+    let mut actual = program(0, &words, 2, true);
+    compare_prefix(&mut reference, &mut actual, 3);
+    assert!(actual.cpu.icc().z);
+    assert_eq!((actual.cpu.pc(), actual.cpu.npc()), (VA, VA + 4));
+}
+
+#[test]
+fn same_cached_span_relocates_at_two_virtual_addresses() {
+    let words = [CMP_G1_ONE, 0x12bf_ffff];
+    let mut a = program(0, &words, 2, false);
+    let mut b = program(0, &words, 2, true);
+    for m in [&mut a, &mut b] {
+        for (i, word) in words.into_iter().enumerate() {
+            m.bus.write32(PA + 0x100 + i as u64 * 4, word).unwrap();
+        }
+    }
+    for offset in [0, 0x100] {
+        for m in [&mut a, &mut b] {
+            m.cpu.set_pc_npc(VA + offset, VA + offset + 4);
+        }
+        let before = b.native_execution_calls();
+        compare_prefix(&mut a, &mut b, 2);
+        assert_eq!(b.native_execution_calls() - before, 1);
+        assert_eq!((b.cpu.pc(), b.cpu.npc()), (VA + offset + 8, VA + offset));
+    }
+}
