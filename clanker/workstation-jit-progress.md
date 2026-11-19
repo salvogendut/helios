@@ -25,3 +25,15 @@ Focused native tests include persistent-cache reuse, correct native counters,
 ordinary data writes not forcing recompilation and code writes forcing a new
 translation. Fixed-work pair retained ~1.5x ALU and no memory compile storm.
 The full native review matrix still passes.
+
+## Checkpoint 2 status: blocked
+
+The native path still admits only device-free, untranslated RAM. Enabling it
+for the SS-20 Solaris guest requires the shared translated/device execution
+boundary (architectural fetch effects, interrupts/device deadlines, SRMMU
+identity) and a frontend batch driver; that work is not implemented here.
+The existing frontend remains interpreter-only. Therefore there is no nonzero
+native count during a real Solaris boot and Checkpoint 3's real-workload
+10% target is not met. Synthetic fixed ALU is approximately 1.5x with the
+persistent engine; the memory compile storm is resolved. Do not merge as
+workstation acceleration.
