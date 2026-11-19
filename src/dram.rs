@@ -324,6 +324,12 @@ impl Ss5Dram {
         self.memory.load_image(address, bytes)
     }
 
+    #[cfg(feature = "jit-native")]
+    pub(crate) fn backing_word(&mut self, address: u64) -> Option<&mut u32> {
+        let physical = self.decode(address, 4).ok()??;
+        self.memory.writable_word(physical)
+    }
+
     /// Read-only word peek for parking-token proof validation.
     pub(crate) fn peek32(&self, address: u64) -> Result<u32, BusError> {
         match self.decode(address, 4)? {

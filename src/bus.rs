@@ -325,6 +325,15 @@ impl MemoryBus {
         Some(region.words[((address - region.base) / 4) as usize])
     }
 
+    #[cfg(feature = "jit-native")]
+    pub(crate) fn writable_word(&mut self, address: u64) -> Option<&mut u32> {
+        let region = self.region_mut(address).ok()?;
+        if region.read_only {
+            return None;
+        }
+        region.words.get_mut(((address - region.base) / 4) as usize)
+    }
+
     pub fn map_ram(&mut self, base: u64, size: usize) -> Result<(), MapError> {
         self.map(base, size, false)
     }
