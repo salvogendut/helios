@@ -2,6 +2,11 @@
 
 2026-11-19. Helios `787b5ca`, Heliacal `60ecaad`.
 
+Follow-up at `dd95120`: warmed allocations are independently confirmed gone;
+the frontend needs the matching outcome API update. See the
+[correction review and next delivery](workstation-jit-span-overhead-review.md).
+The findings below retain the original revision's evidence.
+
 The bounded span implementation passes the focused architectural checks below.
 The original-OBP Solaris logs support the reported functional boot/probe/halt.
 This is not an acceleration acceptance: the warmed path violates the requested

@@ -399,6 +399,26 @@ instructions. Validate instrumentation with
 `cargo test --locked --offline --features perf-counters` as well as the normal
 test suite.
 
+## Workstation JIT phase counters
+
+Enable `jit-profile` when collecting execution counts for the workstation
+worker. Read `machine.cpu.jit_phase()` at each phase boundary and call
+`end.since(&start)`. Each CPU construction or reset creates a new epoch.
+A rejected delta means the interval needs a fresh baseline. Sample CPU 2
+separately on a dual machine.
+
+Histogram entries count actual native calls of lengths 1 through 16.
+Multiply each count by its length to get native retirements, then add
+`interpreted` for all retired instructions. Traps and interrupts count
+separate outcomes. Interpret `cpu_errors` as CPU error returns, including
+power-off and repeated attempts in error state. Machine resets form epoch
+boundaries. The word and span caches count lookup hits (including cached
+failures), misses, successful compilations, elapsed host compilation time,
+and entries discarded by capacity eviction. These counters describe the
+ordinary CPU and translated span paths used by Heliacal. For release
+throughput comparisons use the same ordinary `jit-native` binary for both
+runtime modes.
+
 ## Validation
 
 ```sh

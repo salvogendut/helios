@@ -181,3 +181,32 @@ examining words, and an unsupported first opcode falls directly to the
 already-fetched interpreter/bridge path. Six independent warmed-span fixtures
 cover budgets 1/2/3/15/16/17, unsupported interior suffixes, page-edge faults,
 late code writes, deferred-time shortening, exact outcomes and MMU counters.
+
+Independent review at `dd95120` confirms 23 focused checks pass and all six
+warmed allocator cases report zero allocations. Heliacal `60ecaad` still uses
+the removed public `steps` field and fails its native build. The isolated fix
+to `outcome.len()` passes the frontend build and 121 native-feature tests;
+see the [review, tested patch and next delivery](workstation-jit-span-overhead-review.md).
+No new guest timing or acceleration acceptance is claimed.
+
+## Phase counters and matched Solaris result
+
+Applied the reviewed reset-policy, core-phase and frontend-phase patches.
+CPU-0 reset paths now retain both native and interpreted-fallback policies.
+The opt-in `jit-profile` feature exports reset-epoch snapshots, checked deltas,
+1–16 native-call histograms, interpreted/fallback retirement categories,
+control-flow/memory subsets, trap/interrupt/error counts, cache hits/misses/
+compiles/evictions and compilation time. The frontend worker answers phase
+requests at batch boundaries; five worker-budget/lifecycle regressions cover
+the 2,048-outcome boundary, pause, keyboard backpressure, BREAK, parking, SMP,
+fault, power-off and reset.
+
+Three matched original-OBP SS-20 Solaris pairs on one release binary measured
+79.21 s versus 126.60 s boot-to-login and 155 ms versus 265 ms for the fixed
+command (interpreter versus JIT). JIT missed the 10% target in every pair.
+Instrumentation showed only 4.79% of command instructions retired natively;
+91.1% of native calls covered just two or three instructions, with control-flow
+and memory fallbacks dominating.
+
+Integer branch/delay-slot and RAM load/store native coverage remain
+unimplemented. Both branches stay unmerged; no acceleration claim.

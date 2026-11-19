@@ -1281,13 +1281,20 @@ impl Machine {
         self.standalone_iommu.as_ref()
     }
 
+    #[cfg(feature = "jit-native")]
+    fn restore_native_policy(&mut self) {
+        self.cpu.set_native_execution_enabled(self.native_execution);
+        self.cpu
+            .set_interpret_span_fallback(self.interpret_span_fallback);
+    }
+
     /// Apply the power-on reset baseline, clearing reset-cause status.
     /// Reset CPU/MMU, timers, interrupt controller and serial. Retain RAM, ROM, NVRAM/RTC and bytes
     /// already transmitted to the host endpoint.
     pub fn reset(&mut self) {
         self.cpu.reset_sun4m();
         #[cfg(feature = "jit-native")]
-        self.cpu.set_native_execution_enabled(self.native_execution);
+        self.restore_native_policy();
         self.clock.reset();
         if let Some(secondary) = &mut self.secondary_cpu {
             secondary.reset();
@@ -1317,7 +1324,7 @@ impl Machine {
             0 => {
                 self.cpu.reset_sun4m();
                 #[cfg(feature = "jit-native")]
-                self.cpu.set_native_execution_enabled(self.native_execution);
+                self.restore_native_policy();
                 self.clock.reset();
                 self.scheduler.set_next_ready(0, self.scheduler.virtual_ns);
                 true
@@ -2498,7 +2505,7 @@ impl Machine {
     fn software_reset(&mut self, pc: u32, npc: u32, instruction: Option<u32>) -> Step {
         self.cpu.software_reset_sun4m();
         #[cfg(feature = "jit-native")]
-        self.cpu.set_native_execution_enabled(self.native_execution);
+        self.restore_native_policy();
         self.clock.reset();
         if let Some(secondary) = &mut self.secondary_cpu {
             secondary.cpu.software_reset_sun4m();

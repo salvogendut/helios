@@ -23,3 +23,6 @@ pub mod topology;
 
 #[cfg(feature = "jit")]
 pub mod jit;
+
+#[cfg(feature = "jit-profile")]
+pub mod jit_phase;

@@ -263,6 +263,8 @@ struct DecodeEntry {
 
 #[derive(Clone, Debug)]
 struct DecodeCache {
+    #[cfg(feature = "jit-profile")]
+    phase: crate::jit_phase::PhaseSnapshot,
     entries: [Option<DecodeEntry>; DECODE_CACHE_ENTRIES],
     enabled: bool,
     #[cfg(feature = "jit-native")]
@@ -285,6 +287,8 @@ impl Default for DecodeCache {
     fn default() -> Self {
         Self {
             entries: [None; DECODE_CACHE_ENTRIES],
+            #[cfg(feature = "jit-profile")]
+            phase: crate::jit_phase::PhaseSnapshot::fresh(),
             enabled: false,
             #[cfg(feature = "jit-native")]
             native_enabled: false,
@@ -348,12 +352,29 @@ impl DecodeCache {
     #[cfg(feature = "jit-native")]
     fn native_word(&mut self, word: u32) -> Option<Rc<helios_jit_native::NativeBlock>> {
         if let Some(entry) = self.native_words.get(&word) {
+            #[cfg(feature = "jit-profile")]
+            {
+                self.phase.counts.words.hits += 1;
+            }
             return entry.clone();
         }
         if self.native_words.len() >= 4096 {
+            #[cfg(feature = "jit-profile")]
+            {
+                self.phase.counts.words.evicted_entries += self.native_words.len() as u64;
+            }
             self.native_words.clear();
         }
+        #[cfg(feature = "jit-profile")]
+        let start = std::time::Instant::now();
         let block = helios_jit_native::compile(&[word]).map(Rc::new);
+        #[cfg(feature = "jit-profile")]
+        {
+            let stats = &mut self.phase.counts.words;
+            stats.misses += 1;
+            stats.compiled += u64::from(block.is_some());
+            stats.compile_ns += start.elapsed().as_nanos() as u64;
+        }
         self.native_words.insert(word, block.clone());
         block
     }
@@ -361,12 +382,29 @@ impl DecodeCache {
     #[cfg(feature = "jit-native")]
     fn native_span(&mut self, words: &[u32]) -> Option<Rc<helios_jit_native::NativeBlock>> {
         if let Some(entry) = self.native_spans.get(words) {
+            #[cfg(feature = "jit-profile")]
+            {
+                self.phase.counts.spans.hits += 1;
+            }
             return entry.clone();
         }
         if self.native_spans.len() >= 256 {
+            #[cfg(feature = "jit-profile")]
+            {
+                self.phase.counts.spans.evicted_entries += self.native_spans.len() as u64;
+            }
             self.native_spans.clear();
         }
+        #[cfg(feature = "jit-profile")]
+        let start = std::time::Instant::now();
         let block = helios_jit_native::compile(words).map(Rc::new);
+        #[cfg(feature = "jit-profile")]
+        {
+            let stats = &mut self.phase.counts.spans;
+            stats.misses += 1;
+            stats.compiled += u64::from(block.is_some());
+            stats.compile_ns += start.elapsed().as_nanos() as u64;
+        }
         self.native_spans.insert(words.to_vec(), block.clone());
         block
     }
@@ -485,6 +523,11 @@ impl Cpu {
     #[cfg(feature = "jit-native")]
     pub fn native_execution_count(&self) -> u64 {
         self.decode_cache.native_count
+    }
+
+    #[cfg(feature = "jit-profile")]
+    pub fn jit_phase(&self) -> crate::jit_phase::PhaseSnapshot {
+        self.decode_cache.phase
     }
 
     /// Actual native invocations made by the ordinary bridge/pair path.
@@ -616,6 +659,8 @@ impl Cpu {
         let context = AccessContext::new(self.mmu.initiator(), self.psr_control & PSR_S != 0);
         bus.set_access_context(context);
         let result = self.step_inner(bus, pending);
+        #[cfg(feature = "jit-profile")]
+        self.decode_cache.phase.counts.boundary(result);
         bus.set_access_context(previous);
         result
     }
@@ -694,7 +739,14 @@ impl Cpu {
             self.execute(bus, instruction)
         };
         match result {
-            Ok(()) => Ok(step),
+            Ok(()) => {
+                #[cfg(feature = "jit-profile")]
+                self.decode_cache
+                    .phase
+                    .counts
+                    .retirement(instruction, self.decode_cache.native_enabled);
+                Ok(step)
+            }
             Err(kind) => self.handle_fault(Some(instruction), kind),
         }
     }
@@ -709,6 +761,10 @@ impl Cpu {
         }
         state.icc = pack_native_icc(self.icc);
         block.execute(&mut state);
+        #[cfg(feature = "jit-profile")]
+        {
+            self.decode_cache.phase.counts.calls_by_length[block.instructions() - 1] += 1;
+        }
         self.decode_cache.native_calls = self.decode_cache.native_calls.wrapping_add(1);
         if block.instructions() >= 2 {
             self.decode_cache.native_span_calls =
@@ -822,6 +878,11 @@ impl Cpu {
                     outcome
                 })
         })();
+        #[cfg(feature = "jit-profile")]
+        self.decode_cache
+            .phase
+            .counts
+            .boundary(result.map(|out| out.get(0).expect("CPU returned an empty span")));
         bus.set_access_context(previous);
         result
     }
