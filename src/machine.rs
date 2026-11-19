@@ -1951,7 +1951,11 @@ impl Machine {
             && self.secondary_cpu.is_none()
             && self.cpu.mmu.untranslated_execution();
         while stats.executed < budget {
-            if force_fallback || !jit_eligible || self.bus.interrupt_levels() != 0 {
+            if force_fallback
+                || !jit_eligible
+                || !self.cpu.mmu.untranslated_execution()
+                || self.bus.interrupt_levels() != 0
+            {
                 let expected_pc = self.cpu.npc();
                 let expected_npc = expected_pc.wrapping_add(4);
                 match self.step() {
@@ -1979,10 +1983,13 @@ impl Machine {
             let max_words = usize::try_from(budget - stats.executed)
                 .unwrap_or(usize::MAX)
                 .clamp(1, crate::jit::MAX_BLOCK_INSNS);
-            if !self.bus.is_ram_range(
-                u64::from(pc),
-                u64::try_from(max_words * 4).unwrap_or(u64::MAX),
-            ) {
+            let last_byte = u64::from(pc) + (max_words as u64) * 4 - 1;
+            if last_byte > self.cpu.mmu.config().physical_mask
+                || !self.bus.is_ram_range(
+                    u64::from(pc),
+                    u64::try_from(max_words * 4).unwrap_or(u64::MAX),
+                )
+            {
                 force_fallback = true;
                 continue;
             }
@@ -2104,7 +2111,11 @@ impl Machine {
             && self.secondary_cpu.is_none()
             && self.cpu.mmu.untranslated_execution();
         while stats.executed < budget {
-            if force_fallback || !eligible || self.bus.interrupt_levels() != 0 {
+            if force_fallback
+                || !eligible
+                || !self.cpu.mmu.untranslated_execution()
+                || self.bus.interrupt_levels() != 0
+            {
                 let expected_pc = self.cpu.npc();
                 let expected_npc = expected_pc.wrapping_add(4);
                 match self.step() {
@@ -2132,10 +2143,13 @@ impl Machine {
             let max_words = usize::try_from(budget - stats.executed)
                 .unwrap_or(usize::MAX)
                 .clamp(1, helios_jit_native::MAX_BLOCK_INSNS);
-            if !self.bus.is_ram_range(
-                u64::from(pc),
-                u64::try_from(max_words * 4).unwrap_or(u64::MAX),
-            ) {
+            let last_byte = u64::from(pc) + (max_words as u64) * 4 - 1;
+            if last_byte > self.cpu.mmu.config().physical_mask
+                || !self.bus.is_ram_range(
+                    u64::from(pc),
+                    u64::try_from(max_words * 4).unwrap_or(u64::MAX),
+                )
+            {
                 force_fallback = true;
                 continue;
             }
@@ -2192,6 +2206,10 @@ impl Machine {
                 }
                 continue;
             };
+            if block.instructions() as u64 > budget - stats.executed {
+                force_fallback = true;
+                continue;
+            }
             let mut state = helios_jit_native::State::default();
             for (index, slot) in state.regs.iter_mut().enumerate() {
                 *slot = self.cpu.read_reg(index as u8);

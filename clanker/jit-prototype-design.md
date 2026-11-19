@@ -1,76 +1,52 @@
-# Bounded safe JIT prototype design
+# Native JIT prototype design
 
-Status: prototype on `feat/issue-5-jit-prototype`; default off.
+Status: final candidate on `feat/issue-5-jit-prototype`; default off, not
+merged. Parking integration is separate and unchanged.
 
-## Scope
+## Backend and scope
 
-`helios` gains an opt-in `jit` feature and a safe-Rust block engine. The first
-milestone compiles only straight-line SETHI and integer ALU operations
-(including condition-code variants). Branches and delay slots, loads/stores,
-register-window changes, traps, ASIs, FPU, privileged/MMU instructions and all
-unknown encodings stop a block. The existing interpreter executes the stopping
-instruction and any instruction outside a compiled block.
+The native backend is the optional `helios-jit-native` crate selected by the
+`jit-native` feature on Unix/x86-64. It emits x86-64 code for straight-line
+SETHI and basic integer ALU operations (ADD/SUB/AND/OR/XOR and their
+condition-code forms). Branches and delay slots, loads/stores, register-window
+changes, traps, ASIs, FPU, privileged/MMU controls and unknown encodings all
+fall back to the interpreter.
 
-The engine emits no host machine code and uses no executable memory. It is a
-runtime basic-block decoder over owned `Vec<Op>` storage, so the crate keeps
-`unsafe_code = "forbid"`. The normal `Machine::step` path is unchanged.
+The core crate keeps `unsafe_code = "forbid"`. The isolated backend owns its
+small mmap/mprotect and calling-boundary audit; executable pages are RW then
+RX and are released on failure or drop. The feature is absent from normal
+builds. On other host architectures every block reports unsupported.
 
-## Fetch validation and invalidation
+## Admission and invalidation
 
-`Machine::run_jit` compiles a bounded block (at most 16 instructions) only for
-a machine with no installed devices in this milestone. Each instruction word is
-fetched through the CPU MMU with the current ASI and access context, so fetch
-permission and translation faults fall back to the interpreter. The block is
-never executed past an unsupported word.
+A native block is admitted only when all of the following hold:
 
-The block cache is local to one `run_jit` call and conservative:
+- no installed devices and no secondary CPU;
+- MMU and boot translation are disabled, rechecked at every block boundary;
+- the complete candidate span lies below `MmuConfig::physical_mask` and inside
+  writable ordinary RAM;
+- PC/nPC form a sequential straight-line entry, and the block fits the
+  remaining instruction budget;
+- every instruction word decodes to the supported subset.
 
-- a bus mutation-epoch change invalidates it;
-- an MMU/TLB generation or privilege-state change invalidates it;
-- a fallback interpreter step invalidates it;
-- cache size is bounded (64 entries) and no block survives the call.
-
-This removes stale-code and stale-translation hazards without claiming a
-production code-page generation scheme. Device-equipped machines use the
-interpreter fallback in this milestone because their fetch timing includes PROM
-wait accounting; later work may admit RAM-only code after measuring that path.
+The call-local cache is bounded to 64 compile attempts and keyed by PC plus bus
+mutation epoch. Unsupported branch words are negatively cached. Any guest store
+or MMU-control write that changes the key/admission is observed before the next
+block. There is no persistent code cache and no speculative MMU fetch: the
+native path reads only admitted untranslated RAM words.
 
 ## Architectural boundaries
 
-Each JIT instruction advances PC/nPC exactly as the interpreter (`pc <- nPC`,
-`nPC <- pc + 4`) and reuses the interpreter's ALU/condition-code implementation.
-Clock and bus timing advance once per instruction, before the next boundary.
+The core snapshots the 32 active registers and ICC, calls one generated block,
+copies the architectural state back, advances PC/nPC only for the executed
+straight-line count, and advances the existing clock once per instruction.
+Pending resets, latched faults, interrupts, traps, nonsequential entries,
+device machines and MMU-enabled execution use the established interpreter
+boundary. Compilation does not execute an instruction or change MMU state.
 
-`run_jit` checks the software-reset request, device service, error latch and
-interrupt lines before each instruction; any of those boundaries stops the
-block and returns to the interpreter. Traps, window changes and fallback
-instructions are never speculated. Device time, MMU state and guest timing are
-not changed by compilation.
+## Historical decoded experiment
 
-## Validation and measurement
-
-The differential validator compares architectural snapshots after identical
-fixed-work runs through `step` and `run_jit`. Fixtures cover supported ALU
-results, self-modifying code, remapping, permission removal, unsupported
-instruction fallback and device/interrupt fallback. Release measurements use
-the same fixed ALU workload with the feature off and on, report compile time
-and block counts separately from steady execution, and never claim a Solaris
-boot speedup.
-
-
-## Native milestone
-
-The first attempt (`3ac11c0`) was a decoded-block interpreter. It remains the
-fallback experiment and does not satisfy this milestone. The native backend is
-the optional `helios-jit-native` path crate enabled by `jit-native`: it emits
-x86-64 code for the same SETHI/basic-ALU subset, owns mmap/mprotect and the
-native calling boundary, and keeps `unsafe_code = "forbid"` in the core crate.
-
-Native blocks are admitted only for a device-free, single-CPU machine with
-MMU and boot translation disabled and instruction words inside writable RAM.
-The core snapshots active registers/ICC, calls one generated block for the
-straight-line run, copies architectural state back, and advances the existing
-clock once per instruction. Unsupported words, nonsequential PC/nPC entries,
-devices, MMUs, traps, resets, latches and all other cases stay on the
-interpreter path. The cache is call-local, bounded by mutation epoch, and
-negative-caches unsupported branch words so fallback is not recompiled.
+Commit `3ac11c0` was a decoded Rust operation loop, not a native JIT. Its
+measurements remain historical evidence only. The `jit` feature and decoded
+tests are retained for comparison/fallback coverage, but the native backend is
+the milestone candidate.

@@ -143,5 +143,7 @@
 - [Device-service readiness guards](performance-issue5-device-service.md) — ESP/Ethernet service predicates, matching guard-on/off boot outcomes and qualified local timing results.
 
 - [Safe JIT prototype design](jit-prototype-design.md) — optional default-off straight-line SETHI/ALU block engine with MMU validation, conservative invalidation and interpreter fallback.
-- [Safe JIT prototype result](jit-prototype-results.md) — decoded experiment and isolated native x86-64 candidate; native ALU ~1.20x, review fixtures and invalidation boundaries pending native review.
+- [Native JIT prototype result](jit-prototype-results.md) — guard-patched x86-64 candidate, default-off and Unix-only; ~1.18x synthetic ALU, ~1.1% memory fallback cost; review edge fixtures promoted.
 - [Issue #5 execution prototype review](jit-prototype-review.md) — merge blocked: decoded-block backend emits no native code; six independent failures reproduce speculative MMU effects, split-run delay-slot corruption and silent reset/error stops; bounded native-backend follow-up and retained fixtures.
+- [Issue #5 native backend review](jit-native-review.md) — real native emitter and prior fixes verified; three boundary bugs reproduced, conservative patch passes 34 focused tests and retains a measured ALU benefit; production branch unchanged.
+- [SPARC JIT reference comparison](jit-reference-comparison.md) — pinned QEMU, InfiniteSPARCjit and UltraViolet sources: block state/budgets, address-width handling, code invalidation, register caching and differential validation; bounded recommendations for the current milestone and later work.

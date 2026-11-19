@@ -1,74 +1,50 @@
-# Bounded JIT prototype result
+# Native JIT prototype result
 
 Branch: `feat/issue-5-jit-prototype`, based on merged main `5fcffdc`.
-Feature: `jit`, default off; no unsafe or executable host memory.
+Feature: `jit-native`, default off; Unix/x86-64 only. Core remains
+`unsafe_code = "forbid"`.
 
-## What runs through the JIT
+## Final native candidate
 
-The safe block decoder supports straight-line SETHI and integer ALU/condition
-code operations. It compiles at most 16 instructions, validates each word
-through the current MMU/ASI, and uses the interpreter for branches, delay
-slots, memory, windows, traps, ASIs, FPU, devices and unknown encodings.
-Device-equipped machines deliberately use the interpreter path in this
-milestone so PROM wait accounting remains exact. The cache is call-local and
-conservatively invalidated by bus mutation and MMU generations; unsupported
-words are negatively cached.
+The guard-patched native backend executes only device-free, single-CPU,
+MMU-disabled writable-RAM blocks. It rechecks live MMU/boot state at every
+block boundary, enforces the CPU physical-address mask over the whole candidate
+span, and refuses a cached block that exceeds the remaining budget. Everything
+else falls through the interpreter. See [the design](jit-prototype-design.md).
 
-## Fixed-work measurement
+Guard-patched identical release builds, alternated order:
 
-Identical optimized release builds, `examples/perf fixed alu 5000000`,
-25,000,000 executed instructions. Three alternating runs:
+| Workload | Interpreter | Native | Runs |
+| --- | ---: | ---: | --- |
+| Fixed ALU, 25M outcomes | 41.57 ns/outcome | 35.21 ns/outcome | 3 pairs |
+| Fixed memory, 7M outcomes | 54.59 ns/outcome | 55.195 ns/outcome | 2 pairs |
 
-| Run | Interpreter ns/step | JIT ns/step |
-| --- | ---: | ---: |
-| 1 | 40.90 | 30.08 |
-| 2 | 41.10 | 30.49 |
-| 3 | 41.30 | 30.05 |
-
-Median: **41.10 -> 30.08 ns/step**, about **1.37x** faster on this fixed ALU
-workload. JIT compilation was measured separately at 1.1-2.4 microseconds for
-two positive blocks and one negative branch block; execution checksums and
-25M instruction counts match. The feature-off build remains the reference.
-
-The fixed `memory` workload regresses (about 53.3 -> 136 ns/step): loads/stores
-are correctly unsupported, and the per-store mutation epoch forces repeated
-block compilation. That is the measured bottleneck, not evidence for a memory
-JIT. Do not describe these synthetic results as faster Solaris boot.
+That is about **1.18x** on the bounded ALU workload and **1.1%** additional
+memory fallback time. Native compilation was separated at 26.9-72.5
+microseconds; all checksums and instruction counts matched. These are
+synthetic fixed-work results and do **not** establish a faster Solaris boot or
+workstation acceleration.
 
 ## Validation
 
-Seven JIT tests cover independently expected SETHI/ALU results, full diagnostic
-snapshot equality, self-modifying code, mapped fetch/remap, removed fetch
-permission, branch/fallback boundaries and device-machine interpreter fallback.
-Default tests: 814; with `jit`: 823 and with `jit-native`: 837. The eight
-independent review fixtures now pass, including reset/error, split-delay and
-MMU-fault-state cases. Formatting, Clippy and all four built-in demos pass.
-Evidence: `local/jit-issue5-2026-11-18/`.
+The promoted native fixtures cover the four review edges (budget fitting,
+MMU-enable revocation, physical-mask identity within a block and at entry), a
+900-case independently calculated ALU/ICC matrix, the earlier review fixtures
+through `run_jit_native`, self-modification, reset/error and device fallback.
+The complete normal/native suites, formatting, Clippy and demos are run for the
+final candidate: **814 normal / 850 with `jit-native`**, all passing. The
+900-case matrix checks carry/borrow/overflow, `%g0`, aliases and all register
+class destinations against the interpreter.
 
+## Historical decoded experiment
 
-## Native candidate
+`3ac11c0` was a decoded Rust operation loop, not a native backend. It reported
+about 1.37x on ALU and a 2.56x memory regression; those measurements remain
+historical and must not be presented as the JIT candidate. The retained `jit`
+feature is comparison/fallback coverage only.
 
-`jit-native` adds the isolated x86-64 emitter. Native admission is narrower
-than the decoded experiment: device-free, single-CPU, MMU-disabled writable
-RAM only. The review fixtures remain passing on the decoded/fallback path;
-native fixtures cover straight-line results, split branch entry, reset/error
-delivery, warm-cache self-modification and device fallback.
+## Boundaries
 
-Fixed ALU, 25M outcomes, identical optimized builds:
-
-| Run | Interpreter | Native |
-| --- | ---: | ---: |
-| 1 | 41.15 | 34.37 |
-| 2 | 41.52 | 34.26 |
-| 3 | 41.76 | 34.12 |
-
-Median **41.52 -> 34.26 ns/outcome**, about **1.21x**, with native compilation
-and register/ICC marshalling dominating the small three-instruction loop.
-Decoded-block remains faster than native for this short loop; the native path
-is the milestone candidate, not a claim of a large general speedup.
-
-The native cache stops admission after 64 compile attempts. The fixed memory
-workload therefore returns to the interpreter rather than compiling every
-store: median 54.00 -> 55.57 ns/outcome, a small fallback cost rather than the
-previous 2.56x regression. Memory operations are not JIT-compiled in this
-slice.
+No branch, memory, SMP, parking, MMU or device acceleration is added by this
+correction. Register marshalling and persistent caching are follow-ups, not
+part of this acceptance gate.
