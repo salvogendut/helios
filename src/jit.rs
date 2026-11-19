@@ -163,6 +163,7 @@ impl std::fmt::Debug for NativeEngine {
     }
 }
 
+#[cfg(feature = "jit-native")]
 impl NativeEngine {
     pub fn clear(&mut self) {
         self.entries.clear();

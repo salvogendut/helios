@@ -5,6 +5,8 @@ use crate::bus::{AccessContext, Bus, BusError, BusErrorKind};
 use crate::fpu::{Action as FpAction, Fpu, Operation as FpOperation};
 use crate::mmu::{MemoryError, MmuConfig, MmuFault, Srmmu, Width};
 use std::fmt;
+#[cfg(feature = "jit-native")]
+use std::{collections::HashMap, rc::Rc};
 
 pub const WINDOW_COUNT: usize = 8;
 
@@ -258,6 +260,12 @@ struct DecodeEntry {
 struct DecodeCache {
     entries: [Option<DecodeEntry>; DECODE_CACHE_ENTRIES],
     enabled: bool,
+    #[cfg(feature = "jit-native")]
+    native_enabled: bool,
+    #[cfg(feature = "jit-native")]
+    native_count: u64,
+    #[cfg(feature = "jit-native")]
+    native_words: HashMap<u32, Option<Rc<helios_jit_native::NativeBlock>>>,
 }
 
 impl Default for DecodeCache {
@@ -265,6 +273,12 @@ impl Default for DecodeCache {
         Self {
             entries: [None; DECODE_CACHE_ENTRIES],
             enabled: false,
+            #[cfg(feature = "jit-native")]
+            native_enabled: false,
+            #[cfg(feature = "jit-native")]
+            native_count: 0,
+            #[cfg(feature = "jit-native")]
+            native_words: HashMap::new(),
         }
     }
 }
@@ -299,6 +313,42 @@ impl DecodeCache {
 
     fn clear(&mut self) {
         self.entries.fill(None);
+    }
+
+    #[cfg(feature = "jit-native")]
+    fn set_native_enabled(&mut self, enabled: bool) {
+        self.native_enabled = enabled;
+        if !enabled {
+            self.native_words.clear();
+        }
+    }
+
+    #[cfg(feature = "jit-native")]
+    fn native_word(&mut self, word: u32) -> Option<Rc<helios_jit_native::NativeBlock>> {
+        if let Some(entry) = self.native_words.get(&word) {
+            return entry.clone();
+        }
+        if self.native_words.len() >= 4096 {
+            self.native_words.clear();
+        }
+        let block = helios_jit_native::compile(&[word]).map(Rc::new);
+        self.native_words.insert(word, block.clone());
+        block
+    }
+}
+
+#[cfg(feature = "jit-native")]
+fn pack_native_icc(icc: Icc) -> u32 {
+    u32::from(icc.n) | (u32::from(icc.z) << 1) | (u32::from(icc.v) << 2) | (u32::from(icc.c) << 3)
+}
+
+#[cfg(feature = "jit-native")]
+fn unpack_native_icc(bits: u32) -> Icc {
+    Icc {
+        n: bits & 1 != 0,
+        z: bits & 2 != 0,
+        v: bits & 4 != 0,
+        c: bits & 8 != 0,
     }
 }
 
@@ -385,6 +435,21 @@ impl Cpu {
         if !enabled {
             self.decode_cache.clear();
         }
+    }
+
+    #[cfg(feature = "jit-native")]
+    pub fn set_native_execution_enabled(&mut self, enabled: bool) {
+        self.decode_cache.set_native_enabled(enabled);
+    }
+
+    #[cfg(feature = "jit-native")]
+    pub fn native_execution_count(&self) -> u64 {
+        self.decode_cache.native_count
+    }
+
+    #[cfg(feature = "jit-native")]
+    pub fn native_execution_enabled(&self) -> bool {
+        self.decode_cache.native_enabled
     }
 
     /// Non-power-up reset retains integer registers, PS, CWP and TT
@@ -534,6 +599,31 @@ impl Cpu {
             npc: self.npc,
             instruction,
         };
+        #[cfg(feature = "jit-native")]
+        if self.decode_cache.native_enabled {
+            if let Some(block) = self.decode_cache.native_word(instruction) {
+                let mut state = helios_jit_native::State::default();
+                for (index, slot) in state.regs.iter_mut().enumerate() {
+                    if block.inputs() & (1u32 << index) != 0 {
+                        *slot = self.read_reg(index as u8);
+                    }
+                }
+                state.icc = pack_native_icc(self.icc);
+                block.execute(&mut state);
+                for (index, value) in state.regs.iter().enumerate() {
+                    if block.outputs() & (1u32 << index) != 0 {
+                        self.write_reg(index as u8, *value);
+                    }
+                }
+                if block.sets_icc() {
+                    self.icc = unpack_native_icc(state.icc);
+                }
+                self.pc = self.npc;
+                self.npc = self.npc.wrapping_add(4);
+                self.decode_cache.native_count = self.decode_cache.native_count.wrapping_add(1);
+                return Ok(step);
+            }
+        }
         let result = if self.decode_cache.enabled {
             if let Some(decoded) = self.decode_cache.lookup(self.pc, instruction) {
                 self.execute_decoded(decoded);

@@ -874,6 +874,8 @@ pub struct Machine {
     reset_epoch: u64,
     #[cfg(feature = "jit-native")]
     native_engine: Option<crate::jit::NativeEngine>,
+    #[cfg(feature = "jit-native")]
+    native_execution: bool,
 }
 
 #[cfg(feature = "jit-native")]
@@ -1027,6 +1029,8 @@ impl Machine {
             reset_epoch: 0,
             #[cfg(feature = "jit-native")]
             native_engine: None,
+            #[cfg(feature = "jit-native")]
+            native_execution: false,
         };
         machine.cpu.use_cpu_config(profile.cpu_config());
         machine.cpu.use_mmu_config(profile.mmu());
@@ -1169,6 +1173,22 @@ impl Machine {
     }
 
     /// Synthetic-test setup: clear boot mode and set one processor's PC/nPC.
+    #[cfg(feature = "jit-native")]
+    pub fn set_native_execution_enabled(&mut self, enabled: bool) {
+        self.native_execution = enabled;
+        self.cpu.set_native_execution_enabled(enabled);
+    }
+
+    #[cfg(feature = "jit-native")]
+    pub fn native_execution_count(&self) -> u64 {
+        self.cpu.native_execution_count()
+    }
+
+    #[cfg(feature = "jit-native")]
+    pub fn native_execution_enabled(&self) -> bool {
+        self.native_execution && self.cpu.native_execution_enabled()
+    }
+
     pub fn set_processor_entry(&mut self, processor: u8, pc: u32, npc: u32) -> bool {
         match processor {
             0 => {
@@ -1242,6 +1262,8 @@ impl Machine {
     /// already transmitted to the host endpoint.
     pub fn reset(&mut self) {
         self.cpu.reset_sun4m();
+        #[cfg(feature = "jit-native")]
+        self.cpu.set_native_execution_enabled(self.native_execution);
         self.clock.reset();
         if let Some(secondary) = &mut self.secondary_cpu {
             secondary.reset();
@@ -1270,6 +1292,8 @@ impl Machine {
         match processor {
             0 => {
                 self.cpu.reset_sun4m();
+                #[cfg(feature = "jit-native")]
+                self.cpu.set_native_execution_enabled(self.native_execution);
                 self.clock.reset();
                 self.scheduler.set_next_ready(0, self.scheduler.virtual_ns);
                 true
@@ -1307,6 +1331,8 @@ impl Machine {
             reset_epoch: 0,
             #[cfg(feature = "jit-native")]
             native_engine: None,
+            #[cfg(feature = "jit-native")]
+            native_execution: false,
         })
     }
 
@@ -2098,6 +2124,8 @@ impl Machine {
         budget: u64,
     ) -> Result<crate::jit::NativeRunStats, SchedulerError> {
         let mut engine = self.native_engine.take().unwrap_or_default();
+        let hits_before = engine.hits;
+        let evictions_before = engine.evictions;
         let result = (|| {
             let mut stats = crate::jit::NativeRunStats::default();
             let pc = self.cpu.pc();
@@ -2162,7 +2190,7 @@ impl Machine {
                     force_fallback = true;
                     continue;
                 }
-                let epoch = self.bus.code_execution_epoch();
+                let mut epoch = self.bus.code_execution_epoch();
                 if let crate::jit::NativeLookup::Miss = engine.lookup_epoch(pc, epoch) {
                     let mut words = Vec::with_capacity(max_words);
                     for index in 0..max_words {
@@ -2201,6 +2229,9 @@ impl Machine {
                             && self.cpu.mmu.untranslated_execution();
                         continue;
                     }
+                    self.bus
+                        .watch_code(u64::from(pc), u64::from(pc) + (words.len() as u64) * 4);
+                    epoch = self.bus.code_execution_epoch();
                     if let crate::jit::NativeLookup::Miss = engine.validate(pc, &words, epoch) {
                         stats.compile_calls += 1;
                         let started = Instant::now();
@@ -2213,8 +2244,6 @@ impl Machine {
                             stats.compiled_instructions += words.len() as u64;
                         }
                         engine.insert(pc, &words, epoch, block);
-                        self.bus
-                            .watch_code(u64::from(pc), u64::from(pc) + (words.len() as u64) * 4);
                     }
                 }
                 let block = match engine.lookup_epoch(pc, epoch) {
@@ -2287,8 +2316,8 @@ impl Machine {
         })();
         let mut stats = result;
         if let Ok(stats) = &mut stats {
-            stats.cache_hits = engine.hits;
-            stats.evictions = engine.evictions;
+            stats.cache_hits = engine.hits.wrapping_sub(hits_before);
+            stats.evictions = engine.evictions.wrapping_sub(evictions_before);
         }
         self.native_engine = Some(engine);
         stats
@@ -2340,6 +2369,8 @@ impl Machine {
 
     fn software_reset(&mut self, pc: u32, npc: u32, instruction: Option<u32>) -> Step {
         self.cpu.software_reset_sun4m();
+        #[cfg(feature = "jit-native")]
+        self.cpu.set_native_execution_enabled(self.native_execution);
         self.clock.reset();
         if let Some(secondary) = &mut self.secondary_cpu {
             secondary.cpu.software_reset_sun4m();

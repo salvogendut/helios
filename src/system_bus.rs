@@ -2408,6 +2408,8 @@ impl Bus for SystemBus {
     }
     fn write_doubleword(&mut self, address: u64, words: [u32; 2]) -> Result<(), BusError> {
         self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+        #[cfg(feature = "jit-native")]
+        self.note_code_range(address, 8);
         if self.firmware_mmio_page(address & !0xfff) {
             return Err(BusError {
                 address,
@@ -2497,6 +2499,8 @@ impl Bus for SystemBus {
     }
     fn swap32(&mut self, address: u64, value: u32) -> Result<u32, BusError> {
         self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+        #[cfg(feature = "jit-native")]
+        self.note_code_range(address, 4);
         if self.firmware_mmio_page(address & !0xfff) {
             return Err(BusError {
                 address,
@@ -2528,6 +2532,8 @@ impl Bus for SystemBus {
     }
     fn ldstub8(&mut self, address: u64) -> Result<u8, BusError> {
         self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+        #[cfg(feature = "jit-native")]
+        self.note_code_range(address, 1);
         if self.firmware_mmio_page(address & !0xfff) {
             return Err(BusError {
                 address,

@@ -37,3 +37,24 @@ native count during a real Solaris boot and Checkpoint 3's real-workload
 10% target is not met. Synthetic fixed ALU is approximately 1.5x with the
 persistent engine; the memory compile storm is resolved. Do not merge as
 workstation acceleration.
+
+## Checkpoint 2: native execution inside Solaris
+
+The frontend now forwards `jit-native` and exposes `execution_jit = true` /
+`--execution jit` (default interpreter). The core native bridge substitutes a
+cached one-instruction native SETHI/ALU operation for the **already-fetched**
+instruction inside the normal `Machine::step` / `Cpu::step_with_interrupts`
+boundary. Device service, IRQ sampling, SRMMU fetch/faults, wait accounting,
+reset/error handling and clock advancement stay in their established order.
+All unsupported instructions, branches, memory, windows, traps, FPU and SMP
+remain interpreted.
+
+An original-OBP single-CPU SS-20 Solaris 2.6 boot through Heliacal with
+`--execution jit` reached login, ran the bounded command/fixed-work and echo
+probes, synced and halted with exit 0. The shutdown report counted
+**601,669,633** native instructions, so execution continued natively after
+firmware and kernel entry. This is functionality evidence, not acceleration:
+the one-instruction bridge has high per-step overhead, and the fixed 100-loop
+probe took 0.565 s. Checkpoint 3 block batching/branch/memory coverage and the
+10% real-workload target remain unimplemented. Parking measurements were run
+with parking off.

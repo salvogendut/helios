@@ -208,6 +208,17 @@ impl NativeBlock {
     }
 }
 
+impl std::fmt::Debug for NativeBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeBlock")
+            .field("instructions", &self.instructions)
+            .field("inputs", &self.inputs)
+            .field("outputs", &self.outputs)
+            .field("sets_icc", &self.sets_icc)
+            .finish()
+    }
+}
+
 #[cfg(all(unix, target_arch = "x86_64"))]
 fn emit_op(code: &mut Vec<u8>, op: Op) -> Option<()> {
     match op {
