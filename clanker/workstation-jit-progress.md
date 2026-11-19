@@ -26,7 +26,7 @@ ordinary data writes not forcing recompilation and code writes forcing a new
 translation. Fixed-work pair retained ~1.5x ALU and no memory compile storm.
 The full native review matrix still passes.
 
-## Checkpoint 2 status: blocked
+## Historical checkpoint 1 stopping point (superseded by the bridge below)
 
 The native path still admits only device-free, untranslated RAM. Enabling it
 for the SS-20 Solaris guest requires the shared translated/device execution
@@ -89,13 +89,25 @@ block length/counter evidence, and the 10% real-workload target are not met.
 The measured one-instruction bridge remains 3.8x slower on the bounded useful
 work probe. The branch must not be merged as accelerated workstation JIT.
 
-### Block-path blocking invariant
+### Block fetch contract: corrected reproduction and next implementation
 
-A translated block that skips the live fetch cannot observe permission removal
-after warming. Minimal reproducer: map VA `0x1234_5000` to RAM through the SS5
-page tables with PTE `0x088e`, execute an ADD there, change the leaf to
-`0x0882` (no execute), and execute again. The reference step raises one
-InstructionMmu/Protection fault; a warm-cache block without a justified fetch
-effect model would execute stale native code instead. The block path therefore
-needs a mapping/permission generation or an equivalent validated fetch-effect
-contract before it can replace the bridge. No block path is claimed here.
+Independent review reproduced the proposed PTE edit on SS-5 and SS-20, in
+interpreter and native-bridge modes. After warming VA `0x1234_5000` with PTE
+`0x088e`, writing `0x0882` to the physical leaf **without invalidating or
+replacing the resident translation still executes the ADD**. An ASI-3 page
+flush makes the next fetch raise one InstructionMmu/Protection fault. A cold
+first fetch with `0x0882` also faults. The earlier statement that the warmed
+PTE edit alone faults was incomplete; a different result needs its actual
+flush, replacement, diagnostic-edit or other access sequence retained.
+
+The JIT must preserve cached translation permissions as well as subsequent
+invalidation. A PTE-memory edit is not permission to change architectural TLB
+semantics. Three independent regressions cover these cases on both profiles
+and both execution modes; see
+`local/review-workstation-jit-fetch-2026-11-19/`.
+
+The next implementation is the narrow warm, same-page fetch contract in the
+[checkpoint 2 review continuation](workstation-jit-checkpoint2-review.md#concrete-first-block-contract-after-fa6475c).
+It retains the initial architectural fetch, proves the remaining cached-hit
+effects, and admits a short native span only under explicit memory and event
+guards. This is proposed work, not an implemented block path or a speed claim.
