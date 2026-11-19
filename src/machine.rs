@@ -2366,7 +2366,6 @@ impl Machine {
         if self.software_reset_requested()
             || !self.native_execution_enabled()
             || self.secondary_cpu.is_some()
-            || !self.service_guards
         {
             return self.step().map(|step| {
                 let mut outcome = crate::jit::NativeSpanStep::default();
@@ -2381,7 +2380,12 @@ impl Machine {
             kind: FaultKind::DeviceDma(error),
         })?;
         let pending = self.bus.interrupt_levels();
-        let max = budget.get().min(helios_jit_native::MAX_BLOCK_INSNS);
+        let max = if self.service_guards {
+            budget.get().min(helios_jit_native::MAX_BLOCK_INSNS)
+        } else {
+            // Unconditional servicing allows one outcome with the selected fallback policy.
+            1
+        };
         let mut phase = self.clock;
         let mut cumulative = 0u64;
         let mut computed = 0usize;

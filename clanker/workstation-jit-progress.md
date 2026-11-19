@@ -287,3 +287,14 @@ ADD+load 113.1→112.1; isolated and long loops were unchanged/slightly worse.
 Only the long loop remains faster than the interpreter. The change is retained
 for its bounded-rejection benefit; the 10% Solaris gate remains missed and no
 new guest boot was run.
+
+## Reference-service policy correction
+
+Applied the reviewed guard-disabled policy correction: when unconditional
+device service is selected, `step_native_span` limits the effective budget to
+one outcome and retains the configured interpreted/native single-word path and
+its accounting. The two new regressions pass. Clock-projection review timing
+did not justify another Solaris boot: held-reset improved 93.68→89.26 ns while
+the short branch loop regressed 81.34→86.09; the ADD/load gain did not
+reproduce. The experiment ends here; the Solaris command remains 358.2 ms JIT
+versus 156.9 ms interpreted (141.2 ms target).

@@ -383,3 +383,57 @@ fn pending_reset_precedes_both_instructions_and_resets_counts() {
     assert_eq!(b.native_execution_calls(), 0);
     equal(&a, &b);
 }
+
+fn check_unguarded_span_policy(interpret_single: bool) {
+    // Disabling the service guards forces one outcome per call. The selected
+    // engine for that outcome must agree with its return and phase counters.
+    for budget in [1, 16] {
+        let mut reference = mapped(MachineProfile::Ss20, false, CpuClockMode::Hardware);
+        let mut candidate = mapped(MachineProfile::Ss20, true, CpuClockMode::Hardware);
+        reference.set_device_service_guards(false);
+        candidate.set_device_service_guards(false);
+        candidate.set_interpret_span_fallback(interpret_single);
+        let calls = candidate.native_execution_calls();
+        let native = candidate.native_execution_count();
+        #[cfg(feature = "jit-profile")]
+        let start = candidate.cpu.jit_phase();
+        let span = candidate
+            .step_native_span(NonZeroUsize::new(budget).unwrap())
+            .unwrap();
+        assert_eq!(span.len(), 1);
+        assert_eq!(span.get(0), Some(reference.step().unwrap()));
+        equal(&reference, &candidate);
+        let expected = u64::from(!interpret_single);
+        assert_eq!(
+            (
+                candidate.native_execution_calls() - calls,
+                candidate.native_execution_count() - native,
+                u64::from(span.native_instructions)
+            ),
+            (expected, expected, expected),
+            "single instruction policy, executed count, and reported count"
+        );
+        #[cfg(feature = "jit-profile")]
+        {
+            let delta = candidate.cpu.jit_phase().since(&start).unwrap();
+            assert_eq!(
+                (
+                    delta.native_instructions(),
+                    delta.interpreted,
+                    delta.fallbacks
+                ),
+                (expected, 1 - expected, 1 - expected)
+            );
+        }
+    }
+}
+
+#[test]
+fn unguarded_span_keeps_interpreted_single_word_policy() {
+    check_unguarded_span_policy(true);
+}
+
+#[test]
+fn unguarded_span_reports_native_single_word_bridge() {
+    check_unguarded_span_policy(false);
+}
