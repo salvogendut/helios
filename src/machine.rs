@@ -1175,8 +1175,11 @@ impl Machine {
     /// Synthetic-test setup: clear boot mode and set one processor's PC/nPC.
     #[cfg(feature = "jit-native")]
     pub fn set_native_execution_enabled(&mut self, enabled: bool) {
-        self.native_execution = enabled;
-        self.cpu.set_native_execution_enabled(enabled);
+        self.native_execution = enabled && self.secondary_cpu.is_none();
+        self.cpu.set_native_execution_enabled(self.native_execution);
+        if let Some(secondary) = self.secondary_cpu.as_mut() {
+            secondary.cpu.set_native_execution_enabled(false);
+        }
     }
 
     #[cfg(feature = "jit-native")]
