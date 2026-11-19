@@ -81,6 +81,9 @@ pub struct NativeRunStats {
     pub executed: u64,
     pub native_blocks: u64,
     pub native_instructions: u64,
+    pub compiled_instructions: u64,
+    pub cache_hits: u64,
+    pub evictions: u64,
     pub compile_calls: u64,
     pub compile_ns: u64,
     pub fallback_steps: u64,
@@ -137,5 +140,124 @@ mod tests {
     fn decoder_rejects_memory_and_branch_words() {
         assert!(decode(0xc400_6000).is_none());
         assert!(decode(0x12bf_fffd).is_none());
+    }
+}
+
+#[cfg(feature = "jit-native")]
+pub const MAX_ENGINE_ENTRIES: usize = 256;
+
+#[cfg(feature = "jit-native")]
+struct NativeEntry {
+    pc: u32,
+    words: Vec<u32>,
+    epoch: u64,
+    block: Option<helios_jit_native::NativeBlock>,
+    last_used: u64,
+}
+
+#[cfg(feature = "jit-native")]
+pub enum NativeLookup<'a> {
+    Miss,
+    Negative,
+    Block(&'a helios_jit_native::NativeBlock),
+}
+
+#[cfg(feature = "jit-native")]
+pub struct NativeEngine {
+    entries: Vec<NativeEntry>,
+    tick: u64,
+    pub hits: u64,
+    pub evictions: u64,
+}
+
+#[cfg(feature = "jit-native")]
+impl Default for NativeEngine {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            tick: 0,
+            hits: 0,
+            evictions: 0,
+        }
+    }
+}
+
+#[cfg(feature = "jit-native")]
+impl std::fmt::Debug for NativeEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeEngine")
+            .field("entries", &self.entries.len())
+            .field("hits", &self.hits)
+            .field("evictions", &self.evictions)
+            .finish()
+    }
+}
+
+impl NativeEngine {
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub fn lookup_epoch(&mut self, pc: u32, epoch: u64) -> NativeLookup<'_> {
+        self.tick = self.tick.wrapping_add(1);
+        let tick = self.tick;
+        if let Some(index) = self.entries.iter().position(|entry| entry.pc == pc) {
+            if self.entries[index].epoch == epoch {
+                self.entries[index].last_used = tick;
+                self.hits = self.hits.wrapping_add(1);
+                return match &self.entries[index].block {
+                    Some(block) => NativeLookup::Block(block),
+                    None => NativeLookup::Negative,
+                };
+            }
+        }
+        NativeLookup::Miss
+    }
+
+    pub fn validate(&mut self, pc: u32, words: &[u32], epoch: u64) -> NativeLookup<'_> {
+        self.tick = self.tick.wrapping_add(1);
+        let tick = self.tick;
+        if let Some(index) = self.entries.iter().position(|entry| entry.pc == pc) {
+            if self.entries[index].words == words {
+                self.entries[index].last_used = tick;
+                self.entries[index].epoch = epoch;
+                self.hits = self.hits.wrapping_add(1);
+                return match &self.entries[index].block {
+                    Some(block) => NativeLookup::Block(block),
+                    None => NativeLookup::Negative,
+                };
+            }
+            self.entries.swap_remove(index);
+        }
+        NativeLookup::Miss
+    }
+
+    pub fn insert(
+        &mut self,
+        pc: u32,
+        words: &[u32],
+        epoch: u64,
+        block: Option<helios_jit_native::NativeBlock>,
+    ) {
+        self.tick = self.tick.wrapping_add(1);
+        let tick = self.tick;
+        if self.entries.len() >= MAX_ENGINE_ENTRIES {
+            let oldest = self
+                .entries
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(index, _)| index)
+                .unwrap_or(0);
+            self.entries.swap_remove(oldest);
+            self.evictions = self.evictions.wrapping_add(1);
+        }
+        self.entries.push(NativeEntry {
+            pc,
+            words: words.to_vec(),
+            epoch,
+            block,
+            last_used: tick,
+        });
     }
 }

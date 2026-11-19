@@ -568,6 +568,10 @@ pub struct SystemBus {
     device_ns: u64,
     mutation_epoch: u64,
     configuration_epoch: u64,
+    #[cfg(feature = "jit-native")]
+    code_epoch: u64,
+    #[cfg(feature = "jit-native")]
+    code_watch: Vec<(u64, u64)>,
 }
 
 impl Default for SystemBus {
@@ -600,6 +604,10 @@ impl SystemBus {
             device_ns: 0,
             mutation_epoch: 1,
             configuration_epoch: 1,
+            #[cfg(feature = "jit-native")]
+            code_epoch: 1,
+            #[cfg(feature = "jit-native")]
+            code_watch: Vec::new(),
         }
     }
 
@@ -1185,6 +1193,37 @@ impl SystemBus {
     pub(crate) fn mutation_epoch(&self) -> u64 {
         self.mutation_epoch
     }
+    #[cfg(feature = "jit-native")]
+    pub(crate) fn code_execution_epoch(&self) -> u64 {
+        self.code_epoch
+    }
+
+    #[cfg(feature = "jit-native")]
+    pub(crate) fn watch_code(&mut self, start: u64, end: u64) {
+        if self.code_watch.len() >= 512 {
+            self.code_watch.clear();
+            self.code_epoch = self.code_epoch.wrapping_add(1);
+        }
+        if !self
+            .code_watch
+            .iter()
+            .any(|&(old_start, old_end)| start >= old_start && end <= old_end)
+        {
+            self.code_watch.push((start, end));
+        }
+    }
+
+    #[cfg(feature = "jit-native")]
+    fn note_code_range(&mut self, address: u64, len: u64) {
+        if self
+            .code_watch
+            .iter()
+            .any(|&(start, end)| address < end && address + len > start)
+        {
+            self.code_epoch = self.code_epoch.wrapping_add(1);
+        }
+    }
+
     /// Ordinary DRAM range check for the bounded untranslated execution path.
     #[cfg(feature = "jit")]
     pub(crate) fn is_ram_range(&self, address: u64, len: u64) -> bool {
@@ -1518,6 +1557,10 @@ impl SystemBus {
         let result = self.memory.map_ram(address, size);
         if result.is_ok() {
             self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+            #[cfg(feature = "jit-native")]
+            {
+                self.code_epoch = self.code_epoch.wrapping_add(1);
+            }
         }
         result
     }
@@ -1526,6 +1569,10 @@ impl SystemBus {
         let result = self.memory.map_rom(address, bytes);
         if result.is_ok() {
             self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+            #[cfg(feature = "jit-native")]
+            {
+                self.code_epoch = self.code_epoch.wrapping_add(1);
+            }
         }
         result
     }
@@ -1543,6 +1590,8 @@ impl SystemBus {
                 kind: BusErrorKind::Unsupported("raw image loading into devices"),
             });
         }
+        #[cfg(feature = "jit-native")]
+        self.note_code_range(address, bytes.len() as u64);
         let result = self.memory.load_image(address, bytes);
         if result.is_ok() {
             self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
@@ -1735,6 +1784,8 @@ impl Bus for SystemBus {
     }
     fn write8(&mut self, address: u64, value: u8) -> Result<(), BusError> {
         self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+        #[cfg(feature = "jit-native")]
+        self.note_code_range(address, 1);
         if let Some(result) = self.firmware_access(address, 1, Some(u32::from(value))) {
             return result.map(|_| ());
         }
@@ -1920,6 +1971,8 @@ impl Bus for SystemBus {
     }
     fn write16(&mut self, address: u64, value: u16) -> Result<(), BusError> {
         self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+        #[cfg(feature = "jit-native")]
+        self.note_code_range(address, 2);
         if let Some(result) = self.firmware_access(address, 2, Some(u32::from(value))) {
             return result.map(|_| ());
         }
@@ -2102,6 +2155,8 @@ impl Bus for SystemBus {
     }
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError> {
         self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+        #[cfg(feature = "jit-native")]
+        self.note_code_range(address, 4);
         if let Some(result) = self.firmware_access(address, 4, Some(value)) {
             return result.map(|_| ());
         }

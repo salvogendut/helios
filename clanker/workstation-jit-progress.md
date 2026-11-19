@@ -1,0 +1,27 @@
+# Workstation JIT progress
+
+Branch: `feat/workstation-jit` in Helios and Heliacal.
+
+## Checkpoint 1: reusable engine and accounting
+
+Implemented:
+
+- A persistent, bounded `NativeEngine` owned by `Machine`, excluded from
+  architectural snapshots and cleared on reset.
+- Cache entries store validated raw instruction words, a code generation and
+  bound metadata (256 entries, 16 instructions/block); no permanent compile
+  stop. Hit path avoids refetching/compiling.
+- Code-write watch ranges and a separate code epoch; ordinary data stores no
+  longer invalidate hot native code. Host image loads and mapping changes
+  advance the code epoch.
+- Register input/output masks and ICC-only writeback replace the full 32-register
+  copy. ICC/window semantics remain through `Cpu::read_reg`/`write_reg`.
+- `NativeRunStats` distinguishes retired instructions, native executions,
+  interpreted fallback instructions, compiled instructions, cache hits,
+  evictions and compilation cost. Reset/error/partial boundaries retain the
+  existing fallback behavior.
+
+Focused native tests include persistent-cache reuse, correct native counters,
+ordinary data writes not forcing recompilation and code writes forcing a new
+translation. Fixed-work pair retained ~1.5x ALU and no memory compile storm.
+The full native review matrix still passes.

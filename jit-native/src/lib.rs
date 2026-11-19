@@ -124,11 +124,26 @@ pub struct NativeBlock {
     #[cfg(all(unix, target_arch = "x86_64"))]
     code: Executable,
     instructions: usize,
+    inputs: u32,
+    outputs: u32,
+    sets_icc: bool,
 }
 
 impl NativeBlock {
     pub fn instructions(&self) -> usize {
         self.instructions
+    }
+
+    pub fn inputs(&self) -> u32 {
+        self.inputs
+    }
+
+    pub fn outputs(&self) -> u32 {
+        self.outputs
+    }
+
+    pub fn sets_icc(&self) -> bool {
+        self.sets_icc
     }
 
     #[cfg(all(unix, target_arch = "x86_64"))]
@@ -138,9 +153,39 @@ impl NativeBlock {
             emit_op(&mut code, *op)?;
         }
         code.push(0xc3);
+        let mut written = 0u32;
+        let mut inputs = 0u32;
+        let mut outputs = 0u32;
+        let mut sets_icc = false;
+        for op in ops {
+            match *op {
+                Op::Sethi { rd, .. } => {
+                    outputs |= 1u32 << rd;
+                    written |= 1u32 << rd;
+                }
+                Op::Alu {
+                    rd, rs1, rhs, op3, ..
+                } => {
+                    if written & (1u32 << rs1) == 0 {
+                        inputs |= 1u32 << rs1;
+                    }
+                    if let Operand::Register(rs2) = rhs {
+                        if written & (1u32 << rs2) == 0 {
+                            inputs |= 1u32 << rs2;
+                        }
+                    }
+                    outputs |= 1u32 << rd;
+                    written |= 1u32 << rd;
+                    sets_icc |= op3 & 0x10 != 0;
+                }
+            }
+        }
         Some(Self {
             code: Executable::new(&code)?,
             instructions: ops.len(),
+            inputs,
+            outputs: outputs & !1,
+            sets_icc,
         })
     }
 

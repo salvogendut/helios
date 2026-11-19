@@ -872,6 +872,8 @@ pub struct Machine {
     profile: MachineProfile,
     parking_owner: u64,
     reset_epoch: u64,
+    #[cfg(feature = "jit-native")]
+    native_engine: Option<crate::jit::NativeEngine>,
 }
 
 #[cfg(feature = "jit-native")]
@@ -1023,6 +1025,8 @@ impl Machine {
             profile,
             parking_owner: NEXT_PARKING_OWNER.fetch_add(1, Ordering::Relaxed),
             reset_epoch: 0,
+            #[cfg(feature = "jit-native")]
+            native_engine: None,
         };
         machine.cpu.use_cpu_config(profile.cpu_config());
         machine.cpu.use_mmu_config(profile.mmu());
@@ -1249,6 +1253,10 @@ impl Machine {
         self.scheduler.reset();
         self.scheduled_clock_owned = false;
         self.reset_epoch = self.reset_epoch.wrapping_add(1);
+        #[cfg(feature = "jit-native")]
+        if let Some(engine) = self.native_engine.as_mut() {
+            engine.clear();
+        }
     }
 
     /// Reset only the local CPU/MMU and MXCC of one processor module. Board
@@ -1297,6 +1305,8 @@ impl Machine {
             profile: MachineProfile::Ss5,
             parking_owner: NEXT_PARKING_OWNER.fetch_add(1, Ordering::Relaxed),
             reset_epoch: 0,
+            #[cfg(feature = "jit-native")]
+            native_engine: None,
         })
     }
 
@@ -2080,159 +2090,202 @@ impl Machine {
         Ok(stats)
     }
 
-    /// Native straight-line SETHI/ALU backend. Admission is intentionally
-    /// narrow: device-free, single-CPU, MMU/boot-translation-disabled ordinary
-    /// RAM. Everything else uses the interpreter boundary.
+    /// Native straight-line SETHI/ALU backend with a persistent bounded cache.
+    /// Admission is controlled per block; reset clears the cache.
     #[cfg(feature = "jit-native")]
     pub fn run_jit_native(
         &mut self,
         budget: u64,
     ) -> Result<crate::jit::NativeRunStats, SchedulerError> {
-        let mut stats = crate::jit::NativeRunStats::default();
-        let mut cache: helios_jit_native::Cache = helios_jit_native::Cache::new();
-        let pc = self.cpu.pc();
-        let mut force_fallback = self.cpu.npc() != pc.wrapping_add(4);
-        if self.software_reset_requested() {
-            let step = self.step().map_err(|fault| SchedulerError::Cpu {
-                processor: 0,
-                fault,
-            })?;
-            stats.stopped = Some(step);
-            return Ok(stats);
-        }
-        if self.cpu.error_state().is_some() {
-            let fault = self.step().unwrap_err();
-            return Err(SchedulerError::Cpu {
-                processor: 0,
-                fault,
-            });
-        }
-        let mut eligible = self.bus.devices().is_none()
-            && self.secondary_cpu.is_none()
-            && self.cpu.mmu.untranslated_execution();
-        while stats.executed < budget {
-            if force_fallback
-                || !eligible
-                || !self.cpu.mmu.untranslated_execution()
-                || self.bus.interrupt_levels() != 0
-            {
-                let expected_pc = self.cpu.npc();
-                let expected_npc = expected_pc.wrapping_add(4);
-                match self.step() {
-                    Ok(step) => {
-                        stats.fallback_steps += 1;
-                        if matches!(step, Step::Executed { .. }) {
-                            stats.executed += 1;
-                            force_fallback =
-                                self.cpu.pc() != expected_pc || self.cpu.npc() != expected_npc;
-                        } else {
-                            stats.stopped = Some(step);
-                            break;
+        let mut engine = self.native_engine.take().unwrap_or_default();
+        let result = (|| {
+            let mut stats = crate::jit::NativeRunStats::default();
+            let pc = self.cpu.pc();
+            let mut force_fallback = self.cpu.npc() != pc.wrapping_add(4);
+            if self.software_reset_requested() {
+                let step = self.step().map_err(|fault| SchedulerError::Cpu {
+                    processor: 0,
+                    fault,
+                })?;
+                stats.stopped = Some(step);
+                return Ok(stats);
+            }
+            if self.cpu.error_state().is_some() {
+                let fault = self.step().unwrap_err();
+                return Err(SchedulerError::Cpu {
+                    processor: 0,
+                    fault,
+                });
+            }
+            let mut eligible = self.bus.devices().is_none()
+                && self.secondary_cpu.is_none()
+                && self.cpu.mmu.untranslated_execution();
+            while stats.executed < budget {
+                if force_fallback || !eligible {
+                    let expected_pc = self.cpu.npc();
+                    let expected_npc = expected_pc.wrapping_add(4);
+                    match self.step() {
+                        Ok(step) => {
+                            stats.fallback_steps += 1;
+                            if matches!(step, Step::Executed { .. }) {
+                                stats.executed += 1;
+                                force_fallback =
+                                    self.cpu.pc() != expected_pc || self.cpu.npc() != expected_npc;
+                            } else {
+                                stats.stopped = Some(step);
+                                break;
+                            }
+                        }
+                        Err(fault) => {
+                            return Err(SchedulerError::Cpu {
+                                processor: 0,
+                                fault,
+                            });
                         }
                     }
-                    Err(fault) => {
-                        return Err(SchedulerError::Cpu {
-                            processor: 0,
-                            fault,
-                        });
-                    }
+                    continue;
                 }
-                continue;
-            }
-            let pc = self.cpu.pc();
-            let max_words = usize::try_from(budget - stats.executed)
-                .unwrap_or(usize::MAX)
-                .clamp(1, helios_jit_native::MAX_BLOCK_INSNS);
-            let last_byte = u64::from(pc) + (max_words as u64) * 4 - 1;
-            if last_byte > self.cpu.mmu.config().physical_mask
-                || !self.bus.is_ram_range(
-                    u64::from(pc),
-                    u64::try_from(max_words * 4).unwrap_or(u64::MAX),
-                )
-            {
-                force_fallback = true;
-                continue;
-            }
-            let key = (pc, self.bus.mutation_epoch());
-            if let std::collections::hash_map::Entry::Vacant(entry) = cache.entry(key) {
-                stats.compile_calls += 1;
-                if stats.compile_calls > crate::jit::MAX_COMPILE_ATTEMPTS {
-                    eligible = false;
+                let pc = self.cpu.pc();
+                let max_words = usize::try_from(budget - stats.executed)
+                    .unwrap_or(usize::MAX)
+                    .clamp(1, helios_jit_native::MAX_BLOCK_INSNS);
+                let last_byte = u64::from(pc) + (max_words as u64) * 4 - 1;
+                if last_byte > u64::from(self.cpu.mmu.config().physical_mask)
+                    || !self.bus.is_ram_range(
+                        u64::from(pc),
+                        u64::try_from(max_words * 4).unwrap_or(u64::MAX),
+                    )
+                {
                     force_fallback = true;
                     continue;
                 }
-                let started = Instant::now();
-                let mut words = Vec::with_capacity(max_words);
-                for index in 0..max_words {
-                    let Ok(word) = self.bus.read32(u64::from(pc) + (index as u64) * 4) else {
-                        break;
-                    };
-                    if helios_jit_native::decode(word).is_none() {
-                        break;
-                    }
-                    words.push(word);
-                }
-                let block = helios_jit_native::compile(&words);
-                stats.compile_ns = stats.compile_ns.saturating_add(
-                    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
-                );
-                if block.is_some() {
-                    stats.native_blocks += 1;
-                    stats.native_instructions += words.len() as u64;
-                }
-                entry.insert(block);
-            }
-            let Some(block) = cache.get(&key).and_then(Option::as_ref) else {
-                let expected_pc = self.cpu.npc();
-                let expected_npc = expected_pc.wrapping_add(4);
-                match self.step() {
-                    Ok(step) => {
-                        stats.fallback_steps += 1;
-                        if matches!(step, Step::Executed { .. }) {
-                            stats.executed += 1;
-                            force_fallback =
-                                self.cpu.pc() != expected_pc || self.cpu.npc() != expected_npc;
-                        } else {
-                            stats.stopped = Some(step);
+                let epoch = self.bus.code_execution_epoch();
+                if let crate::jit::NativeLookup::Miss = engine.lookup_epoch(pc, epoch) {
+                    let mut words = Vec::with_capacity(max_words);
+                    for index in 0..max_words {
+                        let Ok(word) = self.bus.read32(u64::from(pc) + (index as u64) * 4) else {
+                            break;
+                        };
+                        if helios_jit_native::decode(word).is_none() {
                             break;
                         }
+                        words.push(word);
                     }
-                    Err(fault) => {
-                        return Err(SchedulerError::Cpu {
-                            processor: 0,
-                            fault,
-                        });
+                    if words.is_empty() {
+                        let expected_pc = self.cpu.npc();
+                        let expected_npc = expected_pc.wrapping_add(4);
+                        match self.step() {
+                            Ok(step) => {
+                                stats.fallback_steps += 1;
+                                if matches!(step, Step::Executed { .. }) {
+                                    stats.executed += 1;
+                                    force_fallback = self.cpu.pc() != expected_pc
+                                        || self.cpu.npc() != expected_npc;
+                                } else {
+                                    stats.stopped = Some(step);
+                                    break;
+                                }
+                            }
+                            Err(fault) => {
+                                return Err(SchedulerError::Cpu {
+                                    processor: 0,
+                                    fault,
+                                });
+                            }
+                        }
+                        continue;
+                    }
+                    if let crate::jit::NativeLookup::Miss = engine.validate(pc, &words, epoch) {
+                        stats.compile_calls += 1;
+                        let started = Instant::now();
+                        let block = helios_jit_native::compile(&words);
+                        stats.compile_ns = stats.compile_ns.saturating_add(
+                            u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                        );
+                        if block.is_some() {
+                            stats.native_blocks += 1;
+                            stats.compiled_instructions += words.len() as u64;
+                        }
+                        engine.insert(pc, &words, epoch, block);
+                        self.bus
+                            .watch_code(u64::from(pc), u64::from(pc) + (words.len() as u64) * 4);
                     }
                 }
-                continue;
-            };
-            if block.instructions() as u64 > budget - stats.executed {
-                force_fallback = true;
-                continue;
+                let block = match engine.lookup_epoch(pc, epoch) {
+                    crate::jit::NativeLookup::Block(block) => block,
+                    crate::jit::NativeLookup::Negative | crate::jit::NativeLookup::Miss => {
+                        let expected_pc = self.cpu.npc();
+                        let expected_npc = expected_pc.wrapping_add(4);
+                        match self.step() {
+                            Ok(step) => {
+                                stats.fallback_steps += 1;
+                                if matches!(step, Step::Executed { .. }) {
+                                    stats.executed += 1;
+                                    force_fallback = self.cpu.pc() != expected_pc
+                                        || self.cpu.npc() != expected_npc;
+                                } else {
+                                    stats.stopped = Some(step);
+                                    break;
+                                }
+                            }
+                            Err(fault) => {
+                                return Err(SchedulerError::Cpu {
+                                    processor: 0,
+                                    fault,
+                                });
+                            }
+                        }
+                        eligible = self.bus.devices().is_none()
+                            && self.secondary_cpu.is_none()
+                            && self.cpu.mmu.untranslated_execution();
+                        continue;
+                    }
+                };
+                if block.instructions() as u64 > budget - stats.executed {
+                    force_fallback = true;
+                    continue;
+                }
+                let inputs = block.inputs();
+                let outputs = block.outputs();
+                let sets_icc = block.sets_icc();
+                let mut state = helios_jit_native::State::default();
+                for index in 0..32 {
+                    if inputs & (1u32 << index) != 0 {
+                        state.regs[index] = self.cpu.read_reg(index as u8);
+                    }
+                }
+                state.icc = pack_icc(self.cpu.icc());
+                block.execute(&mut state);
+                for index in 0..32 {
+                    if outputs & (1u32 << index) != 0 {
+                        self.cpu.write_reg(index as u8, state.regs[index]);
+                    }
+                }
+                if sets_icc {
+                    self.cpu.set_icc(unpack_icc(state.icc));
+                }
+                let count = block.instructions() as u64;
+                self.cpu.set_pc_npc(
+                    pc.wrapping_add((count as u32).wrapping_mul(4)),
+                    pc.wrapping_add((count as u32).wrapping_add(1).wrapping_mul(4)),
+                );
+                let mut block_ns = 0u64;
+                for _ in 0..count {
+                    block_ns = block_ns.saturating_add(self.clock.next_ns());
+                }
+                self.bus.advance_ns_fast(block_ns);
+                stats.executed += count;
+                stats.native_instructions += count;
             }
-            let mut state = helios_jit_native::State::default();
-            for (index, slot) in state.regs.iter_mut().enumerate() {
-                *slot = self.cpu.read_reg(index as u8);
-            }
-            state.icc = pack_icc(self.cpu.icc());
-            block.execute(&mut state);
-            for (index, value) in state.regs.iter().enumerate().skip(1) {
-                self.cpu.write_reg(index as u8, *value);
-            }
-            self.cpu.set_icc(unpack_icc(state.icc));
-            let count = block.instructions() as u64;
-            self.cpu.set_pc_npc(
-                pc.wrapping_add((count as u32).wrapping_mul(4)),
-                pc.wrapping_add((count as u32).wrapping_add(1).wrapping_mul(4)),
-            );
-            let mut block_ns = 0u64;
-            for _ in 0..count {
-                block_ns = block_ns.saturating_add(self.clock.next_ns());
-            }
-            self.bus.advance_ns_fast(block_ns);
-            stats.executed += count;
+            Ok(stats)
+        })();
+        let mut stats = result;
+        if let Ok(stats) = &mut stats {
+            stats.cache_hits = engine.hits;
+            stats.evictions = engine.evictions;
         }
-        Ok(stats)
+        self.native_engine = Some(engine);
+        stats
     }
 
     /// Single-CPU compatibility path for processor 0. Two-CPU callers must use
