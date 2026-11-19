@@ -58,3 +58,17 @@ the one-instruction bridge has high per-step overhead, and the fixed 100-loop
 probe took 0.565 s. Checkpoint 3 block batching/branch/memory coverage and the
 10% real-workload target remain unimplemented. Parking measurements were run
 with parking off.
+
+### Real-execution measurement and stop rule
+
+Matching bounded 100-iteration fixed-work probes with parking off:
+
+- interpreter bridge disabled: 0.1488 s
+- `--execution jit` one-instruction bridge: 0.5650 s
+
+The bridge is roughly 3.8x slower and therefore misses the 10% target. The
+measured bottleneck is per-instruction engine/cache/call overhead, not guest
+coverage. The next focused pass is the assigned block-batching step: execute
+proven straight-line spans through the shared fetch/device boundary, then add
+branch/delay and integer memory coverage. Checkpoint 3 remains open; do not
+merge this branch as accelerated workstation execution.
