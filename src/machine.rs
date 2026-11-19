@@ -1193,6 +1193,12 @@ impl Machine {
     }
 
     #[cfg(feature = "jit-native")]
+    pub fn native_span_count(&self) -> u64 {
+        self.cpu.native_span_count()
+    }
+
+    #[cfg(feature = "jit-native")]
+    #[cfg(feature = "jit-native")]
     pub fn native_execution_enabled(&self) -> bool {
         self.native_execution && self.cpu.native_execution_enabled()
     }
@@ -2331,25 +2337,19 @@ impl Machine {
         stats
     }
 
-    /// Experimental bounded UP entry: at most two ordinary outcomes, with a
-    /// single native call only for a proved translated ALU pair. One outcome
-    /// is always available; callers with no remaining budget must not call.
-    /// Dual-CPU frontends must continue using `step_scheduled`.
+    /// Bounded translated ALU span. Returns 1..=budget ordinary outcomes and
+    /// uses at most one native call for a proved span of two or more.
     #[cfg(feature = "jit-native")]
-    pub fn step_native_pair(
+    pub fn step_native_span(
         &mut self,
         budget: std::num::NonZeroUsize,
-    ) -> Result<crate::jit::NativePairStep, CpuFault> {
-        use crate::jit::NativePairStep;
-        let before = self.native_execution_count();
+    ) -> Result<crate::jit::NativeSpanStep, CpuFault> {
         if self.software_reset_requested()
             || !self.native_execution_enabled()
             || self.secondary_cpu.is_some()
         {
-            let first = self.step()?;
-            return Ok(NativePairStep {
-                first,
-                second: None,
+            return self.step().map(|step| crate::jit::NativeSpanStep {
+                steps: vec![step],
                 native_instructions: 0,
             });
         }
@@ -2360,45 +2360,75 @@ impl Machine {
             kind: FaultKind::DeviceDma(error),
         })?;
         let pending = self.bus.interrupt_levels();
-        let pair_ns = if budget.get() >= 2 && self.service_guards {
-            let mut preview = self.clock;
-            Some(preview.next_ns() + preview.next_ns())
-        } else {
-            None
-        };
+        let max = budget.get().min(helios_jit_native::MAX_BLOCK_INSNS);
+        let mut span_times = Vec::with_capacity(max.saturating_sub(1));
+        if self.service_guards && max >= 2 {
+            let mut phase = self.clock;
+            let mut total = 0u64;
+            for count in 1..=max {
+                total = total.saturating_add(phase.next_ns());
+                if count >= 2 {
+                    span_times.push(total);
+                }
+            }
+        }
         let was_error = self.cpu.error_state().is_some();
+        let native_before = self.native_execution_count();
         self.bus.begin_cpu_step();
-        let result = self
-            .cpu
-            .step_native_pair_with_interrupts(&mut self.bus, pending, pair_ns);
+        let result =
+            self.cpu
+                .step_native_span_with_interrupts(&mut self.bus, pending, &span_times, max);
         let wait_ns = self.bus.finish_cpu_step(result.is_ok());
         if !was_error && self.cpu.error_state().is_some() {
             if let Some(devices) = self.bus.devices_mut() {
                 devices.reset.latch_watchdog();
             }
         }
-        let (mut first, second) = result?;
+        let mut outcome = result?;
+        let retired = outcome
+            .steps
+            .iter()
+            .filter(|step| matches!(step, Step::Executed { .. }))
+            .count();
         self.bus.advance_ns_fast(self.clock.next_ns() + wait_ns);
-        if second.is_some() {
-            // Proof guarantees no PROM wait or intermediate device deadline.
+        for _ in 1..retired {
             self.bus.advance_ns_fast(self.clock.next_ns());
         }
-        let mut native_instructions = self.native_execution_count().wrapping_sub(before) as u8;
+        if outcome.native_instructions == 0 {
+            outcome.native_instructions = self
+                .native_execution_count()
+                .wrapping_sub(native_before)
+                .min(u64::from(u8::MAX)) as u8;
+        }
         if self.software_reset_requested() {
-            if let Step::Executed {
+            if let Some(Step::Executed {
                 pc,
                 npc,
                 instruction,
-            } = first
+            }) = outcome.steps.first().copied()
             {
-                first = self.software_reset(pc, npc, Some(instruction));
-                native_instructions = 0;
+                let reset = self.software_reset(pc, npc, Some(instruction));
+                outcome.steps = vec![reset];
+                outcome.native_instructions = 0;
             }
         }
-        Ok(NativePairStep {
+        Ok(outcome)
+    }
+
+    /// Compatibility wrapper for the original two-outcome API.
+    #[cfg(feature = "jit-native")]
+    pub fn step_native_pair(
+        &mut self,
+        budget: std::num::NonZeroUsize,
+    ) -> Result<crate::jit::NativePairStep, CpuFault> {
+        let outcome =
+            self.step_native_span(std::num::NonZeroUsize::new(budget.get().min(2)).unwrap())?;
+        let mut steps = outcome.steps.into_iter();
+        let first = steps.next().expect("span always returns an outcome");
+        Ok(crate::jit::NativePairStep {
             first,
-            second,
-            native_instructions,
+            second: steps.next(),
+            native_instructions: outcome.native_instructions,
         })
     }
 

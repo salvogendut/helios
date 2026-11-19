@@ -101,6 +101,13 @@ pub struct NativePairStep {
     pub native_instructions: u8,
 }
 
+#[cfg(feature = "jit-native")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NativeSpanStep {
+    pub steps: Vec<Step>,
+    pub native_instructions: u8,
+}
+
 pub fn decode(word: u32) -> Option<Op> {
     let rd = ((word >> 25) & 31) as u8;
     match word >> 30 {

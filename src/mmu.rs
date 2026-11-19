@@ -189,6 +189,7 @@ struct Translation {
 /// Only the CPU's pair path may hold this, and it must consume it before any
 /// CPU/MMU/bus mutation other than native-code compilation. Never cache it.
 #[cfg(feature = "jit-native")]
+#[derive(Clone, Copy)]
 pub(crate) struct NativeFetch {
     pub(crate) word: u32,
     physical: u64,

@@ -8,10 +8,12 @@ translated ALU instructions in one native invocation on the full SS-5,
 SS-20 and Axil device machines. It preserves the complete diagnostic snapshot
 and the separate MMU performance counters against two interpreter steps.
 
-This prototype has not been applied to either production worktree, committed,
-or merged. The ordinary Heliacal path still uses the one-instruction bridge.
-This is a correctness starting point for checkpoint 3, not a Solaris speedup
-or an accepted acceleration release.
+Adoption update: Helios `83939df` contains the six reviewed source/test files
+byte for byte. Heliacal remains at `219278b` and still uses the one-instruction
+bridge. Neither feature branch is merged. This is a correctness starting
+point for checkpoint 3, not a Solaris speedup or an accepted acceleration
+release. Continue with the
+[longer-block/frontend work order](workstation-jit-block-integration-handoff.md).
 
 ## Patch and reproduction
 
@@ -24,7 +26,9 @@ Retained under `local/review-workstation-jit-pair-2026-11-19/`:
 - `native_pair_probe.rs`: bounded, checksummed translated SS-20 ALU workload.
 - Validation logs, build commands, source/binary hashes and measurements.
 
-For adoption on the existing feature branch, first inspect and apply the patch:
+The following commands describe the original adoption from `715c428`.
+The patch is already present at `83939df`; do not apply it again there. Use
+`run_prototype.py` for an isolated reconstruction of the original review:
 
 ```sh
 git apply --check local/review-workstation-jit-pair-2026-11-19/translated-pair.patch
@@ -104,7 +108,8 @@ attempt exceeded the temporary build quota; its owned output was removed
 and the final suites used debug symbols off and two build/test jobs. These
 environment failures and the successful reruns are retained in the logs.
 `summary.json`, `validation-final.json` and `clippy-jit-final.log` record
-the final result. Both production source worktrees remain unchanged.
+the final result. Those runs left the production sources unchanged; subsequent
+adoption is recorded above.
 
 ## Bounded performance result
 
@@ -155,7 +160,7 @@ Keep working on `feat/workstation-jit`; do not make another documentation-only
 checkpoint or turn the corrected PTE contract back into an implementation
 blocker.
 
-1. Review and adopt this bounded working path and fixtures. It deliberately
+1. Adoption is complete at `83939df`. The bounded prototype deliberately
    uses a small separate pair cache to isolate the correctness question;
    consolidate that into the persistent bounded engine when generalizing.
 2. Extend proved spans from two to at most sixteen instructions, retaining

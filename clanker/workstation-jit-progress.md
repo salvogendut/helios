@@ -125,3 +125,34 @@ cheaper than the one-instruction bridge but still ~28% slower than the
 interpreter synthetically. Span extension to 16, Heliacal batch integration,
 branch/delay and memory coverage, real-guest phase counters and the 10% gate
 remain open.
+
+### Adoption review and next integrated checkpoint
+
+Independent hash comparison at `83939df` confirms that all six adopted
+source/test files exactly match the previously tested patch. Heliacal remains
+at `219278b`. The next assignment combines longer proved spans, frontend
+outcome-budget integration and real-guest phase measurements; see
+[the block integration work order](workstation-jit-block-integration-handoff.md).
+
+## Bounded translated spans and frontend integration
+
+The translated path now generalizes the accepted pair to 2–16 straight-line
+supported ALUs/SETHI on the same warm 4 KiB level-3 page. Admission preserves
+the first live fetch and validates the warmed fast-ITLB slot, permissions,
+context, slot/global generations, raw DRAM words, clock phase, deferred time
+and next device deadline. One register/ICC transfer and one native call execute
+the admitted span.
+
+Heliacal selects spans only for an enabled UP machine with parking off and no
+pending keyboard input. Its worker budget is 2,048 outcomes; spans subtract
+actual consumed outcomes and keep processor totals. Both SMP CPUs and
+interpreter mode remain on the existing paths.
+
+Focused span tests cover lengths 2/3/15/16, one-instruction bridge fallback and
+unsupported suffixes. A real original-OBP SS-20 Solaris run reached login,
+executed the useful-work probe, synced and halted cleanly with **579,432,680**
+native instructions, **545,483,922** native calls, and **22,115,529** spans of
+length >=2. This demonstrates multi-instruction native execution inside the
+guest, but not acceleration: the bounded useful-work probe was 0.617 s versus
+0.154 s interpreter on the same feature-enabled binary. Branch/delay and
+memory coverage plus the 10% gate remain open; branches stay unmerged.
