@@ -111,3 +111,17 @@ The next implementation is the narrow warm, same-page fetch contract in the
 It retains the initial architectural fetch, proves the remaining cached-hit
 effects, and admits a short native span only under explicit memory and event
 guards. This is proposed work, not an implemented block path or a speed claim.
+
+## Translated two-instruction prototype
+
+Adopted the tested translated-pair path on `feat/workstation-jit`: the first
+live fetch remains; a proved warm level-3 4 KiB same-page second instruction is
+executed in one native call. Raw words, permissions, contexts, slot/global
+generations, device deadlines, deferred time, reset/error and interrupt gates
+are checked. Fourteen focused fixtures pass on SS-5, SS-20 and Axil.
+
+The pair is a correctness starting point, not acceleration: it is about 15%
+cheaper than the one-instruction bridge but still ~28% slower than the
+interpreter synthetically. Span extension to 16, Heliacal batch integration,
+branch/delay and memory coverage, real-guest phase counters and the 10% gate
+remain open.

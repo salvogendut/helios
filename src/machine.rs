@@ -70,7 +70,7 @@ pub enum CpuClockMode {
 /// One functional CPU cycle per completed outcome. Division happens only at
 /// construction; the step path carries the fractional part using addition.
 /// This does not model pipeline stalls, superscalar issue or ordinary caches.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 struct CycleClock {
     hardware_hz: u64,
     mode: CpuClockMode,
@@ -1185,6 +1185,11 @@ impl Machine {
     #[cfg(feature = "jit-native")]
     pub fn native_execution_count(&self) -> u64 {
         self.cpu.native_execution_count()
+    }
+
+    #[cfg(feature = "jit-native")]
+    pub fn native_execution_calls(&self) -> u64 {
+        self.cpu.native_execution_calls()
     }
 
     #[cfg(feature = "jit-native")]
@@ -2324,6 +2329,77 @@ impl Machine {
         }
         self.native_engine = Some(engine);
         stats
+    }
+
+    /// Experimental bounded UP entry: at most two ordinary outcomes, with a
+    /// single native call only for a proved translated ALU pair. One outcome
+    /// is always available; callers with no remaining budget must not call.
+    /// Dual-CPU frontends must continue using `step_scheduled`.
+    #[cfg(feature = "jit-native")]
+    pub fn step_native_pair(
+        &mut self,
+        budget: std::num::NonZeroUsize,
+    ) -> Result<crate::jit::NativePairStep, CpuFault> {
+        use crate::jit::NativePairStep;
+        let before = self.native_execution_count();
+        if self.software_reset_requested()
+            || !self.native_execution_enabled()
+            || self.secondary_cpu.is_some()
+        {
+            let first = self.step()?;
+            return Ok(NativePairStep {
+                first,
+                second: None,
+                native_instructions: 0,
+            });
+        }
+        self.service_devices().map_err(|error| CpuFault {
+            pc: self.cpu.pc(),
+            npc: self.cpu.npc(),
+            instruction: None,
+            kind: FaultKind::DeviceDma(error),
+        })?;
+        let pending = self.bus.interrupt_levels();
+        let pair_ns = if budget.get() >= 2 && self.service_guards {
+            let mut preview = self.clock;
+            Some(preview.next_ns() + preview.next_ns())
+        } else {
+            None
+        };
+        let was_error = self.cpu.error_state().is_some();
+        self.bus.begin_cpu_step();
+        let result = self
+            .cpu
+            .step_native_pair_with_interrupts(&mut self.bus, pending, pair_ns);
+        let wait_ns = self.bus.finish_cpu_step(result.is_ok());
+        if !was_error && self.cpu.error_state().is_some() {
+            if let Some(devices) = self.bus.devices_mut() {
+                devices.reset.latch_watchdog();
+            }
+        }
+        let (mut first, second) = result?;
+        self.bus.advance_ns_fast(self.clock.next_ns() + wait_ns);
+        if second.is_some() {
+            // Proof guarantees no PROM wait or intermediate device deadline.
+            self.bus.advance_ns_fast(self.clock.next_ns());
+        }
+        let mut native_instructions = self.native_execution_count().wrapping_sub(before) as u8;
+        if self.software_reset_requested() {
+            if let Step::Executed {
+                pc,
+                npc,
+                instruction,
+            } = first
+            {
+                first = self.software_reset(pc, npc, Some(instruction));
+                native_instructions = 0;
+            }
+        }
+        Ok(NativePairStep {
+            first,
+            second,
+            native_instructions,
+        })
     }
 
     /// Single-CPU compatibility path for processor 0. Two-CPU callers must use

@@ -1274,6 +1274,20 @@ impl SystemBus {
             && !self.sx.as_ref().is_some_and(|card| card.irq())
     }
 
+    /// Pair execution may omit the second pre-step service only while it is
+    /// provably a no-op. Keep both instructions strictly inside the current
+    /// deferred-time quantum and before every known device deadline. Check
+    /// after the first real fetch, including any page-table bus accesses.
+    #[cfg(feature = "jit-native")]
+    pub(crate) fn native_pair_ready(&self, elapsed_ns: u64) -> bool {
+        self.prom_cycles == Some(0)
+            && self.parking_ready()
+            && self.device_ns.saturating_add(elapsed_ns) < 2000
+            && self.next_device_deadline_ns().map_or(true, |deadline| {
+                self.logical_ns.saturating_add(elapsed_ns) < deadline
+            })
+    }
+
     /// Fingerprint of non-RAM device state for parking-token validation.
     pub(crate) fn parking_device_digest(&self) -> u64 {
         let mut digest = crate::diagnostic::Digest::new();

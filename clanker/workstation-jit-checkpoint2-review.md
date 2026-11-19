@@ -153,3 +153,111 @@ removed. Source media, the live catalog, NVRAM, production core and frontend
 code were untouched. This review and index entry are uncommitted.
 
 Continue under the [original implementation handoff](workstation-jit-handoff.md).
+
+## Concrete first-block contract after fa6475c
+
+The SMP patch and selector follow-ups have landed as Helios `345ecdb` /
+Heliacal `219278b`. The latest core commit `fa6475c` adds an invariant note,
+not block execution. Review of that note found the missing TLB invalidation
+step described in the corrected progress report.
+
+`local/review-workstation-jit-fetch-2026-11-19/native_fetch_contract_review.rs`
+has three passing regressions, including SS-5 and SS-20 with the bridge both
+off and on:
+
+- Warm resident instruction translation + physical PTE permission edit:
+  execution continues using the cached permission, with no fault.
+- The same sequence plus ASI-3 page flush: the next fetch faults before native
+  execution, with SFSR `0x368` and no duplicate capture. In this ET=0 fixture
+  the CPU latches the precise error; instruction protection leaves SFAR
+  unchanged because FAV is not set.
+- Permission removed before the first fetch: immediate protection fault.
+
+This matches the existing `tlb_retains_translation_until_mmu_flush_and_cache_flush_is_separate`
+test in `tests/mmu.rs`. If the other reproduction includes a translated data
+access that evicts the instruction entry (especially SS-5 WP=0), retain that
+access in its test. Do not replace the MMU's cached-permission behavior with
+a blanket PTE-memory-write invalidation rule.
+
+Implement this deliberately narrow first block path. The API names below
+are proposed; none is claimed to exist or be proved by these three tests.
+
+1. **Keep the first real fetch.** Enter through the ordinary reset/error,
+   device-service, interrupt and access-context boundary, then fetch the
+   first instruction through `Srmmu::load`. That handles a cold mapping,
+   an actual permission loss and its side effects once. A successful fetch
+   is already a useful starting point for inspecting a warm translation.
+   If block admission fails, execute this already-fetched word through the
+   bridge/interpreter; do not fetch it again and double-record effects.
+2. **Prove a small cached-hit span inside the MMU module.** Start with exactly
+   two straight-line ALU/SETHI instructions, later up to 16, all within one
+   4 KiB virtual page backed by ordinary installed DRAM. Require a normal
+   level-3 leaf, the exact fast-instruction-TLB selection, valid permissions
+   for the current supervisor/user ASI, R already set, no boot mapping,
+   no relevant PTP2 override, no unsupported diagnostic state and no pending
+   I/O invalidation. Reject other cases to the bridge. Read the same state
+   `translate()` would use, not a fresh page-table interpretation. The
+   parking lookup is a reference, not a ready-made JIT API: it assumes
+   supervisor access and does not perform instruction-fetch effects.
+3. **Make the proof local to this execution boundary.** Validate PC/nPC,
+   effective context/privilege and relevant control/configuration fields,
+   selected TLB slot and its generation, global TLB generation, physical
+   backing and code identity. `execution_generation()` alone is insufficient:
+   ordinary register writes do not all advance it and 4 KiB replacements use
+   per-slot generations. Renew the proof after every exit/fallback. This
+   does not require changing guest-visible MMU replacement or flush policy.
+4. **Inspect code without executing future fetches.** Read candidate words
+   through an ordinary-DRAM, side-effect-free peek and compare the compiled
+   code identity. Initially validate those words on every entry rather than
+   assuming the bare-metal watch scheme covers DSIMM aliases and every DRAM
+   write route. In particular audit the early DRAM `load_image` path and
+   mirrored storage before using epochs alone. Reject page crossings, PROM,
+   MMIO, empty banks, branches, loads/stores and potentially trapping opcodes.
+5. **Guard a no-event interval in Machine.** First reuse the pre-step service
+   order; then require no work that another ordinary pre-step would consume,
+   no pending IRQ/reset, and no PROM waits. Choose a count fitting the exact
+   remaining budget and clock phase, strictly before the next device deadline.
+   For the first version also keep the *whole span* below the existing
+   deferred-device-time 2,000 ns application boundary, accounting for the
+   already deferred amount. Thus no intermediate device tick or external
+   owner can change the proof. Reject held DMA reset and uncertain service
+   states. Preserve frontend input/parking observation requirements as well.
+6. **Implement the cached-fetch effects, do not simply omit them.** For this
+   restricted fast-hit/level-3/R-set instruction case, `touch` needs no PTE
+   write, `record_diag_view` is a no-op for instructions and `fill_ptp2` only
+   operates on level-1 entries. These are inspectable simplifications of the
+   current code, not assumptions about arbitrary MMU accesses. A small safe
+   helper must still preserve memory-request metadata/access context, actual
+   word identity, feature-enabled translation counters and the resulting bus
+   state. Use the full reference sequence if any additional effect is needed.
+   Compare the proposed helper's resulting state with ordinary fetches before
+   relying on it for admission. Do not weaken snapshot equality to hide an
+   omitted latch, counter or fast-cache update.
+7. **Execute once and commit the exact span.** Copy the union of required
+   registers, execute one native block, commit only its outputs/ICC and the
+   exact sequential PC/nPC. Advance the existing clock phase and logical/
+   deferred time for exactly the retired instructions. Code/data-memory,
+   privilege and mapping writes are excluded from this first span. If the
+   proof cannot establish nonfaulting fetches and no intervening event,
+   reject it *before* native execution and use the established path.
+
+First completion test: on an SS-20 device machine with a warm level-3
+translation, one native entry retires two instructions and matches two
+ordinary steps in CPU/MMU/bus/device/time state. Extend it with the three
+permission cases above, slot replacement/context/control changes, code edits,
+one-instruction budgets, pending interrupts and a deferred-time boundary.
+Then connect this path to the bounded frontend runner and increase block
+length. Permission-generation bookkeeping alone, or another prose-only
+invariant report, is not that deliverable.
+
+This is a concrete implementation proposal requiring the stated equivalence
+tests; the review has not implemented or benchmarked it. The invariant tests
+can be reproduced with:
+
+```sh
+python3 local/review-workstation-jit-fetch-2026-11-19/run_review.py
+```
+
+Their runner removed its owned temporary source/build. The retained fixture,
+logs, source/toolchain hashes and cleanup record are the complete new evidence;
+no production behavior or source media was changed.

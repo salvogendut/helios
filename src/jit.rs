@@ -90,6 +90,17 @@ pub struct NativeRunStats {
     pub stopped: Option<Step>,
 }
 
+/// One ordinary CPU outcome, or two straight-line instructions in one native
+/// call. Every outcome remains available for frontend counters and traces.
+/// This is a bounded UP building block, not a full workstation batch runner.
+#[cfg(feature = "jit-native")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativePairStep {
+    pub first: Step,
+    pub second: Option<Step>,
+    pub native_instructions: u8,
+}
+
 pub fn decode(word: u32) -> Option<Op> {
     let rd = ((word >> 25) & 31) as u8;
     match word >> 30 {

@@ -21,6 +21,11 @@ pub const PSR_VERSION: u32 = 0x0400_0000;
 pub const SUPERSPARC_PSR_VERSION: u32 = 0x4000_0000;
 const PSR_CONTROL: u32 = PSR_ET | PSR_PS | PSR_S | PSR_PIL | PSR_EF | PSR_DE;
 
+enum Fetch {
+    Word(u32),
+    Event(Step),
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Icc {
     pub n: bool,
@@ -265,7 +270,11 @@ struct DecodeCache {
     #[cfg(feature = "jit-native")]
     native_count: u64,
     #[cfg(feature = "jit-native")]
+    native_calls: u64,
+    #[cfg(feature = "jit-native")]
     native_words: HashMap<u32, Option<Rc<helios_jit_native::NativeBlock>>>,
+    #[cfg(feature = "jit-native")]
+    native_pairs: HashMap<[u32; 2], Option<Rc<helios_jit_native::NativeBlock>>>,
 }
 
 impl Default for DecodeCache {
@@ -278,7 +287,11 @@ impl Default for DecodeCache {
             #[cfg(feature = "jit-native")]
             native_count: 0,
             #[cfg(feature = "jit-native")]
+            native_calls: 0,
+            #[cfg(feature = "jit-native")]
             native_words: HashMap::new(),
+            #[cfg(feature = "jit-native")]
+            native_pairs: HashMap::new(),
         }
     }
 }
@@ -320,6 +333,7 @@ impl DecodeCache {
         self.native_enabled = enabled;
         if !enabled {
             self.native_words.clear();
+            self.native_pairs.clear();
         }
     }
 
@@ -333,6 +347,19 @@ impl DecodeCache {
         }
         let block = helios_jit_native::compile(&[word]).map(Rc::new);
         self.native_words.insert(word, block.clone());
+        block
+    }
+
+    #[cfg(feature = "jit-native")]
+    fn native_pair(&mut self, words: [u32; 2]) -> Option<Rc<helios_jit_native::NativeBlock>> {
+        if let Some(entry) = self.native_pairs.get(&words) {
+            return entry.clone();
+        }
+        if self.native_pairs.len() >= 512 {
+            self.native_pairs.clear();
+        }
+        let block = helios_jit_native::compile(&words).map(Rc::new);
+        self.native_pairs.insert(words, block.clone());
         block
     }
 }
@@ -445,6 +472,12 @@ impl Cpu {
     #[cfg(feature = "jit-native")]
     pub fn native_execution_count(&self) -> u64 {
         self.decode_cache.native_count
+    }
+
+    /// Actual native invocations made by the ordinary bridge/pair path.
+    #[cfg(feature = "jit-native")]
+    pub fn native_execution_calls(&self) -> u64 {
+        self.decode_cache.native_calls
     }
 
     #[cfg(feature = "jit-native")]
@@ -569,7 +602,8 @@ impl Cpu {
         result
     }
 
-    fn step_inner(&mut self, bus: &mut impl Bus, pending: u16) -> Result<Step, CpuFault> {
+    #[inline(always)]
+    fn fetch_instruction(&mut self, bus: &mut impl Bus, pending: u16) -> Result<Fetch, CpuFault> {
         if let Some(fault) = self.error_state {
             return Err(fault);
         }
@@ -581,19 +615,35 @@ impl Cpu {
                 let pc = self.pc;
                 let npc = self.npc;
                 self.enter_trap(0x10 | level);
-                return Ok(Step::InterruptTaken {
+                return Ok(Fetch::Event(Step::InterruptTaken {
                     pc,
                     npc,
                     level,
                     vector: self.tbr,
-                });
+                }));
             }
         }
         let asi = if self.psr_control & PSR_S != 0 { 9 } else { 8 };
         let instruction = match self.mmu.load(bus, self.pc, asi, Width::Word) {
             Ok(word) => word,
-            Err(error) => return self.handle_fault(None, Self::memory_fault(error, true)),
+            Err(error) => {
+                return self
+                    .handle_fault(None, Self::memory_fault(error, true))
+                    .map(Fetch::Event)
+            }
         };
+        Ok(Fetch::Word(instruction))
+    }
+
+    fn step_inner(&mut self, bus: &mut impl Bus, pending: u16) -> Result<Step, CpuFault> {
+        match self.fetch_instruction(bus, pending)? {
+            Fetch::Word(instruction) => self.execute_fetched(bus, instruction),
+            Fetch::Event(event) => Ok(event),
+        }
+    }
+
+    #[inline(always)]
+    fn execute_fetched(&mut self, bus: &mut impl Bus, instruction: u32) -> Result<Step, CpuFault> {
         let step = Step::Executed {
             pc: self.pc,
             npc: self.npc,
@@ -602,25 +652,7 @@ impl Cpu {
         #[cfg(feature = "jit-native")]
         if self.decode_cache.native_enabled {
             if let Some(block) = self.decode_cache.native_word(instruction) {
-                let mut state = helios_jit_native::State::default();
-                for (index, slot) in state.regs.iter_mut().enumerate() {
-                    if block.inputs() & (1u32 << index) != 0 {
-                        *slot = self.read_reg(index as u8);
-                    }
-                }
-                state.icc = pack_native_icc(self.icc);
-                block.execute(&mut state);
-                for (index, value) in state.regs.iter().enumerate() {
-                    if block.outputs() & (1u32 << index) != 0 {
-                        self.write_reg(index as u8, *value);
-                    }
-                }
-                if block.sets_icc() {
-                    self.icc = unpack_native_icc(state.icc);
-                }
-                self.pc = self.npc;
-                self.npc = self.npc.wrapping_add(4);
-                self.decode_cache.native_count = self.decode_cache.native_count.wrapping_add(1);
+                self.execute_native_block(&block);
                 return Ok(step);
             }
         }
@@ -642,6 +674,94 @@ impl Cpu {
             Ok(()) => Ok(step),
             Err(kind) => self.handle_fault(Some(instruction), kind),
         }
+    }
+
+    #[cfg(feature = "jit-native")]
+    fn execute_native_block(&mut self, block: &helios_jit_native::NativeBlock) {
+        let mut state = helios_jit_native::State::default();
+        for (index, slot) in state.regs.iter_mut().enumerate() {
+            if block.inputs() & (1u32 << index) != 0 {
+                *slot = self.read_reg(index as u8);
+            }
+        }
+        state.icc = pack_native_icc(self.icc);
+        block.execute(&mut state);
+        self.decode_cache.native_calls = self.decode_cache.native_calls.wrapping_add(1);
+        for (index, value) in state.regs.iter().enumerate() {
+            if block.outputs() & (1u32 << index) != 0 {
+                self.write_reg(index as u8, *value);
+            }
+        }
+        if block.sets_icc() {
+            self.icc = unpack_native_icc(state.icc);
+        }
+        for _ in 0..block.instructions() {
+            self.pc = self.npc;
+            self.npc = self.npc.wrapping_add(4);
+        }
+        self.decode_cache.native_count = self
+            .decode_cache
+            .native_count
+            .wrapping_add(block.instructions() as u64);
+    }
+
+    /// The owner has already performed the normal pre-step device service.
+    /// Only an in-call proof may replace the second fetch; no live speculative
+    /// fetch, cached permission assumption or cross-call proof is permitted.
+    #[cfg(feature = "jit-native")]
+    pub(crate) fn step_native_pair_with_interrupts(
+        &mut self,
+        bus: &mut crate::system_bus::SystemBus,
+        pending: u16,
+        pair_ns: Option<u64>,
+    ) -> Result<(Step, Option<Step>), CpuFault> {
+        let previous = bus.access_context();
+        let context = AccessContext::new(self.mmu.initiator(), self.psr_control & PSR_S != 0);
+        bus.set_access_context(context);
+        let result = (|| {
+            let instruction = match self.fetch_instruction(bus, pending)? {
+                Fetch::Word(word) => word,
+                Fetch::Event(event) => return Ok((event, None)),
+            };
+            let asi = if self.psr_control & PSR_S != 0 { 9 } else { 8 };
+            if self.decode_cache.native_enabled
+                && self.pc.checked_add(4) == Some(self.npc)
+                && self.pc & !0xfff == self.npc & !0xfff
+                && pair_ns.is_some_and(|ns| bus.native_pair_ready(ns))
+            {
+                if let (Some(first), Some(second)) = (
+                    self.mmu.native_fetch_proof(bus, self.pc, asi),
+                    self.mmu.native_fetch_proof(bus, self.npc, asi),
+                ) {
+                    if first.word == instruction {
+                        let words = [instruction, second.word];
+                        if let Some(block) = self.decode_cache.native_pair(words) {
+                            let first_step = Step::Executed {
+                                pc: self.pc,
+                                npc: self.npc,
+                                instruction,
+                            };
+                            let second_step = Step::Executed {
+                                pc: self.npc,
+                                npc: self.npc.wrapping_add(4),
+                                instruction: second.word,
+                            };
+                            // No architecture/device/time mutation has occurred
+                            // since the proof; native compilation touches only
+                            // host code storage. The native ALUs cannot alter
+                            // any fetch dependency or produce a guest fault.
+                            self.mmu.complete_native_fetch(bus, second);
+                            self.execute_native_block(&block);
+                            return Ok((first_step, Some(second_step)));
+                        }
+                    }
+                }
+            }
+            self.execute_fetched(bus, instruction)
+                .map(|step| (step, None))
+        })();
+        bus.set_access_context(previous);
+        result
     }
 
     fn memory_fault(error: MemoryError, fetch: bool) -> FaultKind {

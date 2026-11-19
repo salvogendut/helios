@@ -185,6 +185,16 @@ struct Translation {
     cacheable: bool,
 }
 
+/// Ephemeral proof for one already-cached ordinary-DRAM instruction fetch.
+/// Only the CPU's pair path may hold this, and it must consume it before any
+/// CPU/MMU/bus mutation other than native-code compilation. Never cache it.
+#[cfg(feature = "jit-native")]
+pub(crate) struct NativeFetch {
+    pub(crate) word: u32,
+    physical: u64,
+    cacheable: bool,
+}
+
 impl Access {
     fn instruction(self) -> bool {
         matches!(self.asi, 8 | 9)
@@ -863,6 +873,90 @@ impl Srmmu {
     #[cfg(feature = "jit")]
     pub(crate) fn untranslated_execution(&self) -> bool {
         !self.boot_mode() && self.control & PCR_EN == 0
+    }
+
+    /// Read-only proof of the exact fast-ITLB path. A prior live fetch must
+    /// have warmed this same 4 KiB page. This deliberately excludes walks,
+    /// large pages, diagnostic-origin entries, R-bit writes and firmware.
+    /// The cached permission is authoritative until normal MMU invalidation;
+    /// looking at the current leaf PTE here would change the architecture.
+    #[cfg(feature = "jit-native")]
+    pub(crate) fn native_fetch_proof(
+        &self,
+        bus: &crate::system_bus::SystemBus,
+        address: u32,
+        asi: u8,
+    ) -> Option<NativeFetch> {
+        if self.boot_mode()
+            || self.control & PCR_EN == 0
+            || !matches!(asi, 8 | 9)
+            || address & 3 != 0
+            || self.check_tlb_diagnostic().is_err()
+            || self
+                .itlb_ptp2
+                .is_some_and(|(tag, _)| tag == address & 0xfffc_0000)
+        {
+            return None;
+        }
+        let access = Access {
+            address,
+            asi,
+            write: false,
+        };
+        let index = self.fast_instruction.get(
+            address,
+            self.context,
+            access.supervisor(),
+            self.tlb_generation,
+            &self.slot_generations,
+        )?;
+        let entry = self.tlb[index];
+        if entry.level != 3
+            || entry.offset_mask != 0xfff
+            || entry.pte_address.is_none()
+            || entry.pte & REFERENCED == 0
+            || entry.firmware_page
+            || !entry.matches(
+                address,
+                self.context,
+                access.supervisor(),
+                self.config.context_mask,
+            )
+            || Self::permission(access, entry).is_err()
+        {
+            return None;
+        }
+        let translation = self.translation(access, entry);
+        Some(NativeFetch {
+            word: bus.peek_ram_word(translation.physical)?,
+            physical: translation.physical,
+            cacheable: translation.cacheable,
+        })
+    }
+
+    /// Complete the effects of a proven fast instruction read. For this
+    /// narrow path touch/record_diag_view/fill_ptp2 are no-ops and the DRAM
+    /// read has no side effects; the request latch and counters still matter.
+    /// The first live load drained I/O flushes; no store/service/time advance
+    /// may occur between that load, proof creation and this call.
+    #[cfg(feature = "jit-native")]
+    pub(crate) fn complete_native_fetch(
+        &mut self,
+        bus: &mut crate::system_bus::SystemBus,
+        proof: NativeFetch,
+    ) {
+        #[cfg(feature = "perf-counters")]
+        {
+            self.counters.instruction_requests += 1;
+            self.counters.fast_hits += 1;
+        }
+        self.request(
+            bus,
+            proof.physical,
+            MemoryRequestKind::Read,
+            true,
+            proof.cacheable,
+        );
     }
 
     pub fn load(

@@ -152,3 +152,4 @@
 - [Workstation JIT bridge review](workstation-jit-checkpoint2-review.md) — checkpoint 1 fixes verified; translated UP bridge/fault checks pass, tested SMP exclusion fix and selector/evidence completion items; checkpoint 3 proceeds to native blocks and frontend batching before wider opcode coverage.
 
 - [Workstation JIT progress](workstation-jit-progress.md) — checkpoint 1 persistent native engine plus checkpoint 2 shared interpreter-fetch bridge and Heliacal selector; real SS-20 Solaris reached login with 601M native instructions, but batching/branch/memory and 10% acceleration remain open.
+- [Translated two-instruction prototype](workstation-jit-translated-pair-prototype.md) — isolated working starting point for checkpoint 3: live first fetch, ephemeral cached-fetch proof, exact effects/time and fourteen differential fixtures; patch/reproducer retained, production branches untouched.
