@@ -40,8 +40,10 @@ JIT. Do not describe these synthetic results as faster Solaris boot.
 Seven JIT tests cover independently expected SETHI/ALU results, full diagnostic
 snapshot equality, self-modifying code, mapped fetch/remap, removed fetch
 permission, branch/fallback boundaries and device-machine interpreter fallback.
-Default tests: 814; with `jit`: 823. Formatting, Clippy and all four built-in
-demos pass. Evidence: `local/jit-issue5-2026-11-18/`.
+Default tests: 814; with `jit`: 823 and with `jit-native`: 837. The eight
+independent review fixtures now pass, including reset/error, split-delay and
+MMU-fault-state cases. Formatting, Clippy and all four built-in demos pass.
+Evidence: `local/jit-issue5-2026-11-18/`.
 
 
 ## Native candidate
@@ -50,7 +52,7 @@ demos pass. Evidence: `local/jit-issue5-2026-11-18/`.
 than the decoded experiment: device-free, single-CPU, MMU-disabled writable
 RAM only. The review fixtures remain passing on the decoded/fallback path;
 native fixtures cover straight-line results, split branch entry, reset/error
-delivery and device fallback.
+delivery, warm-cache self-modification and device fallback.
 
 Fixed ALU, 25M outcomes, identical optimized builds:
 
