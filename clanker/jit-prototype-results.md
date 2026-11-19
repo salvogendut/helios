@@ -48,3 +48,10 @@ feature is comparison/fallback coverage only.
 No branch, memory, SMP, parking, MMU or device acceleration is added by this
 correction. Register marshalling and persistent caching are follow-ups, not
 part of this acceptance gate.
+
+## Acceptance
+
+Accepted for merge after the native review. Merged to `main` as `9ac1ed5`.
+This closes issue #5 for the bounded native milestone. Broader JIT coverage,
+persistent caching, register-marshalling improvements, memory JIT, SMP and
+additional parking targets belong in follow-up issues.
