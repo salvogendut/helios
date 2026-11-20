@@ -2,12 +2,16 @@
 //! from the V8 `Cpu`: it implements only the instruction subset exercised by
 //! the V9 fixture and is not wired into workstation machine construction.
 
+use crate::ultra5::PowerOnReset;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct V9Cpu {
     regs: [u64; 32],
     pc: u64,
     npc: u64,
     ccr: u8,
+    privileged: bool,
+    lsu_control: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -78,13 +82,28 @@ impl V9Memory {
     }
 }
 
+impl From<PowerOnReset> for V9Cpu {
+    fn from(reset: PowerOnReset) -> Self {
+        Self {
+            npc: reset.npc,
+            privileged: reset.privileged,
+            // UltraSPARC-IIi User's Manual, table 17-5: all LSU_CONTROL bits clear on POR.
+            lsu_control: 0,
+            ..Self::new(reset.pc)
+        }
+    }
+}
+
 impl V9Cpu {
+    /// Start the flat-memory instruction fixture in user mode.
     pub fn new(pc: u64) -> Self {
         Self {
             regs: [0; 32],
             pc,
             npc: pc.wrapping_add(4),
             ccr: 0,
+            privileged: false,
+            lsu_control: 0,
         }
     }
 
@@ -114,6 +133,15 @@ impl V9Cpu {
 
     pub fn step(&mut self, memory: &mut V9Memory) -> Result<(), String> {
         let word = memory.try_read_word(self.pc)?;
+        self.execute_fetched(word, Some(memory))
+    }
+
+    // The reset flash supplies instruction bytes but has no board data bus yet.
+    pub(crate) fn execute_fetched(
+        &mut self,
+        word: u32,
+        memory: Option<&mut V9Memory>,
+    ) -> Result<(), String> {
         let next_pc = self.npc;
         let mut next_npc = self.npc.wrapping_add(4);
         let rd = ((word >> 25) & 31) as u8;
@@ -172,12 +200,33 @@ impl V9Cpu {
             3 => match op3 {
                 0x0e => {
                     let address = self.read_reg(rs1).wrapping_add(b);
+                    let memory = memory.ok_or("V9 STX requires mapped data memory")?;
                     memory.try_write_u64(address, self.read_reg(rd))?;
                 }
                 0x0b => {
                     let address = self.read_reg(rs1).wrapping_add(b);
+                    let memory = memory.ok_or("V9 LDX requires mapped data memory")?;
                     let value = memory.try_read_u64(address)?;
                     self.write_reg(rd, value);
+                }
+                0x1b => {
+                    if word & (1 << 13) != 0 {
+                        return Err("unsupported V9 LDXA using the %asi register".into());
+                    }
+                    let asi = (word >> 5) & 0xff;
+                    if asi != 0x45 {
+                        return Err(format!("unsupported V9 LDXA ASI {asi:#x}"));
+                    }
+                    if !self.privileged {
+                        return Err("privileged V9 LSU control register access".into());
+                    }
+                    let address = self.read_reg(rs1).wrapping_add(b);
+                    if address != 0 {
+                        return Err(format!(
+                            "unsupported LSU control register address {address:#x}"
+                        ));
+                    }
+                    self.write_reg(rd, self.lsu_control);
                 }
                 _ => return Err(format!("unsupported V9 memory op3 {op3:#x}")),
             },
@@ -239,5 +288,20 @@ impl V9Cpu {
             | u8::from(full_signed < i128::from(i64::MIN) || full_signed > i128::from(i64::MAX))
                 << 5
             | u8::from(wide_carry) << 4;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ldxa_returns_the_full_contents_of_lsu_control() {
+        let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
+        // A parity-mask bit and both cache enables distinguish a register read
+        // from assigning the POR constant. No guest LSU store is required here.
+        cpu.lsu_control = (1 << 40) | 3;
+        cpu.execute_fetched(0xc4d8_08a0, None).unwrap();
+        assert_eq!(cpu.read_reg(2), 0x100_0000_0003);
     }
 }

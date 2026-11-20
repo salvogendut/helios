@@ -1,6 +1,6 @@
-# Ultra 5/10 first firmware fetch
+# Ultra 5/10 first firmware instruction
 
-Helios reads the first instruction from the original Ultra 5/10 OBP 3.31.0 flash at power-on. This headless fixture stops after the read, before instruction execution.
+The headless Ultra 5/10 fixture can inspect the power-on fetch or execute one original OBP 3.31.0 instruction on a V9 CPU.
 
 ## Reset and flash mapping
 
@@ -50,3 +50,25 @@ QEMU 10.2.2, paused at startup with `-S -M sun4u -cpu TI-UltraSparc-IIi` and the
 ```
 
 QEMU’s generic sun4u machine reports PC/nPC in the low physical range. This comparison verifies the bytes and disassembly. The Sun reset table supplies the architectural PC/nPC used by Helios.
+
+## Execute the first instruction
+
+Create the CPU with `V9Cpu::from(PowerOnReset::ultra_sparc_ii())` and call
+`BootFlash::execute_first_instruction(&mut cpu)`. The CPU fetches through its
+reset address and executes the flash word with the same decoder used by
+`V9Cpu::step`. The original word reads the privileged 64-bit LSU control
+register at ASI `0x45`, VA zero. All its bits are clear at power-on, so
+`%g2` receives zero. The other integer registers and CCR retain their values.
+[IIi reset register table](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=305) · [LSU register address and format, Appendix A.6](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=412)
+
+After the step, PC is `0xffff_ffff_f000_0024` and nPC is
+`0xffff_ffff_f000_0028`. Execution stops before the following `stxa`.
+A single debugger step in QEMU 10.2.2 independently observed `%g2` change
+from `0x08000000` to zero, with PC/nPC advancing by four in its low address
+range. Sun specifies the initial general-register contents as unknown.
+
+With the reconstructed image installed, run the two local-ROM checks together:
+
+```sh
+cargo test --locked --offline --test ultra5_first_fetch --test ultra5_first_instruction -- --ignored --nocapture
+```

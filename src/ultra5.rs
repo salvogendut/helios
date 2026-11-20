@@ -6,8 +6,9 @@
 //! enters at offset `0x20` (UltraSPARC IIi User's Manual 805-0087-01,
 //! section 17.3.2, tables 17-3 and 17-5).
 //!
-//! This module models only the reset address, the selected architectural
-//! reset-state bits needed by the first fetch, and the flash read path.
+//! The reset fixture can inspect the fetch or retire one instruction on a V9 CPU.
+
+use crate::v9::V9Cpu;
 
 pub const FLASH_BASE: u64 = 0x01ff_f000_0000;
 pub const FLASH_SIZE: usize = 1 << 20;
@@ -110,11 +111,25 @@ impl BootFlash {
 
     pub fn first_fetch(&self) -> Result<FirstFetch, String> {
         let reset = PowerOnReset::ultra_sparc_ii();
-        let physical_address = reset.pc & PHYSICAL_ADDRESS_MASK;
+        self.fetch_reset_word(reset.pc, reset.npc)
+    }
+
+    /// Retire just the word fetched at the default power-on vector.
+    pub fn execute_first_instruction(&self, cpu: &mut V9Cpu) -> Result<FirstFetch, String> {
+        if (cpu.pc(), cpu.npc()) != (POWER_ON_RESET_PC, POWER_ON_RESET_NPC) {
+            return Err("Ultra 5 first instruction requires the power-on PC/nPC".into());
+        }
+        let fetch = self.fetch_reset_word(cpu.pc(), cpu.npc())?;
+        cpu.execute_fetched(fetch.instruction, None)?;
+        Ok(fetch)
+    }
+
+    fn fetch_reset_word(&self, pc: u64, npc: u64) -> Result<FirstFetch, String> {
+        let physical_address = pc & PHYSICAL_ADDRESS_MASK;
         let instruction = self.read_word(physical_address)?;
         Ok(FirstFetch {
-            pc: reset.pc,
-            npc: reset.npc,
+            pc,
+            npc,
             physical_address,
             flash_offset: (physical_address - FLASH_BASE) as usize,
             instruction,
