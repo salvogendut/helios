@@ -60,4 +60,7 @@ SBus late errors and doubleword store fault completion remain explicit gaps.
 SunOS/Solaris, BSD and Linux versions will be recorded individually once tested.
 No guest release is currently supported. Additional sun4c, sun4m and sun4u
 machines should become explicit profiles; SPARC V9 is a separate CPU milestone.
+The headless Ultra 5/10 checkpoint reads OBP 3.31.0's first instruction
+(`0xc4d808a0`) at virtual PC `0xffff_ffff_f000_0020`, physical flash address
+`0x01ff_f000_0020`. It stops before execution. [First-fetch fixture](ultra5.md)
 

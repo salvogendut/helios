@@ -107,6 +107,13 @@ test rather than assuming either emulator defines the hardware.
   Figure 4.9 was visually checked for format/integer conversion NaNs, including
   FDTOS canonicalization and FSTOI/FDTOI positive quiet NaNs. These chip rules
   override V8 N.4/N.7's generic recommendations; see [fpu.md](fpu.md).
+- [UltraSPARC IIi User's Manual, 805-0087-01, July 1999](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf):
+  chapter 17, tables 17-3 and 17-5 give the virtual RED_state vector base
+  `0xffff_ffff_f000_0000`, its PA[40:0] equivalent `0x01ff_f000_0000`,
+  the POR offset `0x20` and PSTATE.AM=0. See the [first-fetch fixture](ultra5.md).
+- [Sun Ultra 5 Service Manual, 805-7763-12](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf):
+  section C.1.6.3 describes the 1 MiB flash and its OBP and POST/OBDiag
+  halves. Table C-14 describes the PROM address assignments.
 - [Sun SBus I/O Chipset Data Manual, NCR89C100, revision 1.0](https://bitsavers.trailing-edge.com/pdf/sun/sparc/801-3137-10_SPARCclassic_Engine_OEM_Technical_Manual_Part_Three_IO_Chipset_Apr1993.pdf):
   chip-level address map (table 2-7, footnote 3 explicitly permits narrow ID
   reads; inspected visually) and chapter 3 pages 3-6–3-7 and 3-26–3-33 define MACIO

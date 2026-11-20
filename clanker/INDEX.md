@@ -1,5 +1,8 @@
 # Agent notes
 
+- [Ultra 5/10 first firmware fetch](ultra5-first-fetch.md) — corrected vendor image, CPU and flash addresses, and combined V9 validation.
+- [Ultra 5/10 first-fetch review](ultra5-first-fetch-review.md) — findings on the original submission and independent acceptance fixtures.
+
 - [OpenBIOS startup optimization](openbios-startup-optimization.md) — native dictionary search and `-O2`, measured serial/graphics improvements and firmware/OS acceptance.
 - [OpenBIOS startup cost profile](openbios-cost-profile.md) — full serial/CGsix phase measurements, guest instruction sampling, and the Forth dispatcher bottleneck.
 - [OpenBIOS fallback](openbios-fallback.md) — shared firmware selection, isolated firmware services/NVRAM, source port, OS/PTY checks, blank-startup diagnosis/RAM-clear optimization and compatibility limits for issue #8.
