@@ -30,3 +30,16 @@ The fixture was compared with QEMU 10.2.2 `qemu-sparc64`, user-mode:
 QEMU output bytes and the loop PC/nPC were captured from the same ELF; the
 fixture assertions use those independently obtained values. Local evidence is
 under `local/v9-ultrasparc-2026-11-20/`.
+
+## Review corrections
+
+The fixture now snapshots ADDCC operands before writeback, computes XCC signed
+overflow with widened arithmetic, decodes the shift X bit and implements the
+32-bit SLL/SRL/SRA forms, and validates fetch/LDX/STX alignment and full address
+ranges with checked errors that leave architectural state unchanged. The
+independent edge suite is promoted as `tests/v9_edges.rs`; the original branch
+report remains strengthened by its skipped-instruction/annul case. The QEMU
+oracle recipe and assembly are in `tools/v9-fixture/`.
+
+Final validation: 826 test executions, Clippy `-D warnings`, formatting and
+all four demos pass.
