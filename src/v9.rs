@@ -296,6 +296,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ldxa_lsu_control_preserves_nonzero_ccr() {
+        let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
+        cpu.ccr = 0x44; // Z is set in both ICC and XCC.
+        cpu.execute_fetched(0xc4d8_08a0, None).unwrap();
+        assert_eq!(cpu.ccr(), 0x44);
+    }
+
+    #[test]
     fn ldxa_returns_the_full_contents_of_lsu_control() {
         let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
         // A parity-mask bit and both cache enables distinguish a register read

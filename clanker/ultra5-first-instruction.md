@@ -27,8 +27,14 @@ registers and CCR, and places a visible write in the next instruction.
 Additional tests vary the fetched word, alias the destination with an address
 operand, and exercise privilege, address, unsupported form and data-bus errors.
 A CPU test seeds a nonzero upper LSU bit to check full-width writeback.
+A separate CPU regression seeds CCR with `0x44`, executes the original
+`0xc4d808a0`, and verifies that both ICC.Z and XCC.Z are preserved. Run it with
+`cargo test --locked --offline --lib v9::tests::ldxa_lsu_control_preserves_nonzero_ccr -- --exact`.
+In a throwaway copy, clearing CCR immediately before LDXA register writeback
+made this assertion fail with actual `0x00` and expected `0x44`. The regression
+and mutation logs are in `local/ultra5-first-instruction-2026-11-20/ccr-review/`.
 
-The default offline suite recorded 838 passing executions, including one
+The default offline suite recorded 839 passing executions, including one
 existing MXCC child-process repeat. Both opt-in firmware tests passed when
 explicitly enabled. Formatting, all-target Clippy with warnings denied, and
 all four built-in demos passed.
