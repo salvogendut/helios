@@ -157,8 +157,7 @@ impl V9Cpu {
                     let wide = word & (1 << 12) != 0;
                     let amount = if wide { b & 63 } else { b & 31 };
                     let value = match (op3, wide) {
-                        (0x25, true) => a << amount,
-                        (0x25, false) => u64::from((a as u32) << amount),
+                        (0x25, _) => a << amount,
                         (0x26, true) => a >> amount,
                         (0x26, false) => u64::from((a as u32) >> amount),
                         (0x27, true) => ((a as i64) >> amount) as u64,

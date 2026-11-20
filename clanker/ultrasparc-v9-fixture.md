@@ -43,3 +43,14 @@ oracle recipe and assembly are in `tools/v9-fixture/`.
 
 Final validation: 826 test executions, Clippy `-D warnings`, formatting and
 all four demos pass.
+
+
+## SLL width correction
+
+SPARC V9 A.49 specifies that non-X SLL shifts the full-width operand with a
+five-bit count. The fixture now preserves `0x0000000100000000` for a zero or
+effective-zero count and can move bit 31 to bit 32. QEMU 10.2.2 clears the high
+word in these cases; the original 48-byte QEMU programs are retained as
+comparison fixtures, while the SLL regressions follow the architecture manual
+and the UltraViolet implementation. Right shifts and the count mask are
+unchanged.
