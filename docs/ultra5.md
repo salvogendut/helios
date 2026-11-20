@@ -1,6 +1,6 @@
-# Ultra 5/10 first firmware instruction
+# Ultra 5/10 firmware reset instructions
 
-The headless Ultra 5/10 fixture can inspect the power-on fetch or execute one original OBP 3.31.0 instruction on a V9 CPU.
+The headless Ultra 5/10 fixture can inspect the power-on fetch or execute one or two original OBP 3.31.0 instructions on a V9 CPU.
 
 ## Reset and flash mapping
 
@@ -67,8 +67,30 @@ A single debugger step in QEMU 10.2.2 independently observed `%g2` change
 from `0x08000000` to zero, with PC/nPC advancing by four in its low address
 range. Sun specifies the initial general-register contents as unknown.
 
-With the reconstructed image installed, run the two local-ROM checks together:
+## Execute the first two instructions
+
+From the same power-on state, `BootFlash::execute_first_two_instructions(&mut cpu)`
+returns the two flash fetch records. At offset `0x24`, OBP executes
+`0xc0f008a0` (`stxa %g0, [%g0] 0x45`). It writes zero to LSU control.
+`%g2` retains the value read by the preceding `ldxa`, and CCR is preserved.
+Execution stops with PC/nPC at `0xffff_ffff_f000_0028` / `0xffff_ffff_f000_002c`.
+If the second instruction fails, the first is already retired and the CPU
+stays at the second instruction with its effects unapplied.
+
+The fixture models register storage for the instruction and data cache enables
+(IC and DC, bits 0 and 1). The all-off write clears the register. Writes that
+set other bits return an explicit unsupported-operation error. Cache timing,
+MMU enable, watchpoints and parity injection are outside this checkpoint.
+[UltraSPARC IIi User’s Manual, Appendix A.6](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=413)
+
+Two QEMU 10.2.2 single steps on the same image reached low PC/nPC
+`0x01ff_f000_0028` / `0x01ff_f000_002c`, with `%g2 = 0` and `CCR = 0x44`.
+As a separate check on the store, the Helios local-ROM test also starts with
+DC set and CCR at `0x44`. It verifies `%g2 = 2`, LSU control zero, and the
+original CCR after the pair.
+
+With the reconstructed image installed, run all three local-ROM checks:
 
 ```sh
-cargo test --locked --offline --test ultra5_first_fetch --test ultra5_first_instruction -- --ignored --nocapture
+cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction -- --ignored --nocapture
 ```

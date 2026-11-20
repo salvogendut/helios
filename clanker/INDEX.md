@@ -1,5 +1,6 @@
 # Agent notes
 
+- [Ultra 5/10 second instruction](ultra5-second-instruction.md) — LSU store, seeded-register regression and two-step QEMU comparison.
 - [Ultra 5/10 first instruction](ultra5-first-instruction.md) — single-step of OBP's reset-time LSU control read and the QEMU comparison.
 - [Ultra 5/10 first firmware fetch](ultra5-first-fetch.md) — corrected vendor image, CPU and flash addresses, and combined V9 validation.
 - [Ultra 5/10 first-fetch review](ultra5-first-fetch-review.md) — findings on the original submission and independent acceptance fixtures.

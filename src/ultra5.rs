@@ -6,7 +6,7 @@
 //! enters at offset `0x20` (UltraSPARC IIi User's Manual 805-0087-01,
 //! section 17.3.2, tables 17-3 and 17-5).
 //!
-//! The reset fixture can inspect the fetch or retire one instruction on a V9 CPU.
+//! The reset fixture can inspect the fetch or retire the first one or two instructions.
 
 use crate::v9::V9Cpu;
 
@@ -65,13 +65,16 @@ pub struct BootFlash {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FirstFetch {
+pub struct FlashFetch {
     pub pc: u64,
     pub npc: u64,
     pub physical_address: u64,
     pub flash_offset: usize,
     pub instruction: u32,
 }
+
+/// Fetch record returned by the original one-instruction checkpoint.
+pub type FirstFetch = FlashFetch;
 
 impl BootFlash {
     pub fn new(image: Vec<u8>) -> Result<Self, String> {
@@ -116,18 +119,36 @@ impl BootFlash {
 
     /// Retire just the word fetched at the default power-on vector.
     pub fn execute_first_instruction(&self, cpu: &mut V9Cpu) -> Result<FirstFetch, String> {
-        if (cpu.pc(), cpu.npc()) != (POWER_ON_RESET_PC, POWER_ON_RESET_NPC) {
-            return Err("Ultra 5 first instruction requires the power-on PC/nPC".into());
+        self.execute_reset_word_at(cpu, POWER_ON_RESET_PC)
+    }
+
+    /// Execute the two sequential flash words at POR. A second-word error retains
+    /// the effects of the first instruction and leaves the second unretired.
+    pub fn execute_first_two_instructions(
+        &self,
+        cpu: &mut V9Cpu,
+    ) -> Result<[FlashFetch; 2], String> {
+        let first = self.execute_first_instruction(cpu)?;
+        let second = self.execute_reset_word_at(cpu, POWER_ON_RESET_NPC)?;
+        Ok([first, second])
+    }
+
+    fn execute_reset_word_at(&self, cpu: &mut V9Cpu, pc: u64) -> Result<FlashFetch, String> {
+        if (cpu.pc(), cpu.npc()) != (pc, pc + 4) {
+            return Err(format!(
+                "Ultra 5 reset step requires PC={pc:#x}, nPC={:#x}",
+                pc + 4
+            ));
         }
         let fetch = self.fetch_reset_word(cpu.pc(), cpu.npc())?;
         cpu.execute_fetched(fetch.instruction, None)?;
         Ok(fetch)
     }
 
-    fn fetch_reset_word(&self, pc: u64, npc: u64) -> Result<FirstFetch, String> {
+    fn fetch_reset_word(&self, pc: u64, npc: u64) -> Result<FlashFetch, String> {
         let physical_address = pc & PHYSICAL_ADDRESS_MASK;
         let instruction = self.read_word(physical_address)?;
-        Ok(FirstFetch {
+        Ok(FlashFetch {
             pc,
             npc,
             physical_address,

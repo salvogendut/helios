@@ -209,13 +209,13 @@ impl V9Cpu {
                     let value = memory.try_read_u64(address)?;
                     self.write_reg(rd, value);
                 }
-                0x1b => {
+                0x1b | 0x1e => {
                     if word & (1 << 13) != 0 {
-                        return Err("unsupported V9 LDXA using the %asi register".into());
+                        return Err("unsupported V9 access using the %asi register".into());
                     }
                     let asi = (word >> 5) & 0xff;
                     if asi != 0x45 {
-                        return Err(format!("unsupported V9 LDXA ASI {asi:#x}"));
+                        return Err(format!("unsupported V9 alternate address space {asi:#x}"));
                     }
                     if !self.privileged {
                         return Err("privileged V9 LSU control register access".into());
@@ -226,7 +226,18 @@ impl V9Cpu {
                             "unsupported LSU control register address {address:#x}"
                         ));
                     }
-                    self.write_reg(rd, self.lsu_control);
+                    if op3 == 0x1b {
+                        self.write_reg(rd, self.lsu_control);
+                    } else {
+                        let value = self.read_reg(rd);
+                        // IIi A.6.1: IC and DC occupy bits 0 and 1. The fixture
+                        // supports their register readback and the OBP all-off write.
+                        const CACHE_ENABLES: u64 = 0b11;
+                        if value & !CACHE_ENABLES != 0 {
+                            return Err(format!("unsupported LSU control write {value:#x}"));
+                        }
+                        self.lsu_control = value;
+                    }
                 }
                 _ => return Err(format!("unsupported V9 memory op3 {op3:#x}")),
             },
@@ -294,6 +305,72 @@ impl V9Cpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ultra5::{BootFlash, FLASH_SIZE};
+
+    fn verify_reset_pair(flash: &BootFlash, mut cpu: V9Cpu) -> V9Cpu {
+        let mut expected = cpu.clone();
+        expected.pc = 0xffff_ffff_f000_0028;
+        expected.npc = 0xffff_ffff_f000_002c;
+        expected.regs[2] = cpu.lsu_control;
+        expected.lsu_control = 0;
+
+        let fetches = flash.execute_first_two_instructions(&mut cpu).unwrap();
+        assert_eq!(cpu, expected);
+        assert_eq!(fetches[0].instruction, 0xc4d8_08a0);
+        assert_eq!(fetches[1].instruction, 0xc0f0_08a0);
+        assert_eq!(
+            (fetches[0].flash_offset, fetches[1].flash_offset),
+            (0x20, 0x24)
+        );
+        assert_eq!(fetches[1].physical_address, 0x01ff_f000_0024);
+        assert_eq!(
+            (fetches[1].pc, fetches[1].npc),
+            (0xffff_ffff_f000_0024, 0xffff_ffff_f000_0028)
+        );
+        assert!(flash.execute_first_two_instructions(&mut cpu).is_err());
+        assert_eq!(cpu, expected);
+        cpu
+    }
+
+    #[test]
+    fn obp_ldxa_observes_the_old_lsu_bit_and_stxa_clears_it() {
+        let mut image = vec![0xff; FLASH_SIZE];
+        image[0x20..0x24].copy_from_slice(&0xc4d8_08a0_u32.to_be_bytes());
+        image[0x24..0x28].copy_from_slice(&0xc0f0_08a0_u32.to_be_bytes());
+        image[0x28..0x2c].copy_from_slice(&0x8410_2007_u32.to_be_bytes()); // mov 7, %g2
+        let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
+        cpu.lsu_control = 1; // IC
+        cpu.ccr = 0xa5;
+        for rd in 1..32 {
+            cpu.write_reg(rd, u64::MAX - u64::from(rd));
+        }
+        verify_reset_pair(&BootFlash::new(image).unwrap(), cpu);
+    }
+
+    #[test]
+    #[ignore = "requires the locally reconstructed OBP 3.31.0 flash"]
+    fn original_ultra5_obp_retires_the_first_two_instructions() {
+        let image = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/local/firmware/ultra5/ultra5-obp331-post310-1mb.bin"
+        ))
+        .unwrap();
+        let flash = BootFlash::new(image).unwrap();
+        let cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
+        verify_reset_pair(&flash, cpu.clone());
+        let mut seeded = cpu;
+        seeded.lsu_control = 2; // DC
+        seeded.ccr = 0x44;
+        let retired = verify_reset_pair(&flash, seeded);
+        println!(
+            "Seeded DC run after two OBP words: %g2={:#x} LSU={:#x} CCR={:#x} PC={:#x} nPC={:#x}",
+            retired.read_reg(2),
+            retired.lsu_control,
+            retired.ccr(),
+            retired.pc(),
+            retired.npc()
+        );
+    }
 
     #[test]
     fn ldxa_lsu_control_preserves_nonzero_ccr() {

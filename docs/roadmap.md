@@ -60,8 +60,8 @@ SBus late errors and doubleword store fault completion remain explicit gaps.
 SunOS/Solaris, BSD and Linux versions will be recorded individually once tested.
 No guest release is currently supported. Additional sun4c, sun4m and sun4u
 machines should become explicit profiles; SPARC V9 is a separate CPU milestone.
-The headless Ultra 5/10 checkpoint executes OBP 3.31.0's first instruction
-(`0xc4d808a0`) at virtual PC `0xffff_ffff_f000_0020`. It reads zero from
-LSU control into `%g2` and stops at `0xffff_ffff_f000_0024`.
-[First-instruction fixture](ultra5.md)
+The headless Ultra 5/10 checkpoint executes OBP 3.31.0's first two instructions
+at virtual PC `0xffff_ffff_f000_0020`. They read LSU control into `%g2`,
+clear LSU control, and leave PC at `0xffff_ffff_f000_0028`.
+[Reset instruction fixture](ultra5.md)
 

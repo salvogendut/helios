@@ -75,7 +75,7 @@ fn unsupported_accesses_leave_cpu_state_unchanged() {
         (0xc4d8_48a0, 8),       // Correct ASI, unmapped register offset.
         (0xc0d8_48a0, 1),       // Misaligned, rd=%g0 must still check the access.
         (0xc4d8_48a0, 1 << 41), // The flash PA mask does not apply to the LSU register VA.
-        (0xc0f0_08a0, 0),       // Actual second OBP word (STXA), unsupported in this slice.
+        (0xc0f0_0880, 0),       // STXA to unsupported ASI 0x44.
         (0xc458_6000, 0),       // Ordinary LDX requires a data bus.
         (0xc470_6000, 0),       // Ordinary STX requires a data bus.
     ] {
