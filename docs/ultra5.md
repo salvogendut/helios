@@ -1,6 +1,6 @@
 # Ultra 5/10 firmware reset instructions
 
-The headless Ultra 5/10 fixture executes six original OBP 3.31.0 instructions on a V9 CPU, through the first register-window switch and restore.
+The headless Ultra 5/10 fixture executes 17 original OBP 3.31.0 instructions on a V9 CPU. Its first external data read stops at virtual PC `0xffff_ffff_f000_2144`.
 
 ## Reset and flash mapping
 
@@ -136,8 +136,31 @@ visible across CWP writes. This checkpoint covers explicit window selection.
 SAVE, RESTORE and window traps remain future work.
 [UltraSPARC IIi manual §14.2.1](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223) · [SPARC V9 §5.1.1.3 and Appendix A.62](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf#page=266)
 
-With the reconstructed image installed, run the six local-ROM checks together.
+## Reach the first board data read
+
+After restoring the saved window, OBP uses eleven SETHI, OR and SLLX
+instructions to assemble an eight-byte comparison value and a physical
+address. The final instruction in this sequence retires at offset `0x2140`.
+Single-stepping the original image in Helios and QEMU 10.2.2 gives these
+values immediately before the load.
+
+| Register | Value | Use by OBP |
+| --- | --- | --- |
+| `%o0` | `0x736f_6674_2d72_7374` | ASCII `soft-rst`, the expected value for the subsequent comparison |
+| `%o1` | `0x0000_01ff_0000_0000` | Upper address bits, then destination of the load |
+| `%o2` | `0x0000_01ff_f100_0010` | Address of the eight-byte load |
+
+The next word, `0xd2da82a0`, is `ldxa [%o2] 0x15, %o1`. The IIi defines
+ASI `0x15` as non-cacheable physical access with side effects. The flat
+V9 memory fixture can complete an aligned big-endian load from its backing
+bytes. The Ultra 5 flash fixture has no data device at this address.
+`BootFlash::step` reports the ASI, physical address and width, leaving
+PC/nPC at `0xffff_ffff_f000_2144` / `0xffff_ffff_f000_2148` and preserving
+`%o1`. Identifying the board device and its reset-time contents is the next
+step toward executing the comparison. [UltraSPARC IIi User’s Manual, §15.10](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=268) · [Sun Ultra 5 Service Manual, §C.3](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf#page=229)
+
+With the reconstructed image installed, run the seven local-ROM checks together.
 
 ```sh
-cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select -- --ignored --nocapture
+cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe -- --ignored --nocapture
 ```

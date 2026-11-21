@@ -8,13 +8,12 @@
 //!
 //! The reset fixture executes the ROM prefix and can single-step flash at the resulting PC.
 
-use crate::v9::V9Cpu;
+use crate::v9::{V9Cpu, PHYSICAL_ADDRESS_MASK};
 
 pub const FLASH_BASE: u64 = 0x01ff_f000_0000;
 pub const FLASH_SIZE: usize = 1 << 20;
 pub const POWER_ON_RESET_OFFSET: usize = 0x20;
 const DEFAULT_RSTV_VA: u64 = 0xffff_ffff_f000_0000;
-const PHYSICAL_ADDRESS_MASK: u64 = (1_u64 << 41) - 1;
 pub const POWER_ON_RESET_PC: u64 = DEFAULT_RSTV_VA + POWER_ON_RESET_OFFSET as u64;
 pub const POWER_ON_RESET_NPC: u64 = POWER_ON_RESET_PC + 4;
 

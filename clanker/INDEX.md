@@ -1,5 +1,6 @@
 # Agent notes
 
+- [Ultra 5/10 reset data read](ultra5-reset-probe.md) — seventeen original OBP instructions and the first unserved board request.
 - [Ultra 5/10 window selection](ultra5-window-select.md) — six original OBP instructions and QEMU checks for the overlapping window registers.
 - [Ultra 5/10 current window pointer](ultra5-reset-cwp.md) — first instruction at the branch target and the four-step QEMU comparison.
 - [Ultra 5/10 reset branch](ultra5-reset-branch.md) — first OBP control transfer, annulled delay slot and three-step QEMU comparison.

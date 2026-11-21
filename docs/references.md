@@ -112,7 +112,9 @@ test rather than assuming either emulator defines the hardware.
   `0xffff_ffff_f000_0000`, its PA[40:0] equivalent `0x01ff_f000_0000`,
   the POR offset `0x20` and PSTATE.AM=0. Table 17-5 gives zero for every
   LSU_CONTROL bit at POR and leaves CWP unknown. Appendix A.6 gives ASI `0x45` and VA zero for its
-  64-bit register. See the [Ultra 5 fixture](ultra5.md).
+  64-bit register. Section 15.10 and table 15-18 give the 41-bit physical
+  address and side-effect attribute for the ASI `0x15` bypass read.
+  See the [Ultra 5 fixture](ultra5.md).
 - SPARC V9 Appendix A.43 defines privileged-register reads and assigns CWP
   selector 9. Appendix A.1 specifies zero for reserved instruction fields.
   [SPARC Architecture Manual, Version 9](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf#page=235)

@@ -60,10 +60,10 @@ SBus late errors and doubleword store fault completion remain explicit gaps.
 SunOS/Solaris, BSD and Linux versions will be recorded individually once tested.
 No guest release is currently supported. Additional sun4c, sun4m and sun4u
 machines should become explicit profiles; SPARC V9 is a separate CPU milestone.
-The headless Ultra 5/10 checkpoint executes six OBP 3.31.0 instructions
-from virtual PC `0xffff_ffff_f000_0020`. They read LSU control into `%g2`,
-clear LSU control, annul the branch delay slot and read CWP into `%g1` at the
-target. OBP then selects window 0 and restores the saved window.
-The next virtual PC is `0xffff_ffff_f000_2118`.
+The headless Ultra 5/10 checkpoint executes 17 OBP 3.31.0 instructions from
+virtual PC `0xffff_ffff_f000_0020`. After reading and clearing LSU control
+and switching register windows, OBP prepares the `soft-rst` comparison.
+At virtual PC `0xffff_ffff_f000_2144`, it requests eight bytes from physical
+`0x01ff_f100_0010`. The reset-time board mapping for that read is open.
 [Reset instruction fixture](ultra5.md)
 

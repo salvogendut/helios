@@ -7,6 +7,8 @@ use crate::ultra5::PowerOnReset;
 const WINDOW_COUNT: u8 = 8;
 const WINDOW_MASK: u8 = WINDOW_COUNT - 1;
 const REGISTER_COUNT: usize = 8 + WINDOW_COUNT as usize * 16;
+pub(crate) const PHYSICAL_ADDRESS_MASK: u64 = (1 << 41) - 1;
+const ASI_PHYS_BYPASS_EC_WITH_EBIT: u32 = 0x15;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct V9Cpu {
@@ -268,29 +270,16 @@ impl V9Cpu {
                         return Err("unsupported V9 access using the %asi register".into());
                     }
                     let asi = (word >> 5) & 0xff;
-                    if asi != 0x45 {
-                        return Err(format!("unsupported V9 alternate address space {asi:#x}"));
-                    }
-                    if !self.privileged {
-                        return Err("privileged V9 LSU control register access".into());
-                    }
                     let address = self.read_reg(rs1).wrapping_add(b);
-                    if address != 0 {
-                        return Err(format!(
-                            "unsupported LSU control register address {address:#x}"
-                        ));
-                    }
-                    if op3 == 0x1b {
-                        self.write_reg(rd, self.lsu_control);
-                    } else {
-                        let value = self.read_reg(rd);
-                        // IIi A.6.1: IC and DC occupy bits 0 and 1. The fixture
-                        // supports their register readback and the OBP all-off write.
-                        const CACHE_ENABLES: u64 = 0b11;
-                        if value & !CACHE_ENABLES != 0 {
-                            return Err(format!("unsupported LSU control write {value:#x}"));
+                    match asi {
+                        ASI_PHYS_BYPASS_EC_WITH_EBIT if op3 == 0x1b => {
+                            let value = self.read_physical_bypass(address, memory.as_deref())?;
+                            self.write_reg(rd, value);
                         }
-                        self.lsu_control = value;
+                        0x45 => self.access_lsu_control(op3, address, rd)?,
+                        _ => {
+                            return Err(format!("unsupported V9 alternate address space {asi:#x}"))
+                        }
                     }
                 }
                 _ => return Err(format!("unsupported V9 memory op3 {op3:#x}")),
@@ -299,6 +288,52 @@ impl V9Cpu {
         }
         self.pc = next_pc;
         self.npc = next_npc;
+        Ok(())
+    }
+
+    fn read_physical_bypass(&self, address: u64, memory: Option<&V9Memory>) -> Result<u64, String> {
+        if !self.privileged {
+            return Err("privileged V9 physical bypass read".into());
+        }
+        // IIi §§4.2 and 15.10: 44-bit sign-extended VA, 41-bit physical bus.
+        if !matches!((address as i64) >> 43, 0 | -1) {
+            return Err(format!(
+                "unsupported V9 bypass effective address {address:#x}"
+            ));
+        }
+        let physical = address & PHYSICAL_ADDRESS_MASK;
+        if physical % 8 != 0 {
+            return Err(format!(
+                "misaligned V9 physical bypass read at {physical:#x}"
+            ));
+        }
+        let memory = memory.ok_or_else(|| {
+            format!("unmapped V9 physical read: ASI=0x15 PA={physical:#x} width=8")
+        })?;
+        memory.try_read_u64(physical)
+    }
+
+    fn access_lsu_control(&mut self, op3: u32, address: u64, rd: u8) -> Result<(), String> {
+        if !self.privileged {
+            return Err("privileged V9 LSU control register access".into());
+        }
+        if address != 0 {
+            return Err(format!(
+                "unsupported LSU control register address {address:#x}"
+            ));
+        }
+        if op3 == 0x1b {
+            self.write_reg(rd, self.lsu_control);
+        } else {
+            let value = self.read_reg(rd);
+            // IIi A.6.1: IC and DC occupy bits 0 and 1. The fixture
+            // supports their register readback and the OBP all-off write.
+            const CACHE_ENABLES: u64 = 0b11;
+            if value & !CACHE_ENABLES != 0 {
+                return Err(format!("unsupported LSU control write {value:#x}"));
+            }
+            self.lsu_control = value;
+        }
         Ok(())
     }
 
