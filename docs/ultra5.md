@@ -1,8 +1,9 @@
 # Ultra 5/10 firmware reset instructions
 
 With an 8 KiB NVRAM image attached, the headless Ultra 5/10 fixture executes
-the original OBP 3.31.0 reset-time marker check. With a zero-filled image
-it retires 22 instructions and reaches virtual PC `0xffff_ffff_f000_15d4`.
+the original OBP 3.31.0 reset-time marker check and clears both MMU contexts.
+With a zero-filled image it retires 28 instructions and reaches virtual PC
+`0xffff_ffff_f000_15ec`.
 
 ## Reset and flash mapping
 
@@ -188,14 +189,43 @@ XCC and branches on the full 64-bit value. With a matching marker it
 checks a second value in `%g7`. The fixture starts that register at zero.
 The zero-filled and matching-marker traces reach offset `0x15d4` after
 22 and 31 instructions respectively. The next word, `0x87802058`,
-writes `0x58` to `%asi`. Both traces stop before that instruction.
+writes `0x58` to `%asi` to begin MMU context initialization.
 
 QEMU 10.2.2 independently reproduced all three comparisons. For that
 CPU check, the debugger redirected `%o2` to seeded guest RAM for the
 load. Helios executed the same words against the board address above.
 
-With the reconstructed image installed, run the eight local-ROM checks together.
+## Clear the primary and secondary MMU contexts
+
+At offset `0x15d4`, OBP sets the eight-bit address-space identifier register
+to `0x58`. The two `stxa` instructions use that ASI with immediate offsets.
+They clear separate 13-bit context IDs shared by the instruction and data
+MMUs. Each store is followed by `membar #Sync`. The fixture completes each
+data access synchronously. MMU translation is disabled throughout this run.
+[UltraSPARC IIi User’s Manual, §15.9.3](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=257) · [SPARC V9, §5.1.8](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf#page=74)
+
+| Flash offset | Instruction | Effect |
+| --- | --- | --- |
+| `0x15d4` | `wr %g0, 0x58, %asi` | Select the D-MMU register space |
+| `0x15d8`, `0x15dc` | `stxa %g0, [8] %asi`, `membar #Sync` | Clear the primary context and order data accesses |
+| `0x15e0`, `0x15e4` | `stxa %g0, [0x10] %asi`, `membar #Sync` | Clear the secondary context and order data accesses |
+| `0x15e8` | `add %g0, %g0, %g7` | Clear `%g7` and advance to the PIL write |
+
+Both traces end at PC/nPC `0xffff_ffff_f000_15ec` / `0xffff_ffff_f000_15f0`.
+The zero-filled NVRAM run takes 28 instructions. The matching-marker run
+with reset `%g7 = 0` takes 37. The next word is `wrpr 15, %pil`. A separate
+guest program in Helios and QEMU seeded primary and secondary with `0x357`
+and `0x6ac` and verified their independent readback and clearing.
+
+The fixture initializes `%asi` and both context IDs to zero for reproducible
+tests. User code may write `%asi`, and an access to a restricted ASI requires
+privilege. Context stores with nonzero reserved bits stop explicitly.
+Sun specifies additional synchronization before a new context is guaranteed
+visible to instruction fetches. Translated fetches and TLB behavior remain
+open. [UltraSPARC IIi context synchronization rules](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=257)
+
+With the reconstructed image installed, run the nine local-ROM checks together.
 
 ```sh
-cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe -- --ignored --nocapture
+cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts -- --ignored --nocapture
 ```

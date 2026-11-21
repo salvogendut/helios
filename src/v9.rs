@@ -8,7 +8,8 @@ const WINDOW_COUNT: u8 = 8;
 const WINDOW_MASK: u8 = WINDOW_COUNT - 1;
 const REGISTER_COUNT: usize = 8 + WINDOW_COUNT as usize * 16;
 pub(crate) const PHYSICAL_ADDRESS_MASK: u64 = (1 << 41) - 1;
-const ASI_PHYS_BYPASS_EC_WITH_EBIT: u32 = 0x15;
+const ASI_PHYS_BYPASS_EC_WITH_EBIT: u8 = 0x15;
+const ASI_DMMU: u8 = 0x58;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct V9Cpu {
@@ -18,6 +19,9 @@ pub struct V9Cpu {
     npc: u64,
     ccr: u8,
     cwp: u8,
+    asi: u8,
+    primary_context: u16,
+    secondary_context: u16,
     privileged: bool,
     lsu_control: u64,
 }
@@ -144,6 +148,9 @@ impl V9Cpu {
             npc: pc.wrapping_add(4),
             ccr: 0,
             cwp: 0,
+            asi: 0,
+            primary_context: 0,
+            secondary_context: 0,
             privileged: false,
             lsu_control: 0,
         }
@@ -268,6 +275,10 @@ impl V9Cpu {
                     self.write_reg(rd, value);
                 }
                 0x28 if rs1 == 2 => self.write_reg(rd, u64::from(self.ccr)),
+                0x28 if rs1 == 3 && word & 0x3fff == 0 => self.write_reg(rd, u64::from(self.asi)),
+                // MEMBAR #Sync: all earlier operations in this single-CPU
+                // fixture have already completed when an instruction retires.
+                0x28 if word == 0x8143_e040 => {}
                 0x2a => {
                     if !self.privileged {
                         return Err("privileged V9 RDPR instruction".into());
@@ -277,6 +288,12 @@ impl V9Cpu {
                         return Err(format!("unsupported V9 RDPR word {word:#x}"));
                     }
                     self.write_reg(rd, u64::from(self.cwp));
+                }
+                0x30 if rd == 3 => {
+                    if word & (1 << 13) == 0 && word & 0x1fe0 != 0 {
+                        return Err(format!("unsupported V9 WRASI word {word:#x}"));
+                    }
+                    self.asi = (self.read_reg(rs1) ^ b) as u8;
                 }
                 0x32 => {
                     if !self.privileged {
@@ -302,17 +319,22 @@ impl V9Cpu {
                     self.write_reg(rd, value);
                 }
                 0x1b | 0x1e => {
-                    if word & (1 << 13) != 0 {
-                        return Err("unsupported V9 access using the %asi register".into());
+                    let asi = if word & (1 << 13) != 0 {
+                        self.asi
+                    } else {
+                        (word >> 5) as u8
+                    };
+                    if asi < 0x80 && !self.privileged {
+                        return Err(format!("privileged V9 alternate address space {asi:#x}"));
                     }
-                    let asi = (word >> 5) & 0xff;
                     let address = self.read_reg(rs1).wrapping_add(b);
                     match asi {
                         ASI_PHYS_BYPASS_EC_WITH_EBIT if op3 == 0x1b => {
-                            let value = self.read_physical_bypass(address, memory)?;
+                            let value = Self::read_physical_bypass(address, memory)?;
                             self.write_reg(rd, value);
                         }
                         0x45 => self.access_lsu_control(op3, address, rd)?,
+                        ASI_DMMU => self.access_mmu_context(op3, address, rd)?,
                         _ => {
                             return Err(format!("unsupported V9 alternate address space {asi:#x}"))
                         }
@@ -327,14 +349,7 @@ impl V9Cpu {
         Ok(())
     }
 
-    fn read_physical_bypass(
-        &self,
-        address: u64,
-        memory: &mut dyn V9DataBus,
-    ) -> Result<u64, String> {
-        if !self.privileged {
-            return Err("privileged V9 physical bypass read".into());
-        }
+    fn read_physical_bypass(address: u64, memory: &mut dyn V9DataBus) -> Result<u64, String> {
         // IIi §§4.2 and 15.10: 44-bit sign-extended VA, 41-bit physical bus.
         if !matches!((address as i64) >> 43, 0 | -1) {
             return Err(format!(
@@ -351,9 +366,6 @@ impl V9Cpu {
     }
 
     fn access_lsu_control(&mut self, op3: u32, address: u64, rd: u8) -> Result<(), String> {
-        if !self.privileged {
-            return Err("privileged V9 LSU control register access".into());
-        }
         if address != 0 {
             return Err(format!(
                 "unsupported LSU control register address {address:#x}"
@@ -370,6 +382,31 @@ impl V9Cpu {
                 return Err(format!("unsupported LSU control write {value:#x}"));
             }
             self.lsu_control = value;
+        }
+        Ok(())
+    }
+
+    fn access_mmu_context(&mut self, op3: u32, address: u64, rd: u8) -> Result<(), String> {
+        let source = self.read_reg(rd);
+        let context = match address {
+            0x08 => &mut self.primary_context,
+            0x10 => &mut self.secondary_context,
+            _ if address & 7 != 0 => {
+                return Err(format!("misaligned V9 D-MMU access at {address:#x}"))
+            }
+            _ => return Err(format!("unsupported V9 D-MMU register at {address:#x}")),
+        };
+        if op3 == 0x1b {
+            let value = u64::from(*context);
+            self.write_reg(rd, value);
+        } else {
+            // IIi §15.9.3 defines bits 12:0; software must write reserved bits as zero.
+            if source > 0x1fff {
+                return Err(format!(
+                    "unsupported V9 MMU context reserved bits in {source:#x}"
+                ));
+            }
+            *context = source as u16;
         }
         Ok(())
     }

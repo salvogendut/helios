@@ -1,5 +1,6 @@
 # Agent notes
 
+- [Ultra 5/10 reset MMU contexts](ultra5-reset-contexts.md) — ASI selection, two independent context clears and the first PIL write.
 - [Ultra 5/10 NVRAM reset decision](ultra5-reset-nvram.md) — retained SRAM, three marker comparisons and the next ASI write.
 - [Ultra 5/10 reset data read](ultra5-reset-probe.md) — seventeen original OBP instructions and the first unserved board request.
 - [Ultra 5/10 window selection](ultra5-window-select.md) — six original OBP instructions and QEMU checks for the overlapping window registers.

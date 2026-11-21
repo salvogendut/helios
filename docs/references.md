@@ -115,6 +115,11 @@ test rather than assuming either emulator defines the hardware.
   64-bit register. Section 15.10 and table 15-18 give the 41-bit physical
   address and side-effect attribute for the ASI `0x15` bypass read.
   See the [Ultra 5 fixture](ultra5.md).
+- The IIi manual’s table 15-12 and §15.9.3 place primary and secondary
+  contexts at ASI `0x58`, offsets `8` and `0x10`, and distinguish data
+  synchronization from instruction-fetch synchronization. V9 §5.1.8 and
+  Appendix A.63 define the ASI register, privilege checks on use and WRASI’s XOR.
+  [IIi context registers](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=257) · [V9 WRASI](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf#page=268)
 - SPARC V9 Appendix A.43 defines privileged-register reads and assigns CWP
   selector 9. Appendix A.1 specifies zero for reserved instruction fields.
   [SPARC Architecture Manual, Version 9](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf#page=235)
