@@ -6,7 +6,7 @@
 //! enters at offset `0x20` (UltraSPARC IIi User's Manual 805-0087-01,
 //! section 17.3.2, tables 17-3 and 17-5).
 //!
-//! The reset fixture can inspect the fetch or retire the first one or two instructions.
+//! The reset fixture can inspect the fetch or retire the ROM prefix through its first branch.
 
 use crate::v9::V9Cpu;
 
@@ -131,6 +131,13 @@ impl BootFlash {
         let first = self.execute_first_instruction(cpu)?;
         let second = self.execute_reset_word_at(cpu, POWER_ON_RESET_NPC)?;
         Ok([first, second])
+    }
+
+    /// Retire the three sequential words at POR, stopping at the PC selected by word three.
+    pub fn execute_reset_branch(&self, cpu: &mut V9Cpu) -> Result<[FlashFetch; 3], String> {
+        let [first, second] = self.execute_first_two_instructions(cpu)?;
+        let branch = self.execute_reset_word_at(cpu, POWER_ON_RESET_PC + 8)?;
+        Ok([first, second, branch])
     }
 
     fn execute_reset_word_at(&self, cpu: &mut V9Cpu, pc: u64) -> Result<FlashFetch, String> {

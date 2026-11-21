@@ -1,6 +1,6 @@
 # Ultra 5/10 firmware reset instructions
 
-The headless Ultra 5/10 fixture can inspect the power-on fetch or execute one or two original OBP 3.31.0 instructions on a V9 CPU.
+The headless Ultra 5/10 fixture can inspect the power-on fetch and execute original OBP 3.31.0 through its first branch on a V9 CPU.
 
 ## Reset and flash mapping
 
@@ -89,8 +89,24 @@ As a separate check on the store, the Helios local-ROM test also starts with
 DC set and CCR at `0x44`. It verifies `%g2 = 2`, LSU control zero, and the
 original CCR after the pair.
 
-With the reconstructed image installed, run all three local-ROM checks:
+## Execute through the reset branch
+
+Call `BootFlash::execute_reset_branch(&mut cpu)` from power-on to retire the
+first three words. The third word at offset `0x28`, `0x30680839`, encodes
+`ba,a,pt %xcc`. Its signed 19-bit displacement is `0x839` words. Adding
+`4 × 0x839` to the branch PC selects flash offset `0x210c`. The annul bit
+skips the instruction at `0x2c`. The fixture returns before the first
+instruction at the target, with virtual PC/nPC at
+`0xffff_ffff_f000_210c` / `0xffff_ffff_f000_2110`.
+[SPARC Architecture Manual, Version 9, Appendix A.7](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf#page=173)
+
+Three debugger steps on the same ROM in QEMU 10.2.2 reached low PC/nPC
+`0x01ff_f000_210c` / `0x01ff_f000_2110`. The fixture implements the
+unconditional BPA form for ICC and XCC with either prediction hint.
+Other BPcc conditions return an explicit unsupported-instruction error.
+
+With the reconstructed image installed, run the four local-ROM checks together.
 
 ```sh
-cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction -- --ignored --nocapture
+cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch -- --ignored --nocapture
 ```

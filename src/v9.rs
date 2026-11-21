@@ -146,6 +146,7 @@ impl V9Cpu {
         let mut next_npc = self.npc.wrapping_add(4);
         let rd = ((word >> 25) & 31) as u8;
         let rs1 = ((word >> 14) & 31) as u8;
+        let op2 = (word >> 22) & 7;
         let op3 = (word >> 19) & 63;
         let b = if word & (1 << 13) != 0 {
             ((word << 19) as i32 >> 19) as i64 as u64
@@ -153,17 +154,25 @@ impl V9Cpu {
             self.read_reg((word & 31) as u8)
         };
         match word >> 30 {
-            0 if (word >> 22) & 7 == 4 => {
+            0 if op2 == 4 => {
                 self.write_reg(rd, u64::from(word & 0x3f_ffff) << 10);
             }
-            0 if (word >> 22) & 7 == 2 => {
+            0 if op2 == 1 || op2 == 2 => {
                 let condition = word >> 25 & 15;
                 let annul = word & (1 << 29) != 0;
+                let displacement = if op2 == 1 {
+                    // V9 A.7: BPA uses signed disp19, independent of the prediction hint.
+                    let cc = (word >> 20) & 3;
+                    if condition != 8 || !matches!(cc, 0 | 2) {
+                        return Err(format!("unsupported V9 BPcc word {word:#x}"));
+                    }
+                    ((word << 13) as i32) >> 11
+                } else {
+                    ((word << 10) as i32) >> 8 // Bicc: signed disp22, scaled by four.
+                };
                 let taken = self.condition(condition);
                 if taken {
-                    next_npc = self
-                        .pc
-                        .wrapping_add((((word << 10) as i32 >> 8) as i64) as u64);
+                    next_npc = self.pc.wrapping_add_signed(i64::from(displacement));
                 }
                 if annul && (!taken || condition == 8) {
                     self.pc = next_npc;
