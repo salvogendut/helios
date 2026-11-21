@@ -60,10 +60,10 @@ SBus late errors and doubleword store fault completion remain explicit gaps.
 SunOS/Solaris, BSD and Linux versions will be recorded individually once tested.
 No guest release is currently supported. Additional sun4c, sun4m and sun4u
 machines should become explicit profiles; SPARC V9 is a separate CPU milestone.
-The headless Ultra 5/10 checkpoint executes 17 OBP 3.31.0 instructions from
-virtual PC `0xffff_ffff_f000_0020`. After reading and clearing LSU control
-and switching register windows, OBP prepares the `soft-rst` comparison.
-At virtual PC `0xffff_ffff_f000_2144`, it requests eight bytes from physical
-`0x01ff_f100_0010`. The reset-time board mapping for that read is open.
+The headless Ultra 5/10 checkpoint runs OBP 3.31.0 through its first board
+data read. The attached NVRAM image supplies the eight bytes at physical
+`0x01ff_f100_0010` used by the firmware's `soft-rst` comparison.
+The zero-filled image reaches virtual PC `0xffff_ffff_f000_15d4` after
+22 instructions. The next word sets the ASI for the following MMU accesses.
 [Reset instruction fixture](ultra5.md)
 

@@ -23,6 +23,83 @@ fn addcc_signed_64_bit_overflow_with_distinct_destination() {
 }
 
 #[test]
+fn subcc_sets_both_flag_banks_before_aliased_writeback() {
+    for (a, b, ccr) in [
+        (0, 1, 0x99),
+        (0x8000_0000, 1, 0x02),
+        (1_u64 << 63, 1, 0x29),
+        (i64::MAX as u64, u64::MAX, 0xb4),
+        (0x1_0000_0000, 0, 0x04),
+        (42, 42, 0x44),
+    ] {
+        let (mut cpu, mut memory) = one(0x82a0_4002, a); // subcc %g1,%g2,%g1
+        cpu.write_reg(2, b);
+        cpu.step(&mut memory).unwrap();
+        assert_eq!(
+            (cpu.read_reg(1), cpu.read_reg(2), cpu.ccr()),
+            (a.wrapping_sub(b), b, ccr)
+        );
+    }
+}
+
+#[test]
+fn predicted_branches_test_the_selected_integer_width_and_annul() {
+    // Each SUBcc subtracts 1. The cases straddle the signed and unsigned
+    // boundaries of both widths, including different ICC and XCC Z flags.
+    for a in [0_u64, 1, 1 << 31, 1 << 32, (1 << 32) + 1, 1 << 63] {
+        for (cc, unsigned, signed, min) in [
+            (
+                0,
+                u64::from(a as u32),
+                i128::from(a as i32),
+                i128::from(i32::MIN),
+            ),
+            (2, a, i128::from(a as i64), i128::from(i64::MIN)),
+        ] {
+            // V9 Appendix A.7: conditions 8..15 complement 0..7.
+            let negative = if cc == 0 {
+                (a.wrapping_sub(1) as i32) < 0
+            } else {
+                (a.wrapping_sub(1) as i64) < 0
+            };
+            let conditions = [
+                false,
+                unsigned == 1,
+                signed <= 1,
+                signed < 1,
+                unsigned <= 1,
+                unsigned < 1,
+                negative,
+                signed == min,
+            ];
+            for condition in 0..16 {
+                let taken = conditions[condition as usize % 8] ^ (condition >= 8);
+                for annul in [false, true] {
+                    let branch =
+                        0x0048_0004 | (condition << 25) | (cc << 20) | (u32::from(annul) << 29);
+                    let mut mem = V9Memory::new(32);
+                    mem.load_words(0, &[0x80a0_6001, branch, 0x8610_2007]); // cmp %g1,1; BPcc; mov 7,%g3
+                    let mut cpu = V9Cpu::new(0);
+                    cpu.write_reg(1, a);
+                    cpu.step(&mut mem).unwrap();
+                    let ccr = cpu.ccr();
+                    cpu.step(&mut mem).unwrap();
+                    let target = if taken { 20 } else { 12 };
+                    if annul && (!taken || condition == 8) {
+                        assert_eq!(cpu.read_reg(3), 0);
+                    } else {
+                        assert_eq!((cpu.pc(), cpu.npc()), (8, target));
+                        cpu.step(&mut mem).unwrap();
+                        assert_eq!(cpu.read_reg(3), 7);
+                    }
+                    assert_eq!((cpu.pc(), cpu.npc(), cpu.ccr()), (target, target + 4, ccr));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn non_x_srl_uses_low_word_or_fails_explicitly() {
     let (mut c, mut m) = one(0x85306000, 1 << 32);
     let before = c.clone();

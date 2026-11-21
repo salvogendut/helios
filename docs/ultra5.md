@@ -1,6 +1,8 @@
 # Ultra 5/10 firmware reset instructions
 
-The headless Ultra 5/10 fixture executes 17 original OBP 3.31.0 instructions on a V9 CPU. Its first external data read stops at virtual PC `0xffff_ffff_f000_2144`.
+With an 8 KiB NVRAM image attached, the headless Ultra 5/10 fixture executes
+the original OBP 3.31.0 reset-time marker check. With a zero-filled image
+it retires 22 instructions and reaches virtual PC `0xffff_ffff_f000_15d4`.
 
 ## Reset and flash mapping
 
@@ -101,9 +103,9 @@ instruction at the target, with virtual PC/nPC at
 [SPARC Architecture Manual, Version 9, Appendix A.7](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf#page=173)
 
 Three debugger steps on the same ROM in QEMU 10.2.2 reached low PC/nPC
-`0x01ff_f000_210c` / `0x01ff_f000_2110`. The fixture implements the
-unconditional BPA form for ICC and XCC with either prediction hint.
-Other BPcc conditions return an explicit unsupported-instruction error.
+`0x01ff_f000_210c` / `0x01ff_f000_2110`. Integer BPcc evaluates its
+condition using the encoded ICC or XCC bank. Both prediction hints have
+the same functional result.
 
 ## Read the current window pointer
 
@@ -156,10 +158,43 @@ V9 memory fixture can complete an aligned big-endian load from its backing
 bytes. The Ultra 5 flash fixture has no data device at this address.
 `BootFlash::step` reports the ASI, physical address and width, leaving
 PC/nPC at `0xffff_ffff_f000_2144` / `0xffff_ffff_f000_2148` and preserving
-`%o1`. Identifying the board device and its reset-time contents is the next
-step toward executing the comparison. [UltraSPARC IIi User’s Manual, §15.10](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=268) · [Sun Ultra 5 Service Manual, §C.3](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf#page=229)
+`%o1`. Use `step_with_nvram` to execute that load against board data.
+[UltraSPARC IIi User’s Manual, §15.10](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=268)
 
-With the reconstructed image installed, run the seven local-ROM checks together.
+## Execute the NVRAM reset decision
+
+Sun's Ultra 5/10 OBDiag device tree puts the EEPROM at `eeprom@14,0`.
+PCIO configuration register `0x14` resets to PCI base `0xf1000000`,
+with chip select 1 at offset zero. On the Ultra 5 PCI memory path this
+locates chip offset `0x10` at physical `0x01ff_f100_0010`, the address
+constructed independently by OBP. The service manual identifies the chip
+as a 48T59. [Ultra 5/10 Product Notes, code example 2](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-4970-10/805-4970-10.pdf#page=16) · [PCIO reset BARs, table 36](https://www.artisantg.com/info/force_cpci_520_series_manual.pdf) · [Sun Ultra 5 Service Manual, table 9-1](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf#page=171)
+
+Pass an 8192-byte image to `ResetNvram::new`, then call
+`flash.step_with_nvram(&mut cpu, &mut nvram)` for each step. The device
+serves aligned big-endian reads in its SRAM region. The final 16 bytes
+contain device registers and accesses there stop explicitly. The load
+reads the supplied bytes at offsets `0x10..0x18` on every CPU reset.
+The battery-backed SRAM has no fixed cold-boot marker value. [ST M48T59 data sheet, data retention and register map](https://media.digikey.com/pdf/Data%20Sheets/ST%20Microelectronics%20PDFS/M48T59%2CY_V.pdf)
+
+| NVRAM bytes at offset `0x10` | CCR after CMP | Offset after BNE and its delay slot |
+| --- | --- | --- |
+| Eight zero bytes | `0x00` | `0x21c0` |
+| ASCII `soft-rst` | `0x44` | `0x2154` |
+| Four zero bytes followed by ASCII `-rst` | `0x04` | `0x21c0` |
+
+In the third case ICC reports equality for the low 32 bits. OBP selects
+XCC and branches on the full 64-bit value. With a matching marker it
+checks a second value in `%g7`. The fixture starts that register at zero.
+The zero-filled and matching-marker traces reach offset `0x15d4` after
+22 and 31 instructions respectively. The next word, `0x87802058`,
+writes `0x58` to `%asi`. Both traces stop before that instruction.
+
+QEMU 10.2.2 independently reproduced all three comparisons. For that
+CPU check, the debugger redirected `%o2` to seeded guest RAM for the
+load. Helios executed the same words against the board address above.
+
+With the reconstructed image installed, run the eight local-ROM checks together.
 
 ```sh
 cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe -- --ignored --nocapture

@@ -8,7 +8,7 @@
 //!
 //! The reset fixture executes the ROM prefix and can single-step flash at the resulting PC.
 
-use crate::v9::{V9Cpu, PHYSICAL_ADDRESS_MASK};
+use crate::v9::{UnmappedData, V9Cpu, V9DataBus, PHYSICAL_ADDRESS_MASK};
 
 pub const FLASH_BASE: u64 = 0x01ff_f000_0000;
 pub const FLASH_SIZE: usize = 1 << 20;
@@ -16,6 +16,47 @@ pub const POWER_ON_RESET_OFFSET: usize = 0x20;
 const DEFAULT_RSTV_VA: u64 = 0xffff_ffff_f000_0000;
 pub const POWER_ON_RESET_PC: u64 = DEFAULT_RSTV_VA + POWER_ON_RESET_OFFSET as u64;
 pub const POWER_ON_RESET_NPC: u64 = POWER_ON_RESET_PC + 4;
+/// PCIO BAR at configuration offset 0x14, chip select 1 at reset.
+pub const RESET_NVRAM_BASE: u64 = 0x01ff_f100_0000;
+pub const RESET_NVRAM_SIZE: usize = 0x2000;
+const M48T59_REGISTERS: usize = 0x1ff0;
+
+/// Retained M48T59 contents for the reset fixture. The top 16 offsets
+/// contain device registers and cannot be served as plain SRAM.
+pub struct ResetNvram {
+    image: Box<[u8]>,
+}
+
+impl ResetNvram {
+    pub fn new(image: Vec<u8>) -> Result<Self, String> {
+        if image.len() != RESET_NVRAM_SIZE {
+            return Err(format!(
+                "Ultra 5 NVRAM image is {:#x} bytes, expected {RESET_NVRAM_SIZE:#x}",
+                image.len()
+            ));
+        }
+        Ok(Self {
+            image: image.into_boxed_slice(),
+        })
+    }
+}
+
+impl V9DataBus for ResetNvram {
+    fn read_bypass_xword(&mut self, pa: u64) -> Result<u64, String> {
+        if !(RESET_NVRAM_BASE..RESET_NVRAM_BASE + RESET_NVRAM_SIZE as u64).contains(&pa) {
+            return Err(format!("unmapped Ultra 5 physical read at {pa:#x}"));
+        }
+        let offset = (pa - RESET_NVRAM_BASE) as usize;
+        if offset + 8 > M48T59_REGISTERS {
+            return Err(format!(
+                "unsupported Ultra 5 M48T59 register read at {pa:#x}"
+            ));
+        }
+        Ok(u64::from_be_bytes(
+            self.image[offset..offset + 8].try_into().unwrap(),
+        ))
+    }
+}
 
 /// Original Ultra 5/10 OBP 3.31.0 first instruction at the POR vector.
 pub const OBP_3_31_0_FIRST_WORD: u32 = 0xc4d8_08a0;
@@ -152,8 +193,25 @@ impl BootFlash {
     /// Retire one instruction from the current flash PC, including a branch target or delay slot.
     /// Only instruction fetches are mapped by this fixture.
     pub fn step(&self, cpu: &mut V9Cpu) -> Result<FlashFetch, String> {
+        self.step_with_data(cpu, &mut UnmappedData)
+    }
+
+    /// Step original flash with a retained NVRAM image attached at its reset mapping.
+    pub fn step_with_nvram(
+        &self,
+        cpu: &mut V9Cpu,
+        nvram: &mut ResetNvram,
+    ) -> Result<FlashFetch, String> {
+        self.step_with_data(cpu, nvram)
+    }
+
+    fn step_with_data(
+        &self,
+        cpu: &mut V9Cpu,
+        data: &mut dyn V9DataBus,
+    ) -> Result<FlashFetch, String> {
         let fetch = self.fetch_reset_word(cpu.pc(), cpu.npc())?;
-        cpu.execute_fetched(fetch.instruction, None)?;
+        cpu.execute_fetched(fetch.instruction, data)?;
         Ok(fetch)
     }
 

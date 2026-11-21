@@ -126,6 +126,12 @@ test rather than assuming either emulator defines the hardware.
 - [Sun Ultra 5 Service Manual, 805-7763-12](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf):
   section C.1.6.3 describes the 1 MiB flash and its OBP and POST/OBDiag
   halves. Table C-14 describes the PROM address assignments.
+- The Ultra 5/10 product notes locate EEPROM at EBus `14,0`; the service
+  manual (§C.1.6.4) identifies the NVRAM/TOD, and the parts list gives
+  the 48T59. Force's technical reference documents the shared PCIO chip's
+  BAR1 reset value in table 36. The ST register map locates the end of
+  ordinary SRAM at offset `0x1fef`.
+  [Sun device tree](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-4970-10/805-4970-10.pdf#page=16) · [PCIO BARs](https://www.artisantg.com/info/force_cpci_520_series_manual.pdf) · [M48T59 data sheet](https://media.digikey.com/pdf/Data%20Sheets/ST%20Microelectronics%20PDFS/M48T59%2CY_V.pdf)
 - [Sun SBus I/O Chipset Data Manual, NCR89C100, revision 1.0](https://bitsavers.trailing-edge.com/pdf/sun/sparc/801-3137-10_SPARCclassic_Engine_OEM_Technical_Manual_Part_Three_IO_Chipset_Apr1993.pdf):
   chip-level address map (table 2-7, footnote 3 explicitly permits narrow ID
   reads; inspected visually) and chapter 3 pages 3-6–3-7 and 3-26–3-33 define MACIO

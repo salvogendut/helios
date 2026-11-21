@@ -96,8 +96,8 @@ fn annulled_bpa_wraps_the_signed_disp19_limits() {
 
 #[test]
 fn unsupported_bpcc_preserves_state_after_the_first_two_words() {
-    for word in [0x3268_0839_u32, 0x3058_0839, 0x3078_0839] {
-        // Conditional BPNE, then BPA with cc selectors 1 and 3.
+    for word in [0x3258_0839_u32, 0x3058_0839, 0x3078_0839] {
+        // Reserved cc selectors 1 and 3, including a conditional branch.
         let mut image = vec![0; FLASH_SIZE];
         image[0x20..0x24].copy_from_slice(&RESET_PREFIX[0].to_be_bytes());
         image[0x24..0x28].copy_from_slice(&RESET_PREFIX[1].to_be_bytes());

@@ -27,6 +27,37 @@ pub struct V9Memory {
     bytes: Vec<u8>,
 }
 
+/// Data accesses are independent of the instruction source. A reset-time
+/// peripheral may implement physical bypass reads without mapping virtual RAM.
+pub(crate) trait V9DataBus {
+    fn load_xword(&mut self, _va: u64) -> Result<u64, String> {
+        Err("V9 LDX requires mapped data memory".into())
+    }
+    fn store_xword(&mut self, _va: u64, _value: u64) -> Result<(), String> {
+        Err("V9 STX requires mapped data memory".into())
+    }
+    fn read_bypass_xword(&mut self, pa: u64) -> Result<u64, String> {
+        Err(format!(
+            "unmapped V9 physical read: ASI=0x15 PA={pa:#x} width=8"
+        ))
+    }
+}
+
+pub(crate) struct UnmappedData;
+impl V9DataBus for UnmappedData {}
+
+impl V9DataBus for V9Memory {
+    fn load_xword(&mut self, va: u64) -> Result<u64, String> {
+        self.try_read_u64(va)
+    }
+    fn store_xword(&mut self, va: u64, value: u64) -> Result<(), String> {
+        self.try_write_u64(va, value)
+    }
+    fn read_bypass_xword(&mut self, pa: u64) -> Result<u64, String> {
+        self.try_read_u64(pa)
+    }
+}
+
 impl V9Memory {
     pub fn new(size: usize) -> Self {
         Self {
@@ -159,14 +190,13 @@ impl V9Cpu {
 
     pub fn step(&mut self, memory: &mut V9Memory) -> Result<(), String> {
         let word = memory.try_read_word(self.pc)?;
-        self.execute_fetched(word, Some(memory))
+        self.execute_fetched(word, memory)
     }
 
-    // The reset flash supplies instruction bytes but has no board data bus yet.
     pub(crate) fn execute_fetched(
         &mut self,
         word: u32,
-        memory: Option<&mut V9Memory>,
+        memory: &mut dyn V9DataBus,
     ) -> Result<(), String> {
         let next_pc = self.npc;
         let mut next_npc = self.npc.wrapping_add(4);
@@ -186,17 +216,18 @@ impl V9Cpu {
             0 if op2 == 1 || op2 == 2 => {
                 let condition = word >> 25 & 15;
                 let annul = word & (1 << 29) != 0;
-                let displacement = if op2 == 1 {
-                    // V9 A.7: BPA uses signed disp19, independent of the prediction hint.
+                let (displacement, flags) = if op2 == 1 {
                     let cc = (word >> 20) & 3;
-                    if condition != 8 || !matches!(cc, 0 | 2) {
-                        return Err(format!("unsupported V9 BPcc word {word:#x}"));
-                    }
-                    ((word << 13) as i32) >> 11
+                    let flags = match cc {
+                        0 => self.ccr,
+                        2 => self.ccr >> 4,
+                        _ => return Err(format!("unsupported V9 BPcc word {word:#x}")),
+                    };
+                    (((word << 13) as i32) >> 11, flags)
                 } else {
-                    ((word << 10) as i32) >> 8 // Bicc: signed disp22, scaled by four.
+                    (((word << 10) as i32) >> 8, self.ccr)
                 };
-                let taken = self.condition(condition);
+                let taken = Self::condition(condition, flags);
                 if taken {
                     next_npc = self.pc.wrapping_add_signed(i64::from(displacement));
                 }
@@ -214,6 +245,13 @@ impl V9Cpu {
                     let result = a.wrapping_add(b);
                     self.write_reg(rd, result);
                     self.set_add_cc(a, b, result);
+                }
+                0x14 => {
+                    let a = self.read_reg(rs1);
+                    let icc = Self::sub_flags(u64::from(a as u32), u64::from(b as u32), 1 << 31);
+                    let xcc = Self::sub_flags(a, b, 1 << 63);
+                    self.write_reg(rd, a.wrapping_sub(b));
+                    self.ccr = (xcc << 4) | icc;
                 }
                 0x25..=0x27 => {
                     let a = self.read_reg(rs1);
@@ -256,13 +294,11 @@ impl V9Cpu {
             3 => match op3 {
                 0x0e => {
                     let address = self.read_reg(rs1).wrapping_add(b);
-                    let memory = memory.ok_or("V9 STX requires mapped data memory")?;
-                    memory.try_write_u64(address, self.read_reg(rd))?;
+                    memory.store_xword(address, self.read_reg(rd))?;
                 }
                 0x0b => {
                     let address = self.read_reg(rs1).wrapping_add(b);
-                    let memory = memory.ok_or("V9 LDX requires mapped data memory")?;
-                    let value = memory.try_read_u64(address)?;
+                    let value = memory.load_xword(address)?;
                     self.write_reg(rd, value);
                 }
                 0x1b | 0x1e => {
@@ -273,7 +309,7 @@ impl V9Cpu {
                     let address = self.read_reg(rs1).wrapping_add(b);
                     match asi {
                         ASI_PHYS_BYPASS_EC_WITH_EBIT if op3 == 0x1b => {
-                            let value = self.read_physical_bypass(address, memory.as_deref())?;
+                            let value = self.read_physical_bypass(address, memory)?;
                             self.write_reg(rd, value);
                         }
                         0x45 => self.access_lsu_control(op3, address, rd)?,
@@ -291,7 +327,11 @@ impl V9Cpu {
         Ok(())
     }
 
-    fn read_physical_bypass(&self, address: u64, memory: Option<&V9Memory>) -> Result<u64, String> {
+    fn read_physical_bypass(
+        &self,
+        address: u64,
+        memory: &mut dyn V9DataBus,
+    ) -> Result<u64, String> {
         if !self.privileged {
             return Err("privileged V9 physical bypass read".into());
         }
@@ -307,10 +347,7 @@ impl V9Cpu {
                 "misaligned V9 physical bypass read at {physical:#x}"
             ));
         }
-        let memory = memory.ok_or_else(|| {
-            format!("unmapped V9 physical read: ASI=0x15 PA={physical:#x} width=8")
-        })?;
-        memory.try_read_u64(physical)
+        memory.read_bypass_xword(physical)
     }
 
     fn access_lsu_control(&mut self, op3: u32, address: u64, rd: u8) -> Result<(), String> {
@@ -344,11 +381,11 @@ impl V9Cpu {
         Ok(())
     }
 
-    fn condition(&self, condition: u32) -> bool {
-        let n = self.ccr & 0x8 != 0;
-        let z = self.ccr & 0x4 != 0;
-        let v = self.ccr & 0x2 != 0;
-        let c = self.ccr & 0x1 != 0;
+    fn condition(condition: u32, flags: u8) -> bool {
+        let n = flags & 0x8 != 0;
+        let z = flags & 0x4 != 0;
+        let v = flags & 0x2 != 0;
+        let c = flags & 0x1 != 0;
         let less = n ^ v;
         match condition {
             0 => false,
@@ -369,6 +406,15 @@ impl V9Cpu {
             15 => !v,
             _ => false,
         }
+    }
+
+    fn sub_flags(a: u64, b: u64, sign: u64) -> u8 {
+        let result = a.wrapping_sub(b);
+        let overflow = (a ^ b) & (a ^ result) & sign != 0;
+        (u8::from(result & sign != 0) << 3)
+            | (u8::from(a == b) << 2)
+            | (u8::from(overflow) << 1)
+            | u8::from(a < b)
     }
 
     fn set_add_cc(&mut self, a: u64, b: u64, result: u64) {
@@ -492,7 +538,7 @@ mod tests {
     fn ldxa_lsu_control_preserves_nonzero_ccr() {
         let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
         cpu.ccr = 0x44; // Z is set in both ICC and XCC.
-        cpu.execute_fetched(0xc4d8_08a0, None).unwrap();
+        cpu.execute_fetched(0xc4d8_08a0, &mut UnmappedData).unwrap();
         assert_eq!(cpu.ccr(), 0x44);
     }
 
@@ -502,7 +548,7 @@ mod tests {
         // A parity-mask bit and both cache enables distinguish a register read
         // from assigning the POR constant. No guest LSU store is required here.
         cpu.lsu_control = (1 << 40) | 3;
-        cpu.execute_fetched(0xc4d8_08a0, None).unwrap();
+        cpu.execute_fetched(0xc4d8_08a0, &mut UnmappedData).unwrap();
         assert_eq!(cpu.read_reg(2), 0x100_0000_0003);
     }
 }
