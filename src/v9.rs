@@ -4,9 +4,14 @@
 
 use crate::ultra5::PowerOnReset;
 
+const WINDOW_COUNT: u8 = 8;
+const WINDOW_MASK: u8 = WINDOW_COUNT - 1;
+const REGISTER_COUNT: usize = 8 + WINDOW_COUNT as usize * 16;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct V9Cpu {
-    regs: [u64; 32],
+    // Globals, followed by eight outs and eight locals per physical window.
+    regs: [u64; REGISTER_COUNT],
     pc: u64,
     npc: u64,
     ccr: u8,
@@ -101,7 +106,7 @@ impl V9Cpu {
     /// Start the flat-memory instruction fixture in user mode.
     pub fn new(pc: u64) -> Self {
         Self {
-            regs: [0; 32],
+            regs: [0; REGISTER_COUNT],
             pc,
             npc: pc.wrapping_add(4),
             ccr: 0,
@@ -111,17 +116,29 @@ impl V9Cpu {
         }
     }
 
+    fn physical_register(&self, index: u8) -> usize {
+        let (window, offset) = match index {
+            0..=7 => return usize::from(index),
+            8..=23 => (self.cwp, index - 8),
+            // V9 ins alias the previous window's outs, including the 0/7 wrap.
+            24..=31 => (self.cwp.wrapping_sub(1) & WINDOW_MASK, index - 24),
+            _ => panic!("register index must be in 0..32"),
+        };
+        8 + usize::from(window) * 16 + usize::from(offset)
+    }
+
     pub fn read_reg(&self, index: u8) -> u64 {
         if index == 0 {
             0
         } else {
-            self.regs[usize::from(index)]
+            self.regs[self.physical_register(index)]
         }
     }
 
     pub fn write_reg(&mut self, index: u8, value: u64) {
         if index != 0 {
-            self.regs[usize::from(index)] = value;
+            let register = self.physical_register(index);
+            self.regs[register] = value;
         }
     }
 
@@ -133,6 +150,9 @@ impl V9Cpu {
     }
     pub fn ccr(&self) -> u8 {
         self.ccr
+    }
+    pub fn current_window(&self) -> u8 {
+        self.cwp
     }
 
     pub fn step(&mut self, memory: &mut V9Memory) -> Result<(), String> {
@@ -217,6 +237,17 @@ impl V9Cpu {
                         return Err(format!("unsupported V9 RDPR word {word:#x}"));
                     }
                     self.write_reg(rd, u64::from(self.cwp));
+                }
+                0x32 => {
+                    if !self.privileged {
+                        return Err("privileged V9 WRPR instruction".into());
+                    }
+                    let reserved_bits_set = word & (1 << 13) == 0 && word & 0x1fe0 != 0;
+                    if rd != 9 || reserved_bits_set {
+                        return Err(format!("unsupported V9 WRPR word {word:#x}"));
+                    }
+                    // IIi §14.2.1 implements only the low three bits of CWP.
+                    self.cwp = (self.read_reg(rs1) ^ b) as u8 & WINDOW_MASK;
                 }
                 _ => return Err(format!("unsupported V9 op3 {op3:#x}")),
             },
@@ -348,9 +379,7 @@ mod tests {
                 }
                 memory.load_words(0, &[0x8152_4000 | (u32::from(rd) << 25)]);
                 let mut expected = cpu.clone();
-                if rd != 0 {
-                    expected.regs[usize::from(rd)] = u64::from(cwp);
-                }
+                expected.write_reg(rd, u64::from(cwp));
                 expected.pc = 0x48;
                 expected.npc = 0x4c;
                 cpu.step(&mut memory).unwrap();

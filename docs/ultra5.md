@@ -1,6 +1,6 @@
 # Ultra 5/10 firmware reset instructions
 
-The headless Ultra 5/10 fixture executes the first four original OBP 3.31.0 instructions on a V9 CPU, through the current-window-pointer read at the first branch target.
+The headless Ultra 5/10 fixture executes six original OBP 3.31.0 instructions on a V9 CPU, through the first register-window switch and restore.
 
 ## Reset and flash mapping
 
@@ -117,13 +117,27 @@ The fourth step ends at virtual PC/nPC `0xffff_ffff_f000_2110` /
 The IIi reset table leaves CWP unknown at power-on. Helios chooses window 7
 for deterministic reset, matching the guest-visible value on QEMU 10.2.2
 with the TI UltraSPARC-IIi CPU. Four debugger steps on the original ROM
-showed `%g1` change from 0 to 7 and CCR stay at `0x44`. CWP readback is
-implemented for the privileged, canonical RDPR encoding. Register-window
-rotation and CWP writes remain future work.
+showed `%g1` change from 0 to 7 and CCR stay at `0x44`.
 [UltraSPARC IIi reset table 17-5](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=304) · [SPARC V9 RDPR, Appendix A.43](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf#page=235)
 
-With the reconstructed image installed, run the five local-ROM checks together.
+## Switch and restore the window
+
+Two more calls to `BootFlash::step` execute `wrpr %g0, 0, %cwp` at flash
+offset `0x2110` and `wrpr %g1, 0, %cwp` at `0x2114`. OBP first selects
+window 0 and then restores the window saved in `%g1`. Helios and QEMU
+10.2.2 both observed CWP change from 7 to 0 to 7 while `%g1` retained 7.
+The six-instruction run ends with virtual PC/nPC at
+`0xffff_ffff_f000_2118` / `0xffff_ffff_f000_211c`.
+
+WRPR computes the XOR of its operands in the old window. The IIi keeps the
+low three bits when writing CWP. Each of the eight windows has private locals.
+Window `w`'s outs are the ins of window `(w + 1) % 8`. Globals remain
+visible across CWP writes. This checkpoint covers explicit window selection.
+SAVE, RESTORE and window traps remain future work.
+[UltraSPARC IIi manual §14.2.1](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223) · [SPARC V9 §5.1.1.3 and Appendix A.62](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf#page=266)
+
+With the reconstructed image installed, run the six local-ROM checks together.
 
 ```sh
-cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp -- --ignored --nocapture
+cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select -- --ignored --nocapture
 ```

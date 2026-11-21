@@ -116,6 +116,11 @@ test rather than assuming either emulator defines the hardware.
 - SPARC V9 Appendix A.43 defines privileged-register reads and assigns CWP
   selector 9. Appendix A.1 specifies zero for reserved instruction fields.
   [SPARC Architecture Manual, Version 9](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf#page=235)
+- V9 §5.1.1.3 defines the direction of window overlap, including the last
+  window's outs sharing the first window's ins. Appendix A.62 defines WRPR
+  operands and XOR. UltraSPARC-IIi §14.2.1 specifies eight windows and
+  truncation of CWP writes to three bits.
+  [V9 register windows](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf#page=57) · [IIi implementation details](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223)
 - [Sun Ultra 5 Service Manual, 805-7763-12](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf):
   section C.1.6.3 describes the 1 MiB flash and its OBP and POST/OBDiag
   halves. Table C-14 describes the PROM address assignments.

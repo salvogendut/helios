@@ -179,12 +179,17 @@ operations; concurrent device/DMA owners will need the same atomicity contract.
 
 ## CPU state and control flow
 
-Globals are shared across all eight windows and `%g0` always reads zero. Each
+On sun4m (V8), globals are shared across all eight windows and `%g0` always reads zero. Each
 window owns eight outgoing and eight local registers; its incoming registers
 alias the next window's outgoing registers. SAVE decrements CWP and RESTORE
 increments it modulo eight. Both read their operands before rotation and write
 the result after rotation. The WIM bit of the destination window blocks rotation
 and produces an overflow/underflow fault.
+
+The separate UltraSPARC-IIi V9 fixture uses the opposite numbering for
+overlap. A window's ins alias the previous window's outs. Explicit WRPR to
+CWP selects any of eight windows and retains all physical register contents.
+[Ultra 5 window fixture](docs/ultra5.md#switch-and-restore-the-window)
 
 Successful ordinary instructions set PC to the old nPC and advance nPC by four.
 Branches replace nPC with the target so the delay slot executes first. A
