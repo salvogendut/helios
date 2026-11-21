@@ -10,6 +10,7 @@ pub struct V9Cpu {
     pc: u64,
     npc: u64,
     ccr: u8,
+    cwp: u8,
     privileged: bool,
     lsu_control: u64,
 }
@@ -87,6 +88,8 @@ impl From<PowerOnReset> for V9Cpu {
         Self {
             npc: reset.npc,
             privileged: reset.privileged,
+            // IIi table 17-5 leaves CWP unknown at POR. Use the value observed on QEMU sun4u.
+            cwp: 7,
             // UltraSPARC-IIi User's Manual, table 17-5: all LSU_CONTROL bits clear on POR.
             lsu_control: 0,
             ..Self::new(reset.pc)
@@ -102,6 +105,7 @@ impl V9Cpu {
             pc,
             npc: pc.wrapping_add(4),
             ccr: 0,
+            cwp: 0,
             privileged: false,
             lsu_control: 0,
         }
@@ -204,6 +208,16 @@ impl V9Cpu {
                     self.write_reg(rd, value);
                 }
                 0x28 if rs1 == 2 => self.write_reg(rd, u64::from(self.ccr)),
+                0x2a => {
+                    if !self.privileged {
+                        return Err("privileged V9 RDPR instruction".into());
+                    }
+                    // V9 A.43: rs1 selects the privileged register; bits 13:0 are reserved.
+                    if rs1 != 9 || word & 0x3fff != 0 {
+                        return Err(format!("unsupported V9 RDPR word {word:#x}"));
+                    }
+                    self.write_reg(rd, u64::from(self.cwp));
+                }
                 _ => return Err(format!("unsupported V9 op3 {op3:#x}")),
             },
             3 => match op3 {
@@ -315,6 +329,35 @@ impl V9Cpu {
 mod tests {
     use super::*;
     use crate::ultra5::{BootFlash, FLASH_SIZE};
+
+    #[test]
+    fn rdpr_reads_the_live_cwp_preserving_all_other_state() {
+        let mut memory = V9Memory::new(4);
+        for cwp in 0..8 {
+            for rd in 0u8..32 {
+                let mut cpu = V9Cpu::from(PowerOnReset {
+                    pc: 0,
+                    npc: 0x48, // RDPR in a delay slot follows the pending branch.
+                    ..PowerOnReset::ultra_sparc_ii()
+                });
+                cpu.cwp = cwp;
+                cpu.ccr = 0xa5;
+                cpu.lsu_control = 2;
+                for i in 1..32 {
+                    cpu.write_reg(i, u64::MAX - u64::from(i));
+                }
+                memory.load_words(0, &[0x8152_4000 | (u32::from(rd) << 25)]);
+                let mut expected = cpu.clone();
+                if rd != 0 {
+                    expected.regs[usize::from(rd)] = u64::from(cwp);
+                }
+                expected.pc = 0x48;
+                expected.npc = 0x4c;
+                cpu.step(&mut memory).unwrap();
+                assert_eq!(cpu, expected);
+            }
+        }
+    }
 
     fn verify_reset_pair(flash: &BootFlash, mut cpu: V9Cpu) -> V9Cpu {
         let mut expected = cpu.clone();

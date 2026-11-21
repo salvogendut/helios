@@ -1,6 +1,6 @@
 # Ultra 5/10 firmware reset instructions
 
-The headless Ultra 5/10 fixture can inspect the power-on fetch and execute original OBP 3.31.0 through its first branch on a V9 CPU.
+The headless Ultra 5/10 fixture executes the first four original OBP 3.31.0 instructions on a V9 CPU, through the current-window-pointer read at the first branch target.
 
 ## Reset and flash mapping
 
@@ -105,8 +105,25 @@ Three debugger steps on the same ROM in QEMU 10.2.2 reached low PC/nPC
 unconditional BPA form for ICC and XCC with either prediction hint.
 Other BPcc conditions return an explicit unsupported-instruction error.
 
-With the reconstructed image installed, run the four local-ROM checks together.
+## Read the current window pointer
+
+After `execute_reset_branch`, call `BootFlash::step(&mut cpu)` once. This
+fetches the word at the live virtual PC using the same physical flash mapping
+as the reset prefix. Offset `0x210c` contains `0x83524000` (`rdpr %cwp, %g1`).
+The instruction copies the current window index into `%g1` and preserves CCR.
+The fourth step ends at virtual PC/nPC `0xffff_ffff_f000_2110` /
+`0xffff_ffff_f000_2114`.
+
+The IIi reset table leaves CWP unknown at power-on. Helios chooses window 7
+for deterministic reset, matching the guest-visible value on QEMU 10.2.2
+with the TI UltraSPARC-IIi CPU. Four debugger steps on the original ROM
+showed `%g1` change from 0 to 7 and CCR stay at `0x44`. CWP readback is
+implemented for the privileged, canonical RDPR encoding. Register-window
+rotation and CWP writes remain future work.
+[UltraSPARC IIi reset table 17-5](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=304) · [SPARC V9 RDPR, Appendix A.43](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf#page=235)
+
+With the reconstructed image installed, run the five local-ROM checks together.
 
 ```sh
-cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch -- --ignored --nocapture
+cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp -- --ignored --nocapture
 ```
