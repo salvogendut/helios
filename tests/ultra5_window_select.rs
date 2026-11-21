@@ -203,8 +203,8 @@ fn rejected_wrpr_preserves_windows_and_control_state() {
     for (privileged, word, error) in [
         (false, 0x9390_2000, "privileged"),
         (false, 0x9390_0001, "privileged"),
-        (true, 0x9590_2000, "unsupported"), // CANSAVE
-        (true, 0x9190_2000, "unsupported"), // PIL
+        (true, 0x9f90_2000, "unsupported"), // unimplemented selector 15
+        (true, 0xa190_2000, "unsupported"), // reserved selector 16
         (true, 0x9390_0020, "unsupported"), // reserved register-form bit 5
         (true, 0x9390_1000, "unsupported"), // reserved register-form bit 12
     ] {

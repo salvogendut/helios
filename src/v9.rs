@@ -6,14 +6,22 @@ use crate::ultra5::PowerOnReset;
 
 const WINDOW_COUNT: u8 = 8;
 const WINDOW_MASK: u8 = WINDOW_COUNT - 1;
-const REGISTER_COUNT: usize = 8 + WINDOW_COUNT as usize * 16;
+const GLOBAL_REGISTERS: usize = 4 * 8;
+const REGISTER_COUNT: usize = GLOBAL_REGISTERS + WINDOW_COUNT as usize * 16;
+const PSTATE_AG: u16 = 1;
+const PSTATE_PRIV: u16 = 1 << 2;
+const PSTATE_PEF: u16 = 1 << 4;
+const PSTATE_RED: u16 = 1 << 5;
+const PSTATE_MG: u16 = 1 << 10;
+const PSTATE_IG: u16 = 1 << 11;
+const GLOBAL_SELECT: u16 = PSTATE_AG | PSTATE_MG | PSTATE_IG;
 pub(crate) const PHYSICAL_ADDRESS_MASK: u64 = (1 << 41) - 1;
 const ASI_PHYS_BYPASS_EC_WITH_EBIT: u8 = 0x15;
 const ASI_DMMU: u8 = 0x58;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct V9Cpu {
-    // Globals, followed by eight outs and eight locals per physical window.
+    // Four global banks, followed by eight outs and eight locals per window.
     regs: [u64; REGISTER_COUNT],
     pc: u64,
     npc: u64,
@@ -22,7 +30,15 @@ pub struct V9Cpu {
     asi: u8,
     primary_context: u16,
     secondary_context: u16,
-    privileged: bool,
+    pstate: u16,
+    pil: u8,
+    tba: u64,
+    softint: u16,
+    cansave: u8,
+    canrestore: u8,
+    cleanwin: u8,
+    otherwin: u8,
+    wstate: u8,
     lsu_control: u64,
 }
 
@@ -129,7 +145,16 @@ impl From<PowerOnReset> for V9Cpu {
     fn from(reset: PowerOnReset) -> Self {
         Self {
             npc: reset.npc,
-            privileged: reset.privileged,
+            pstate: u16::from(reset.alternate_globals)
+                | (u16::from(reset.interrupts_enabled) << 1)
+                | (u16::from(reset.privileged) << 2)
+                | (u16::from(!reset.address_mask_64) << 3)
+                | (u16::from(reset.fpu_enabled) << 4)
+                | (u16::from(reset.red_state) << 5)
+                | (u16::from(reset.trap_little_endian) << 8)
+                | (u16::from(reset.current_little_endian) << 9)
+                | (u16::from(reset.mmu_globals) << 10)
+                | (u16::from(reset.interrupt_globals) << 11),
             // IIi table 17-5 leaves CWP unknown at POR. Use the value observed on QEMU sun4u.
             cwp: 7,
             // UltraSPARC-IIi User's Manual, table 17-5: all LSU_CONTROL bits clear on POR.
@@ -151,20 +176,36 @@ impl V9Cpu {
             asi: 0,
             primary_context: 0,
             secondary_context: 0,
-            privileged: false,
+            pstate: 0,
+            pil: 0,
+            tba: 0,
+            softint: 0,
+            cansave: 0,
+            canrestore: 0,
+            cleanwin: 0,
+            otherwin: 0,
+            wstate: 0,
             lsu_control: 0,
         }
     }
 
     fn physical_register(&self, index: u8) -> usize {
         let (window, offset) = match index {
-            0..=7 => return usize::from(index),
+            0..=7 => {
+                let bank = match self.pstate & GLOBAL_SELECT {
+                    PSTATE_AG => 1,
+                    PSTATE_MG => 2,
+                    PSTATE_IG => 3,
+                    _ => 0,
+                };
+                return bank * 8 + usize::from(index);
+            }
             8..=23 => (self.cwp, index - 8),
             // V9 ins alias the previous window's outs, including the 0/7 wrap.
             24..=31 => (self.cwp.wrapping_sub(1) & WINDOW_MASK, index - 24),
             _ => panic!("register index must be in 0..32"),
         };
-        8 + usize::from(window) * 16 + usize::from(offset)
+        GLOBAL_REGISTERS + usize::from(window) * 16 + usize::from(offset)
     }
 
     pub fn read_reg(&self, index: u8) -> u64 {
@@ -276,18 +317,20 @@ impl V9Cpu {
                 }
                 0x28 if rs1 == 2 => self.write_reg(rd, u64::from(self.ccr)),
                 0x28 if rs1 == 3 && word & 0x3fff == 0 => self.write_reg(rd, u64::from(self.asi)),
+                0x28 if rs1 == 22 && word & 0x3fff == 0 => {
+                    self.require_privilege("RD SOFTINT")?;
+                    self.write_reg(rd, u64::from(self.softint));
+                }
                 // MEMBAR #Sync: all earlier operations in this single-CPU
                 // fixture have already completed when an instruction retires.
                 0x28 if word == 0x8143_e040 => {}
                 0x2a => {
-                    if !self.privileged {
-                        return Err("privileged V9 RDPR instruction".into());
-                    }
+                    self.require_privilege("RDPR")?;
                     // V9 A.43: rs1 selects the privileged register; bits 13:0 are reserved.
-                    if rs1 != 9 || word & 0x3fff != 0 {
+                    if word & 0x3fff != 0 {
                         return Err(format!("unsupported V9 RDPR word {word:#x}"));
                     }
-                    self.write_reg(rd, u64::from(self.cwp));
+                    self.write_reg(rd, self.read_pr(rs1)?);
                 }
                 0x30 if rd == 3 => {
                     if word & (1 << 13) == 0 && word & 0x1fe0 != 0 {
@@ -295,16 +338,22 @@ impl V9Cpu {
                     }
                     self.asi = (self.read_reg(rs1) ^ b) as u8;
                 }
-                0x32 => {
-                    if !self.privileged {
-                        return Err("privileged V9 WRPR instruction".into());
+                0x30 if rd == 22 => {
+                    self.require_privilege("WR SOFTINT")?;
+                    if word & (1 << 13) == 0 && word & 0x1fe0 != 0 {
+                        return Err(format!("unsupported V9 WR SOFTINT word {word:#x}"));
                     }
+                    let value = self.read_reg(rs1) ^ b;
+                    self.softint = u16::try_from(value)
+                        .map_err(|_| format!("unsupported IIi SOFTINT bits in {value:#x}"))?;
+                }
+                0x32 => {
+                    self.require_privilege("WRPR")?;
                     let reserved_bits_set = word & (1 << 13) == 0 && word & 0x1fe0 != 0;
-                    if rd != 9 || reserved_bits_set {
+                    if reserved_bits_set {
                         return Err(format!("unsupported V9 WRPR word {word:#x}"));
                     }
-                    // IIi §14.2.1 implements only the low three bits of CWP.
-                    self.cwp = (self.read_reg(rs1) ^ b) as u8 & WINDOW_MASK;
+                    self.write_pr(rd, self.read_reg(rs1) ^ b)?;
                 }
                 _ => return Err(format!("unsupported V9 op3 {op3:#x}")),
             },
@@ -324,7 +373,7 @@ impl V9Cpu {
                     } else {
                         (word >> 5) as u8
                     };
-                    if asi < 0x80 && !self.privileged {
+                    if asi < 0x80 && self.pstate & PSTATE_PRIV == 0 {
                         return Err(format!("privileged V9 alternate address space {asi:#x}"));
                     }
                     let address = self.read_reg(rs1).wrapping_add(b);
@@ -346,6 +395,60 @@ impl V9Cpu {
         }
         self.pc = next_pc;
         self.npc = next_npc;
+        Ok(())
+    }
+
+    fn require_privilege(&self, operation: &str) -> Result<(), String> {
+        if self.pstate & PSTATE_PRIV == 0 {
+            return Err(format!("privileged V9 {operation} instruction"));
+        }
+        Ok(())
+    }
+
+    fn read_pr(&self, selector: u8) -> Result<u64, String> {
+        Ok(match selector {
+            5 => self.tba,
+            6 => u64::from(self.pstate),
+            8 => u64::from(self.pil),
+            9 => u64::from(self.cwp),
+            10 => u64::from(self.cansave),
+            11 => u64::from(self.canrestore),
+            12 => u64::from(self.cleanwin),
+            13 => u64::from(self.otherwin),
+            14 => u64::from(self.wstate),
+            _ => return Err(format!("unsupported V9 RDPR register {selector}")),
+        })
+    }
+
+    fn write_pr(&mut self, selector: u8, value: u64) -> Result<(), String> {
+        // IIi §14.2.1 truncates each window counter independently to three bits.
+        let count = value as u8 & WINDOW_MASK;
+        match selector {
+            5 => {
+                if !matches!((value as i64) >> 43, 0 | -1) {
+                    return Err(format!("unsupported IIi TBA address {value:#x}"));
+                }
+                self.tba = value & !0x7fff;
+            }
+            6 => {
+                // Physical fetch, big-endian data, TSO, and interrupts disabled.
+                let supported = GLOBAL_SELECT | PSTATE_PRIV | PSTATE_PEF | PSTATE_RED;
+                if value & !u64::from(supported) != 0
+                    || (value as u16 & GLOBAL_SELECT).count_ones() > 1
+                {
+                    return Err(format!("unsupported IIi PSTATE {value:#x}"));
+                }
+                self.pstate = value as u16;
+            }
+            8 => self.pil = value as u8 & 0xf,
+            9 => self.cwp = count,
+            10 => self.cansave = count,
+            11 => self.canrestore = count,
+            12 => self.cleanwin = count,
+            13 => self.otherwin = count,
+            14 => self.wstate = value as u8 & 0x3f,
+            _ => return Err(format!("unsupported V9 WRPR register {selector}")),
+        }
         Ok(())
     }
 
@@ -510,7 +613,7 @@ mod tests {
         let mut expected = cpu.clone();
         expected.pc = 0xffff_ffff_f000_0028;
         expected.npc = 0xffff_ffff_f000_002c;
-        expected.regs[2] = cpu.lsu_control;
+        expected.write_reg(2, cpu.lsu_control);
         expected.lsu_control = 0;
 
         let fetches = flash.execute_first_two_instructions(&mut cpu).unwrap();

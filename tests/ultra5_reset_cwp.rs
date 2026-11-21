@@ -88,7 +88,7 @@ fn rdpr_rejections_preserve_the_faulting_state() {
     for (word, privileged, reason) in [
         (0x8352_4000, false, "privileged"),
         (0x8152_4000, false, "privileged"), // %g0 still checks privilege
-        (0x8352_8000, true, "unsupported"), // CANSAVE, separate register
+        (0x8353_c000, true, "unsupported"), // unimplemented selector 15
         (0x8352_4001, true, "unsupported"), // reserved bit 0
         (0x8352_6000, true, "unsupported"), // reserved bit 13
     ] {

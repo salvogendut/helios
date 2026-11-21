@@ -1,9 +1,9 @@
 # Ultra 5/10 firmware reset instructions
 
 With an 8 KiB NVRAM image attached, the headless Ultra 5/10 fixture executes
-the original OBP 3.31.0 reset-time marker check and clears both MMU contexts.
-With a zero-filled image it retires 28 instructions and reaches virtual PC
-`0xffff_ffff_f000_15ec`.
+the original OBP 3.31.0 reset-time marker check, clears both MMU contexts,
+and initializes the interrupt and register-window state. Both tested paths
+reach virtual PC `0xffff_ffff_f000_1614`, where trap-stack setup begins.
 
 ## Reset and flash mapping
 
@@ -224,8 +224,33 @@ Sun specifies additional synchronization before a new context is guaranteed
 visible to instruction fetches. Translated fetches and TLB behavior remain
 open. [UltraSPARC IIi context synchronization rules](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=257)
 
-With the reconstructed image installed, run the nine local-ROM checks together.
+## Initialize interrupt and register-window state
+
+OBP executes ten consecutive writes starting at flash offset `0x15ec`.
+
+| Flash offsets | Registers written in order | Result |
+| --- | --- | --- |
+| `0x15ec–0x15f0` | PIL, PSTATE | PIL becomes 15. PSTATE changes from `0x35` to `0x05`, leaving privilege and alternate globals selected as the CPU exits RED_state. |
+| `0x15f4–0x15f8` | TBA, SOFTINT | The trap base and software-interrupt bits are cleared. |
+| `0x15fc–0x1604` | CLEANWIN, OTHERWIN, WSTATE | Set to 7, 0 and 0. |
+| `0x1608–0x1610` | CWP, CANRESTORE, CANSAVE | Select window 0, with zero windows available to restore and six to save. |
+
+After 38 instructions with zero-filled NVRAM, or 47 with `soft-rst` and
+reset `%g7 = 0`, the next word is `0x8f902005` (`wrpr 5, %tl`).
+QEMU 10.2.2 reached the same word on both paths using the NVRAM read
+redirection described above. A separate seeded guest checked all ten
+registers before and after the writes, including SOFTINT through ASR 22.
+
+The fixture implements register readback and each of the four IIi global
+register banks. A guest PSTATE write that enables interrupts, changes the
+memory model, selects little-endian operation or requests 32-bit addressing
+stops explicitly. Interrupt delivery, register-window traps and trap-stack
+execution remain open. The window counters, PIL and TBA start at zero for
+repeatability where hardware reset values are unspecified.
+[IIi software interrupts, table 11-9](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=163) · [IIi window registers, §14.2.1](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223) · [IIi PSTATE and global banks, tables 14-12/13](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=235)
+
+With the reconstructed image installed, run the ten local-ROM checks together.
 
 ```sh
-cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts -- --ignored --nocapture
+cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts --test ultra5_reset_setup -- --ignored --nocapture
 ```

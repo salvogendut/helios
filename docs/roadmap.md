@@ -63,8 +63,8 @@ machines should become explicit profiles; SPARC V9 is a separate CPU milestone.
 The headless Ultra 5/10 checkpoint runs OBP 3.31.0 through its first board
 data read. The attached NVRAM image supplies the eight bytes at physical
 `0x01ff_f100_0010` used by the firmware's `soft-rst` comparison.
-OBP then clears the primary and secondary MMU context registers. The
-zero-filled image reaches virtual PC `0xffff_ffff_f000_15ec` after
-28 instructions. The next word writes the processor interrupt level.
+OBP then clears both MMU contexts, exits RED_state and initializes the
+register-window counters. With zero-filled NVRAM, 38 instructions retire
+before the first trap-level write at virtual PC `0xffff_ffff_f000_1614`.
 [Reset instruction fixture](ultra5.md)
 
