@@ -60,11 +60,28 @@ SBus late errors and doubleword store fault completion remain explicit gaps.
 SunOS/Solaris, BSD and Linux versions will be recorded individually once tested.
 No guest release is currently supported. Additional sun4c, sun4m and sun4u
 machines should become explicit profiles; SPARC V9 is a separate CPU milestone.
-The headless Ultra 5/10 checkpoint runs OBP 3.31.0 through its first board
-data read. The attached NVRAM image supplies the eight bytes at physical
-`0x01ff_f100_0010` used by the firmware's `soft-rst` comparison.
-OBP then clears both MMU contexts, exits RED_state and initializes the
-register-window counters. With zero-filled NVRAM, 38 instructions retire
-before the first trap-level write at virtual PC `0xffff_ffff_f000_1614`.
-[Reset instruction fixture](ultra5.md)
+
+## Ultra 5 serial console
+
+**Parked at `501b46c` on `feat/ultra5-reset-window-state` (21 November 2026).**
+At the time of parking, `main` contains the preceding MMU-context checkpoint
+at `6fd5ac4`. On the feature branch, original Ultra 5/10 OBP 3.31.0 reads
+the NVRAM reset marker, clears both MMU contexts, exits RED_state and sets
+up the register windows. Both tested paths reach `wrpr 5, %tl` at virtual
+PC `0xffff_ffff_f000_1614`. This takes 38 instructions with zero-filled
+NVRAM and 47 with the `soft-rst` marker and reset `%g7 = 0`. The trace
+ends before any serial-controller access. [Reset trace and reproduction](ultra5.md#initialize-interrupt-and-register-window-state)
+
+| Milestone after resuming | Acceptance |
+| --- | --- |
+| First firmware access to the serial controller | Start with OBP's five-level trap-stack setup. Follow the original ROM through the CPU and board initialization it actually exercises. Capture the guest PC, physical address, direction and width of the first access and identify the corresponding EBus serial register. |
+| First firmware text | Implement the register behavior the trace exercises. Capture repeatable, readable OBP output on headless serial from reset and correlate the first transmitted byte with its guest write. |
+| Interactive OpenBoot console | Reach the serial `ok` prompt, enter `1 2 + .` over that same port, and capture the reply `3` followed by another `ok` prompt. |
+
+Allow **several focused development days** from resumption for first text
+and **one to several weeks in total** for an interactive prompt. These
+are planning estimates. The main unknown is how much board initialization
+OBP needs before touching the serial controller. Revisit both estimates
+at the first confirmed access. Sun's board device tree places the serial
+devices on EBus. [Sun Ultra 5/10 Product Notes, code example 2](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-4970-10/805-4970-10.pdf#page=16)
 

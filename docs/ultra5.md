@@ -4,6 +4,7 @@ With an 8 KiB NVRAM image attached, the headless Ultra 5/10 fixture executes
 the original OBP 3.31.0 reset-time marker check, clears both MMU contexts,
 and initializes the interrupt and register-window state. Both tested paths
 reach virtual PC `0xffff_ffff_f000_1614`, where trap-stack setup begins.
+Development is parked at this checkpoint. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
 
 ## Reset and flash mapping
 

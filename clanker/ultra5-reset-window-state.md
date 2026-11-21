@@ -8,7 +8,10 @@ This checkpoint executes ten original words at offsets `0x15ec..=0x1610`.
 The zero-filled and matching-marker paths retire 38 and 47 instructions.
 The next PC/nPC are `0xfffffffff0001614` and `0xfffffffff0001618`.
 The original flash there contains `0x8f902005` (`wrpr 5, %tl`).
-The next milestone is initialization of the five trap levels.
+Work was parked here on 21 November 2026. Resume from `501b46c` on
+`feat/ultra5-reset-window-state`. The next review milestone is the first
+firmware access to a serial register, beginning with initialization of the
+five trap levels. [Serial-console roadmap](../docs/roadmap.md#ultra-5-serial-console)
 
 Both QEMU firmware traces use the original 1 MiB image. After the first
 17 instructions the debugger redirects the NVRAM read operand to seeded
