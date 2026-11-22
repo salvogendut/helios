@@ -445,16 +445,6 @@ fn original_obp_expands_the_image_and_executes_its_entry_in_ram() {
     assert_eq!(reference.stdout.len(), 0x6eba0);
 
     let (_, mut board, mut cpu) = boot_to_mmu_enable(true);
-    let run_to = |board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu, pc, limit| {
-        for _ in 0..limit {
-            if cpu.pc() == pc {
-                return;
-            }
-            board.step_mapped(cpu).unwrap();
-        }
-        panic!("did not reach {pc:#x}, stopped at {:#x}", cpu.pc());
-    };
-
     run_to(&mut board, &mut cpu, 0x26e8, 150_000);
     let base = 0x3ff8_0000;
     let guards = [
@@ -555,11 +545,22 @@ fn original_obp_expands_the_image_and_executes_its_entry_in_ram() {
     assert_eq!((cpu.pc(), cpu.fprs), (0xf002_3948, 4));
     verify_obp_mmu_refills(&mut board, &mut cpu);
     verify_obp_pci_interrupt_init(&mut board, &mut cpu);
+    verify_obp_pci_host_setup(&mut board, &mut cpu);
     let [a, b] = board.take_serial_output();
     assert!(a.ends_with(
         b"Decompressing into Memory Done\r\nSize = 0000.0000.0006.eba0\r\nttya initialized\r\n"
     ));
     assert!(b.is_empty());
+}
+
+fn run_to(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu, pc: u64, limit: usize) {
+    for _ in 0..limit {
+        if cpu.pc() == pc {
+            return;
+        }
+        board.step_mapped(cpu).unwrap();
+    }
+    panic!("did not reach {pc:#x}, stopped at {:#x}", cpu.pc());
 }
 
 fn verify_obp_mmu_refills(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
@@ -668,6 +669,34 @@ fn verify_obp_pci_interrupt_init(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) 
     panic!(
         "did not finish PCI interrupt initialization, PC={:#x}",
         cpu.pc()
+    );
+}
+
+fn verify_obp_pci_host_setup(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
+    const PBM: u64 = 0x01fe_0000_0000;
+    const CONFIG: u64 = 0x01fe_0100_0000;
+    run_to(board, cpu, 0xf002_66a0, 256);
+    assert_eq!(board.read_bypass_xword(PBM + 0x2028).unwrap(), 0x40);
+    assert!(board.selects_pci_memory(0xc000_0000));
+    assert!(!board.selects_pci_memory(0xe000_0000));
+    assert_eq!(board.read_bypass_xword(PBM + 0x2020).unwrap(), 0x40);
+    assert_eq!(
+        (cpu.asi, cpu.read_reg(16), cpu.read_reg(17)),
+        (0x15, CONFIG + 4, 0x4601)
+    );
+    assert_eq!(board.step_mapped(cpu).unwrap().instruction, 0xe2b4_2000);
+    assert_eq!(
+        board.read_bypass_half(CONFIG + 4).unwrap().swap_bytes(),
+        0x0146
+    );
+    run_to(board, cpu, 0xf002_6660, 128);
+    assert_eq!((cpu.read_reg(16), cpu.read_reg(17)), (CONFIG + 0xd, 0x28));
+    assert_eq!(board.step_mapped(cpu).unwrap().instruction, 0xe2ac_2000);
+    assert_eq!(board.read_bypass_byte(CONFIG + 0xd).unwrap(), 0x28);
+    run_to(board, cpu, 0xf002_66a0, 75_000);
+    assert_eq!(
+        (cpu.asi, cpu.read_reg(16), cpu.read_reg(17)),
+        (0x15, CONFIG + 0x804, 0)
     );
 }
 

@@ -48,3 +48,25 @@ in each bank. It also checks that the fifth guest trap is a fast D-TLB miss.
 All four stop at the store of `0x40` to PA `0x01fe00002028`. The raw serial
 transcripts and stop records are in `local/ultra5-pci-init-2026-11-22/`.
 [PCI interrupt initialization](../docs/ultra5.md#pci-interrupt-initialization)
+
+## First access to the Simba command register
+
+After target selection the guest retires the diagnostic, host PCI command
+and latency writes. Counting from immediately before the target store adds
+69,533 retired instructions on each seed. The local-ROM test checks the
+little-endian command readback (`0x0146`), latency (`0x28`) and the
+operands of the next `stha %l1,[%l0] %asi`.
+
+| Seed | Instructions retired | Trap entries |
+| --- | ---: | ---: |
+| Cold, diagnostics on | 53,542,287 | 5 |
+| Cold, diagnostics off | 53,531,804 | 5 |
+| Soft, diagnostics on | 22,991,195 | 5 |
+| Soft, diagnostics off | 22,981,088 | 5 |
+
+The instruction at VA `0xf00266a0` attempts a zero write to PA
+`0x01fe01000804` through ASI `0x15`. This is Simba function 0's primary
+command, separate from the CPU's PCI host command at `0x01fe01000004`.
+Diagnostic runs end in `ttya initialized\r\n` and quiet runs emit no bytes.
+Serial transcripts and stop records are under `local/ultra5-pci-target-2026-11-22/`.
+[Reproduction](../docs/ultra5.md#pci-host-bridge-configuration)

@@ -1,11 +1,10 @@
 use super::dram::Dram;
 use super::keyboard_uart::KeyboardUart;
-use super::pbm::Pbm;
+use super::pbm::{Pbm, PCI_CONFIG};
 use super::serial::Serial;
 use super::{BootFlash, FlashFetch, ResetNvram, FLASH_BASE};
 use crate::v9::{CpuFault, Translation, V9Cpu, V9DataBus};
 
-const PCI_CONFIG: u64 = 0x01fe_0100_0000;
 const APB_TICK_OFFSET: u64 = 0x08b0; // primary bus, device 1 function 0
 const PCI_MEMORY: u64 = 0x01ff_0000_0000;
 const EBUS_BAR1: u32 = 0xf100_0000;
@@ -190,6 +189,12 @@ impl Ultra5ResetBoard {
         self.serial.take_output()
     }
 
+    /// Whether the host bridge is selected by an incoming PCI single-address
+    /// memory cycle. Actual DMA still requires a bus master and IOMMU.
+    pub fn selects_pci_memory(&self, address: u32) -> bool {
+        self.pbm.selects_pci_memory(address)
+    }
+
     fn ebus_offset(pa: u64) -> Option<u64> {
         pa.checked_sub(PCI_MEMORY + u64::from(EBUS_BAR1))
             .filter(|&off| off < 0x80_0000)
@@ -284,6 +289,22 @@ impl SuperIoConfig {
 }
 
 impl V9DataBus for Ultra5ResetBoard {
+    fn read_bypass_half(&mut self, pa: u64) -> Result<u16, String> {
+        if let Some(bytes) = self.pbm.header.read(pa) {
+            return Ok(u16::from_be_bytes(bytes));
+        }
+        Err(format!(
+            "unmapped Ultra 5 physical halfword read at {pa:#x}"
+        ))
+    }
+    fn write_bypass_half(&mut self, pa: u64, value: u16) -> Result<(), String> {
+        if self.pbm.header.write(pa, value.to_be_bytes()) {
+            return Ok(());
+        }
+        Err(format!(
+            "unmapped Ultra 5 physical halfword write at {pa:#x} value={value:#06x}"
+        ))
+    }
     fn read_cacheable_xword(&mut self, pa: u64) -> Result<u64, String> {
         self.dram.read(pa, self.mem_control0)
     }
@@ -291,6 +312,9 @@ impl V9DataBus for Ultra5ResetBoard {
         self.dram.write(pa, self.mem_control0, value)
     }
     fn write_bypass_xword(&mut self, pa: u64, value: u64) -> Result<(), String> {
+        if self.pbm.header.write(pa, value.to_be_bytes()) {
+            return Ok(());
+        }
         if self.is_tick(pa) {
             return self.clear_tick(value.swap_bytes());
         }
@@ -319,6 +343,9 @@ impl V9DataBus for Ultra5ResetBoard {
         ))
     }
     fn read_bypass_word(&mut self, pa: u64) -> Result<u32, String> {
+        if let Some(bytes) = self.pbm.header.read(pa) {
+            return Ok(u32::from_be_bytes(bytes));
+        }
         if self.is_tick(pa) {
             return Ok(self.tick().swap_bytes());
         }
@@ -332,6 +359,9 @@ impl V9DataBus for Ultra5ResetBoard {
         ))
     }
     fn write_bypass_word(&mut self, pa: u64, value: u32) -> Result<(), String> {
+        if self.pbm.header.write(pa, value.to_be_bytes()) {
+            return Ok(());
+        }
         if self.is_tick(pa) {
             return self.clear_tick(u64::from(value.swap_bytes()));
         }
@@ -349,6 +379,9 @@ impl V9DataBus for Ultra5ResetBoard {
         Ok(())
     }
     fn read_bypass_xword(&mut self, pa: u64) -> Result<u64, String> {
+        if let Some(bytes) = self.pbm.header.read(pa) {
+            return Ok(u64::from_be_bytes(bytes));
+        }
         if let Some(offset) = pa
             .checked_sub(FLASH_BASE)
             .filter(|&o| o < self.flash.image().len() as u64)
@@ -382,6 +415,9 @@ impl V9DataBus for Ultra5ResetBoard {
     }
 
     fn read_bypass_byte(&mut self, pa: u64) -> Result<u8, String> {
+        if let Some([byte]) = self.pbm.header.read(pa) {
+            return Ok(byte);
+        }
         if let Some(offset) = pa.checked_sub(PCI_CONFIG).filter(|&off| off < 1 << 24) {
             return self.config_byte(offset).map(|register| *register);
         }
@@ -414,6 +450,9 @@ impl V9DataBus for Ultra5ResetBoard {
     }
 
     fn write_bypass_byte(&mut self, pa: u64, value: u8) -> Result<(), String> {
+        if self.pbm.header.write(pa, [value]) {
+            return Ok(());
+        }
         if let Some(offset) = pa.checked_sub(PCI_CONFIG).filter(|&off| off < 1 << 24) {
             *self.config_byte(offset)? = value;
             return Ok(());
@@ -441,6 +480,9 @@ impl V9DataBus for Ultra5ResetBoard {
     }
 
     fn write_bypass_le_word(&mut self, pa: u64, value: u32) -> Result<(), String> {
+        if self.pbm.header.write(pa, value.to_le_bytes()) {
+            return Ok(());
+        }
         if self.is_tick(pa) {
             return self.clear_tick(u64::from(value));
         }
@@ -480,6 +522,32 @@ mod tests {
             BootFlash::new(vec![0; FLASH_SIZE]).unwrap(),
             ResetNvram::new(vec![0; RESET_NVRAM_SIZE]).unwrap(),
         )
+    }
+
+    #[test]
+    fn pci_header_byte_order_and_widths_share_one_host_function() {
+        let mut board = fixture();
+        assert_eq!(board.read_bypass_word(PCI_CONFIG).unwrap(), 0x8e10_00a0);
+        assert_eq!(
+            board.read_bypass_xword(PCI_CONFIG + 8).unwrap(),
+            0x0000_0006_0000_0000
+        );
+        assert_eq!(board.read_bypass_half(PCI_CONFIG + 4).unwrap(), 0x0600);
+        board.write_bypass_half(PCI_CONFIG + 4, 0x4601).unwrap();
+        assert_eq!(board.read_bypass_byte(PCI_CONFIG + 4).unwrap(), 0x46);
+        assert_eq!(board.read_bypass_byte(PCI_CONFIG + 5).unwrap(), 1);
+        board.write_bypass_byte(PCI_CONFIG + 0xd, 0x2f).unwrap();
+        assert_eq!(
+            board.read_bypass_word(PCI_CONFIG + 0xc).unwrap(),
+            0x0028_0000
+        );
+        board
+            .write_bypass_le_word(PCI_CONFIG + 4, 0xffff_0000)
+            .unwrap();
+        assert_eq!(board.read_bypass_word(PCI_CONFIG + 4).unwrap(), 0x0600_a002);
+        assert!(board.write_bypass_half(PCI_CONFIG + 5, 0xffff).is_err());
+        assert!(board.read_bypass_half(PCI_CONFIG + (1 << 16) + 4).is_err());
+        assert_eq!(board.read_bypass_half(PCI_CONFIG + 4).unwrap(), 0x0600);
     }
 
     #[test]

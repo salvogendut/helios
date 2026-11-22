@@ -1,18 +1,71 @@
 //! UltraSPARC-IIi PCI bus module. Sun IIi User's Manual, chapter 19.
 
 const BASE: u64 = 0x01fe_0000_0000;
+pub(super) const PCI_CONFIG: u64 = 0x01fe_0100_0000;
 const CONTROL_RW: u64 = (1 << 36) | (0x3f << 16) | (3 << 7) | 0xf;
 const SERR: u64 = 1 << 34;
 
 #[derive(Default)]
 pub(super) struct Pbm {
     control: u64,
+    // One bit for each 512 MiB region of the incoming 32-bit PCI address space.
+    target_regions: u8,
+    disable_retry_limit: bool,
+    pub(super) header: PciHeader,
     enabled: u64,
     pci_interrupts: u64,
     onboard_interrupts: u64,
 }
 
+// First 16 configuration bytes of bus 0, device 0, function 0 in PCI byte
+// order. The remaining bus-number registers use the board's existing decoder.
+pub(super) struct PciHeader([u8; 16]);
+
+impl Default for PciHeader {
+    fn default() -> Self {
+        // IIi §§19.3.1.1–10. IDs 108e:a000, command 0006, status 02a0,
+        // revision zero, class 060000, fixed type-0 single-function header.
+        Self([
+            0x8e, 0x10, 0x00, 0xa0, 0x06, 0x00, 0xa0, 0x02, 0, 0, 0, 6, 0, 0, 0, 0,
+        ])
+    }
+}
+
+impl PciHeader {
+    fn offset<const N: usize>(pa: u64) -> Option<usize> {
+        let offset = pa.checked_sub(PCI_CONFIG)?;
+        (matches!(N, 1 | 2 | 4 | 8) && offset < 16 && offset % N as u64 == 0)
+            .then_some(offset as usize)
+    }
+
+    pub(super) fn read<const N: usize>(&self, pa: u64) -> Option<[u8; N]> {
+        let start = Self::offset::<N>(pa)?;
+        self.0.get(start..start + N)?.try_into().ok()
+    }
+
+    pub(super) fn write<const N: usize>(&mut self, pa: u64, data: [u8; N]) -> bool {
+        let Some(start) = Self::offset::<N>(pa) else {
+            return false;
+        };
+        // All callers issue naturally aligned 1-, 2-, 4- or 8-byte transactions.
+        for (offset, value) in (start..).zip(data) {
+            match offset {
+                4 => self.0[4] = 6 | (value & 0x40), // PER; MSTR/MEM hardwired
+                5 => self.0[5] = value & 1,          // SERR_EN
+                7 => self.0[7] &= !(value & 0xf9),   // status errors are W1C
+                0xd => self.0[0xd] = value & 0xf8,   // latency in units of 8 clocks
+                _ => {}
+            }
+        }
+        true
+    }
+}
+
 impl Pbm {
+    pub(super) fn selects_pci_memory(&self, address: u32) -> bool {
+        self.target_regions & (1 << (address >> 29)) != 0
+    }
+
     pub(super) fn offset(pa: u64) -> Option<u16> {
         u16::try_from(pa.checked_sub(BASE)?).ok()
     }
@@ -24,6 +77,8 @@ impl Pbm {
         }
         match offset {
             0x2000 => Ok(self.control),
+            0x2020 => Ok(u64::from(self.disable_retry_limit) << 6),
+            0x2028 => Ok(u64::from(self.target_regions)),
             0xa800 => Ok(self.pci_interrupts),
             0xa808 => Ok(self.onboard_interrupts),
             _ => Err(format!(
@@ -42,6 +97,17 @@ impl Pbm {
         match offset {
             0x2000 => {
                 self.control = (self.control & SERR & !value) | (value & CONTROL_RW);
+                Ok(())
+            }
+            0x2020 => {
+                if value & 0x0e != 0 {
+                    return Err("unsupported IIi diagnostic PCI parity inversion".into());
+                }
+                self.disable_retry_limit = value & (1 << 6) != 0;
+                Ok(())
+            }
+            0x2028 => {
+                self.target_regions = value as u8;
                 Ok(())
             }
             0x1400..=0x14f8 if offset & 7 == 0 => {
@@ -86,6 +152,57 @@ impl Pbm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incoming_pci_regions_decode_both_edges_independently() {
+        let mut pbm = Pbm::default();
+        assert_eq!(pbm.read(0x2028).unwrap(), 0);
+        for bits in 0..=255 {
+            pbm.write(0x2028, !0xff | bits).unwrap();
+            assert_eq!(pbm.read(0x2028).unwrap(), bits);
+            for region in 0..8 {
+                let enabled = bits & (1 << region) != 0;
+                let start = region << 29;
+                assert_eq!(pbm.selects_pci_memory(start), enabled);
+                assert_eq!(pbm.selects_pci_memory(start | 0x1fff_ffff), enabled);
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostic_retry_bit_and_parity_rejection_preserve_target_selection() {
+        let mut pbm = Pbm::default();
+        assert_eq!(pbm.read(0x2020).unwrap(), 0);
+        pbm.write(0x2028, 0x40).unwrap();
+        pbm.write(0x2020, !0xe).unwrap();
+        assert_eq!(pbm.read(0x2020).unwrap(), 0x40);
+        for invert in [2, 4, 8] {
+            assert!(pbm.write(0x2020, invert).is_err());
+            assert_eq!(pbm.read(0x2020).unwrap(), 0x40);
+        }
+        pbm.write(0x2020, 0).unwrap();
+        assert_eq!(pbm.read(0x2020).unwrap(), 0);
+        assert_eq!(pbm.read(0x2028).unwrap(), 0x40);
+    }
+
+    #[test]
+    fn pci_header_status_ack_is_confined_to_written_lanes() {
+        let mut header = PciHeader::default();
+        header.0[7] |= 0xf9; // Seed every sticky error in table 19-14.
+        assert!(header.write(PCI_CONFIG + 4, [0xff, 0xff]));
+        assert_eq!(header.read(PCI_CONFIG + 4), Some([0x46, 1, 0xa0, 0xfb]));
+        assert!(header.write(PCI_CONFIG + 6, [0xff, 0x21]));
+        assert_eq!(header.read(PCI_CONFIG + 4), Some([0x46, 1, 0xa0, 0xda]));
+        let before = header.0;
+        assert!(!header.write(PCI_CONFIG + 7, [0xff; 2]));
+        assert!(!header.write(PCI_CONFIG + 16, [0xff]));
+        assert_eq!(header.0, before);
+        assert!(header.write(PCI_CONFIG, [0xff; 8]));
+        assert_eq!(
+            header.read(PCI_CONFIG),
+            Some([0x8e, 0x10, 0, 0xa0, 0x46, 1, 0xa0, 2])
+        );
+    }
 
     #[test]
     fn pci_control_masks_reserved_bits_and_clears_serr_on_one() {

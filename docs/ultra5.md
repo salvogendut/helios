@@ -6,7 +6,8 @@ complete the cold-start probe with the keyboard disconnected. Both boot paths
 clear the instruction and data TLBs, complete DRAM discovery, enable translation
 and execute the 453,536-byte firmware image expanded in RAM. The expanded
 firmware initializes serial A and prints `ttya initialized` in diagnostic mode.
-It then handles five data-TLB misses and initializes the PCI interrupt registers.
+It then handles five data-TLB misses, configures the PCI host bridge and
+begins initializing the downstream Simba bridge.
 An interactive OpenBoot prompt remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
 
 ## Run the first serial diagnostic
@@ -307,13 +308,33 @@ zero writes to those offsets. Populated partial mapping registers keep their
 fixed interrupt vectors when disabled. Interrupt generation and delivery to
 the CPU remain open. [IIi User’s Manual, tables 19-2, 19-28–30 and 19-33–39](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
 
-All four cold/soft and diagnostic on/off runs reach the same next operation.
-At VA `0xf0009238`, OBP attempts to write `0x40` to the PCI Target Address
-Space register at PA `0x01fe00002028`, selecting the PCI target range
-`0xc0000000–0xdfffffff`. This access stops explicitly. Use an outcome limit
-of `53472759` for the diagnostic cold boot or `22921667` for the diagnostic
-soft boot to finish immediately before the store. Each count includes five
-guest fast data-MMU trap entries. [IIi PCI target address decoding, table 19-6](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+To stop immediately before PCI target selection, use an outcome limit of
+`53472759` for the diagnostic cold boot or `22921667` for the diagnostic
+soft boot. Both counts include five guest fast data-MMU trap entries.
+
+## PCI host bridge configuration
+
+OBP selects `0xc0000000–0xdfffffff` for incoming 32-bit PCI memory cycles
+by writing `0x40` to PA `0x01fe00002028`. It writes the same value to
+`0x01fe00002020` to disable the programmed-I/O retry limit. The board
+decodes all eight 512 MiB regions independently. PCI DMA transfers, retry
+timing and diagnostic parity inversion remain open.
+[IIi User’s Manual, tables 19-5 and 19-6](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
+At VA `0xf00266a0`, the firmware stores `0x4601` as a big-endian halfword
+through physical ASI `0x15`. Bytes `46 01` arrive at the little-endian
+PCI command register as `0x0146`. OBP then sets the host latency timer to
+`0x28` (40 PCI clocks). The host configuration header accepts naturally
+aligned byte, halfword, word and doubleword accesses to its first 16 bytes.
+[IIi User’s Manual, §19.3.1](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
+Cold and soft boots next reach a halfword store of zero to physical
+`0x01fe01000804`, the primary command register on Simba function 0
+(bus 0, device 1). To reproduce the checkpoint, run the serial example
+with an outcome limit of `53542292` for cold diagnostics or `22991200`
+for soft diagnostics. One additional step reports the unsupported bridge
+write. Serial A still ends at `ttya initialized` with diagnostics enabled.
+[APB register map, table 1-6](https://www.artisantg.com/info/Themis_USPIIe_cPCI_Software_Manual.pdf)
 
 ## Reset and flash mapping
 

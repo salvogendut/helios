@@ -186,7 +186,7 @@ pub(crate) trait V9DataBus {
         }
         match width {
             IntegerWidth::Byte => self.read_bypass_byte(pa).map(u64::from),
-            IntegerWidth::Half => Err(format!("unmapped V9 noncacheable halfword read at {pa:#x}")),
+            IntegerWidth::Half => self.read_bypass_half(pa).map(u64::from),
             IntegerWidth::Word => self.read_bypass_word(pa).map(u64::from),
             IntegerWidth::Xword => self.read_bypass_xword(pa),
         }
@@ -214,9 +214,7 @@ pub(crate) trait V9DataBus {
         }
         match width {
             IntegerWidth::Byte => self.write_bypass_byte(pa, value as u8),
-            IntegerWidth::Half => Err(format!(
-                "unmapped V9 noncacheable halfword write at {pa:#x}"
-            )),
+            IntegerWidth::Half => self.write_bypass_half(pa, value as u16),
             IntegerWidth::Word => self.write_bypass_word(pa, value as u32),
             IntegerWidth::Xword => self.write_bypass_xword(pa, value),
         }
@@ -244,6 +242,14 @@ pub(crate) trait V9DataBus {
     }
     fn read_bypass_word(&mut self, pa: u64) -> Result<u32, String> {
         Err(format!("unmapped V9 physical word read at {pa:#x}"))
+    }
+    fn read_bypass_half(&mut self, pa: u64) -> Result<u16, String> {
+        Err(format!("unmapped V9 noncacheable halfword read at {pa:#x}"))
+    }
+    fn write_bypass_half(&mut self, pa: u64, value: u16) -> Result<(), String> {
+        Err(format!(
+            "unmapped V9 noncacheable halfword write at {pa:#x} value={value:#06x}"
+        ))
     }
     fn write_bypass_word(&mut self, pa: u64, _value: u32) -> Result<(), String> {
         Err(format!("unmapped V9 physical word write at {pa:#x}"))
@@ -840,7 +846,7 @@ impl V9Cpu {
                         self.data_tlb.set_used(slot, true);
                     }
                 }
-                0x10 | 0x11 | 0x14 | 0x15 | 0x1b | 0x1e => {
+                0x10..=0x12 | 0x14..=0x16 | 0x1b | 0x1e => {
                     let asi = if word & (1 << 13) != 0 {
                         self.asi
                     } else {
@@ -853,6 +859,25 @@ impl V9Cpu {
                     }
                     let address = self.read_reg(rs1).wrapping_add(b);
                     match (asi, op3) {
+                        (
+                            ASI_PHYS_BYPASS_EC_WITH_EBIT | ASI_PHYS_BYPASS_EC_WITH_EBIT_LE,
+                            0x12 | 0x16,
+                        ) => {
+                            let width = IntegerWidth::Half;
+                            let pa = Self::bypass_address(address, 2)?;
+                            let little = asi == ASI_PHYS_BYPASS_EC_WITH_EBIT_LE;
+                            if op3 == 0x16 {
+                                memory.write_integer(
+                                    pa,
+                                    width,
+                                    false,
+                                    width.reorder(self.read_reg(rd), little),
+                                )?;
+                            } else {
+                                let value = memory.read_integer(pa, width, false)?;
+                                self.write_reg(rd, width.reorder(value, little));
+                            }
+                        }
                         (ASI_PHYS_USE_EC, 0x1b) => {
                             let value =
                                 memory.read_cacheable_xword(Self::bypass_address(address, 8)?)?;
@@ -1296,6 +1321,51 @@ impl V9Cpu {
 mod tests {
     use super::*;
     use crate::ultra5::{BootFlash, FLASH_SIZE};
+
+    #[test]
+    fn physical_alternate_halfwords_use_asi_endian_and_zero_extend() {
+        for (asi, stored) in [(0x15, 0xabcd), (0x1d, 0xcdab)] {
+            let mut cpu = V9Cpu::new(0);
+            cpu.pstate = PSTATE_PRIV;
+            cpu.asi = asi;
+            cpu.ccr = 0xa5;
+            cpu.write_reg(16, 10);
+            cpu.write_reg(17, 0xffff_ffff_1234_abcd);
+            let mut mem = V9Memory::new(16);
+            mem.write_u64(8, 0x1122_0000_5566_7788);
+            cpu.execute_fetched(0xe2b4_2000, &mut mem).unwrap(); // original STHA [%l0] %asi
+            assert_eq!(mem.read_u64(8), 0x1122_0000_5566_7788 | (stored << 32));
+            cpu.write_reg(2, 2);
+            cpu.write_reg(16, 8);
+            // LDUHA [%l0 + %g2] imm_asi,%l1
+            let load = 0xe294_0002 | (u32::from(asi) << 5);
+            cpu.execute_fetched(load, &mut mem).unwrap();
+            assert_eq!(cpu.read_reg(17), 0xabcd);
+            assert_eq!((cpu.pc(), cpu.npc(), cpu.ccr()), (8, 12, 0xa5));
+        }
+    }
+
+    #[test]
+    fn rejected_alternate_halfwords_leave_the_cpu_and_memory_intact() {
+        for (pstate, asi, address) in [
+            (0, 0x15, 8),
+            (PSTATE_PRIV, 0x1d, 9),
+            (PSTATE_PRIV, 0x15, 16),
+            (PSTATE_PRIV, 0x58, 8),
+        ] {
+            let mut cpu = V9Cpu::new(0);
+            cpu.pstate = pstate;
+            cpu.asi = asi;
+            cpu.write_reg(16, address);
+            cpu.write_reg(17, u64::MAX);
+            let mut mem = V9Memory::new(16);
+            let before = (cpu.clone(), mem.clone());
+            for word in [0xe2b4_2000, 0xe294_2000] {
+                assert!(cpu.execute_fetched(word, &mut mem).is_err());
+                assert_eq!((&cpu, &mem), (&before.0, &before.1));
+            }
+        }
+    }
 
     #[test]
     fn orcc_sets_icc_and_xcc_from_the_result_and_clears_carry_and_overflow() {
