@@ -33,3 +33,19 @@ the first D-cache tag address. The local-ROM test checks the DCR value, the
 next tag-store word `0xc0f048e0` at PA `0x3ffd1fc8` and `%g1 = 0x3fe0`.
 The diagnostic access uses ASI `0x47`. See `dispatch-control/` alongside
 the decompression logs for the four reruns at this boundary.
+
+## Serial initialization from the expanded image
+
+The local-ROM regression seeds both diagnostic banks and checks all 1,024
+stores in the real clearing loops. I-cache valid and physical tag occupy bits
+36 and 35:8 of the written xword. D-cache tag and sub-block valid bits occupy
+29:2 and 1:0. Execution reaches the unsigned divide routine's conditional
+trap at VA `0xf000a764`. Its XCC.Z is clear, so it retires to `0xf000a768`.
+A taken Tcc still reports the software trap type and preserves CPU state.
+
+The diagnostic guest then prints `ttya initialized`. At the next stop, VA
+`0xf0023944`, PA `0x3ffa3944`, word `0x8d812000`, the guest is writing
+`%g4 = 4` into FPRS with PSTATE `0x14`. Instruction counts are 51,274,027
+(cold diagnostic), 51,263,544 (cold quiet), 20,722,935 (soft diagnostic)
+and 20,712,828 (soft quiet). Both quiet serial A transcripts are empty.
+The final four original-ROM runs and checks are under `ttya-initialized/`.

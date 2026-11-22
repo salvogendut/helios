@@ -32,6 +32,8 @@ const ASI_ITLB_DATA_ACCESS: u8 = 0x55;
 const ASI_ITLB_TAG_READ: u8 = 0x56;
 const ASI_DTLB_DATA_ACCESS: u8 = 0x5d;
 const ASI_DTLB_TAG_READ: u8 = 0x5e;
+const ASI_DCACHE_TAG: u8 = 0x47;
+const ASI_ICACHE_TAG: u8 = 0x67;
 const ASI_ESTATE_ERROR_EN: u8 = 0x4b;
 const ASI_AFSR: u8 = 0x4c;
 const ASI_UPA_CONFIG: u8 = 0x4a;
@@ -77,6 +79,10 @@ pub struct V9Cpu {
     dispatch_control: u8,
     estate_error_enable: u8,
     async_fault_status: u64,
+    // Diagnostic tag RAM (IIi A.7.2 and A.8.2). Both ports use VA[13:5].
+    // I-cache stores valid:tag right-justified; D-cache stores tag:valid.
+    icache_tags: Box<[u32; 512]>,
+    dcache_tags: Box<[u32; 512]>,
     ecache: Ecache,
 }
 
@@ -385,6 +391,8 @@ impl V9Cpu {
             dispatch_control: 0, // IIi table 17-5, power-on reset
             estate_error_enable: 0,
             async_fault_status: 0,
+            icache_tags: Box::new([0; 512]),
+            dcache_tags: Box::new([0; 512]),
             ecache: Ecache::default(),
         }
     }
@@ -657,6 +665,29 @@ impl V9Cpu {
                 // MEMBAR #Sync: all earlier operations in this single-CPU
                 // fixture have already completed when an instruction retires.
                 0x28 if word == 0x8143_e040 => {}
+                0x3a => {
+                    // V9 A.61. Format 4 encodes cc in the usual simm13 field.
+                    let immediate = word & (1 << 13) != 0;
+                    let reserved = if immediate { 0x780 } else { 0x7e0 };
+                    if word & ((1 << 29) | reserved) != 0 {
+                        return Err(format!("unsupported V9 Tcc word {word:#x}"));
+                    }
+                    let flags = match (word >> 11) & 3 {
+                        0 => self.ccr,
+                        2 => self.ccr >> 4,
+                        _ => {
+                            return Err(format!("unsupported V9 Tcc condition codes in {word:#x}"))
+                        }
+                    };
+                    if Self::condition(u32::from(rd), flags) {
+                        let operand = if immediate { u64::from(word & 0x7f) } else { b };
+                        let number = self.read_reg(rs1).wrapping_add(operand) & 0x7f;
+                        return Err(format!(
+                            "V9 software trap TT={:#x} entry not implemented",
+                            0x100 + number
+                        ));
+                    }
+                }
                 0x3b if rd == 0 && (word & (1 << 13) != 0 || word & 0x1fe0 == 0) => {
                     // IIi §14.4.4. FLUSH checks the D-side mapping, without
                     // issuing a device read. Instruction stores are synchronous.
@@ -819,6 +850,20 @@ impl V9Cpu {
                             )?;
                         }
                         (0x45, 0x1b | 0x1e) => self.access_lsu_control(op3, address, rd)?,
+                        (ASI_DCACHE_TAG | ASI_ICACHE_TAG, 0x1e) => {
+                            if address & !0x3fe0 != 0 {
+                                return Err(format!(
+                                    "invalid IIi cache tag address {address:#x} for ASI {asi:#x}"
+                                ));
+                            }
+                            let index = (address >> 5) as usize;
+                            let value = self.read_reg(rd);
+                            if asi == ASI_ICACHE_TAG {
+                                self.icache_tags[index] = (value >> 8) as u32 & 0x1fff_ffff;
+                            } else {
+                                self.dcache_tags[index] = value as u32 & 0x3fff_ffff;
+                            }
+                        }
                         (ASI_UPA_CONFIG, 0x1b) if address == 0 => {
                             self.write_reg(rd, self.ecache.upa_config());
                         }
@@ -1137,6 +1182,73 @@ mod tests {
         }
         cpu.execute_fetched(0x8090_3fff, &mut UnmappedData).unwrap(); // orcc %g0,-1,%g0
         assert_eq!((cpu.read_reg(0), cpu.ccr()), (0, 0x88));
+    }
+
+    #[test]
+    fn iii_diagnostic_tag_stores_select_bank_set_and_line_without_address_aliases() {
+        const DTAG: u32 = 0xc4f0_48e0; // stxa %g2,[%g1] 0x47
+        const ITAG: u32 = 0xc4f0_4ce0; // stxa %g2,[%g1] 0x67
+        let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
+        for (address, data, index) in [
+            (0, 0xffff_ffff_ffff_ffff, 0),
+            (0x20, 0x1234_5678, 1),
+            (0x2000, 0x0010_0000_0001, 256),
+            (0x3fe0, 0x000a_bc12_3403, 511),
+        ] {
+            cpu.write_reg(1, address);
+            cpu.write_reg(2, data);
+            cpu.execute_fetched(DTAG, &mut UnmappedData).unwrap();
+            assert_eq!(cpu.dcache_tags[index], (data & 0x3fff_ffff) as u32);
+            assert_eq!(cpu.icache_tags[index], 0);
+            cpu.execute_fetched(ITAG, &mut UnmappedData).unwrap();
+            assert_eq!(
+                cpu.icache_tags[index],
+                ((data & 0x001f_ffff_ff00) >> 8) as u32
+            );
+            assert_eq!(cpu.dcache_tags[index], (data & 0x3fff_ffff) as u32);
+        }
+        assert_eq!(cpu.icache_tags[0], 0x1fff_ffff);
+        assert_eq!(cpu.icache_tags[256], 0x1000_0000);
+        assert_eq!(cpu.dcache_tags[0], 0x3fff_ffff);
+        for (address, pstate) in [(8, PSTATE_PRIV), (0x4000, PSTATE_PRIV), (0, 0)] {
+            cpu.pstate = pstate;
+            cpu.write_reg(1, address);
+            let before = cpu.clone();
+            for word in [ITAG, DTAG] {
+                assert!(cpu.execute_fetched(word, &mut UnmappedData).is_err());
+                assert_eq!(cpu, before);
+            }
+        }
+    }
+
+    #[test]
+    fn tcc_uses_the_selected_cc_and_preserves_state_on_a_taken_or_reserved_form() {
+        const TE_XCC: u32 = 0x83d0_303e; // te %xcc,0x3e (OBP)
+        let mut cpu = V9Cpu::new(0x100);
+        cpu.npc = 0x548; // delay slot on a taken branch
+        cpu.ccr = 0x04;
+        let mut expected = cpu.clone();
+        expected.pc = 0x548;
+        expected.npc = 0x54c;
+        cpu.execute_fetched(TE_XCC, &mut UnmappedData).unwrap();
+        assert_eq!(cpu, expected);
+        cpu.ccr = 0x40;
+        cpu.execute_fetched(TE_XCC & !0x1000, &mut UnmappedData)
+            .unwrap(); // ICC.Z clear
+        cpu.write_reg(1, u64::MAX);
+        cpu.write_reg(2, 0x84);
+        let before = cpu.clone();
+        for (op, tt) in [(TE_XCC, 0x13e), (0x91d0_4002, 0x103), (0x91d0_607f, 0x17e)] {
+            let err = cpu.execute_fetched(op, &mut UnmappedData).unwrap_err();
+            assert!(err.contains(&format!("TT={tt:#x}")));
+            assert_eq!(cpu, before);
+        }
+        for mask in [1 << 29, 1 << 11, 1 << 7] {
+            assert!(cpu
+                .execute_fetched(TE_XCC | mask, &mut UnmappedData)
+                .is_err());
+            assert_eq!(cpu, before);
+        }
     }
 
     #[test]

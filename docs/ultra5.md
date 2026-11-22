@@ -4,7 +4,8 @@ The headless Ultra 5/10 fixture runs original OBP 3.31.0 far enough to
 transmit its version banner on serial A, clear the external-cache tags and
 complete the cold-start probe with the keyboard disconnected. Both boot paths
 clear the instruction and data TLBs, complete DRAM discovery, enable translation
-and execute the 453,536-byte firmware image expanded in RAM.
+and execute the 453,536-byte firmware image expanded in RAM. The expanded
+firmware initializes serial A and prints `ttya initialized` in diagnostic mode.
 An interactive OpenBoot prompt remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
 
 ## Run the first serial diagnostic
@@ -241,13 +242,14 @@ stream address `0x2a80` to VA `0x4f26c`.
 
 ## Executing the expanded firmware
 
-Use the serial example above with `--release` and a limit of `51181204`
-for the cold diagnostic seed or `20630112` for the soft diagnostic seed.
+Use the serial example above with `--release` and a limit of `51274027`
+for the cold diagnostic seed or `20722935` for the soft diagnostic seed.
 The final serial A lines are
 
 ```text
 Decompressing into Memory Done
 Size = 0000.0000.0006.eba0
+ttya initialized
 ```
 
 OBP expands the stream at flash offsets `0x2a80..0x3b664` into 453,536 bytes
@@ -258,13 +260,19 @@ LZW decoder, checks the guest's end pointer and the xwords bracketing the
 image, and observes the instruction retire from that physical address.
 
 After eleven instructions the fixture reaches `wr %g0,0x3d,%asr18` at
-VA `0xf0051fb8`. ASR 18 is the privileged IIi dispatch control register. The guest sets the
-recommended GS/MVX/MS fields and clears error enables through ASI `0x4b`.
-These dispatch fields have register readback. Instruction timing and external
-debug pins are outside this functional model. The next unsupported access is
-the D-cache diagnostic tag store at VA `0xf0051fc8` (ASI `0x47`, index
-address `0x3fe0`). Add four to either diagnostic run limit above to stop
-just before this store. The quiet controls reach the same PC. [UltraSPARC-IIi User’s Manual, §§6.5, A.3 and I.1.2](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+VA `0xf0051fb8`. ASR 18 is the privileged IIi dispatch control register.
+The guest programs the recommended value and clears error enables through
+ASI `0x4b`. It then clears 512 D-cache tags (ASI `0x47`) and 512 I-cache
+tags (ASI `0x67`) in descending address order from `0x3fe0` through zero.
+The fixture models the diagnostic tag stores. Dispatch timing, runtime cache
+fills, diagnostic tag reads and external debug pins remain open.
+[UltraSPARC-IIi User’s Manual, §§A.3, A.7.2, A.8.2 and I.1.2](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
+The expanded firmware reaches its `fprs!` routine at VA `0xf0023944`
+(PA `0x3ffa3944`), after printing `ttya initialized`. The next instruction
+is `wr %g4,0,%fprs`, with `%g4 = 4` and `PSTATE = 0x14`. Both quiet
+controls reach the same instruction with zero serial output. Interactive
+input and an `ok` prompt remain open.
 
 ## Reset and flash mapping
 

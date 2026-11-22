@@ -503,8 +503,54 @@ fn original_obp_expands_the_image_and_executes_its_entry_in_ram() {
         board.read_cacheable_xword(0x3ffd_1fc8).unwrap() >> 32,
         0xc0f0_48e0
     );
+    // The ROM clears 512 D-cache lines and both sets of 256 I-cache
+    // lines. Seed both banks so that a skipped store cannot pass the check.
+    cpu.dcache_tags.fill(0x3fff_ffff);
+    cpu.icache_tags.fill(0x1fff_ffff);
+    for (store_pc, word, end_pc) in [
+        (0xf005_1fc8, 0xc0f0_48e0, 0xf005_1fd8),
+        (0xf005_1fe0, 0xc0f0_4ce0, 0xf005_1ff0),
+    ] {
+        let mut stores = 0;
+        for _ in 0..3000 {
+            if cpu.pc() == end_pc {
+                break;
+            }
+            if cpu.pc() == store_pc {
+                assert!(stores < 512);
+                assert_eq!(cpu.read_reg(1), 0x3fe0 - 32 * stores);
+                let step = board.step_mapped(&mut cpu).unwrap();
+                assert_eq!(step.instruction, word);
+                stores += 1;
+            } else {
+                board.step_mapped(&mut cpu).unwrap();
+            }
+        }
+        assert_eq!((cpu.pc(), stores), (end_pc, 512));
+        assert!(cpu.dcache_tags.iter().all(|&tag| tag == 0));
+        let expected = if store_pc == 0xf005_1fc8 {
+            0x1fff_ffff
+        } else {
+            0
+        };
+        assert!(cpu.icache_tags.iter().all(|&tag| tag == expected));
+    }
+    run_to(&mut board, &mut cpu, 0xf000_a764, 20_000);
+    assert_eq!(cpu.ccr() & 0x40, 0); // TE checks XCC.Z
+    let checked = board.step_mapped(&mut cpu).unwrap();
+    assert_eq!((checked.instruction, cpu.pc()), (0x83d0_303e, 0xf000_a768));
+    run_to(&mut board, &mut cpu, 0xf002_3944, 120_000);
+    let address = cpu.instruction_address().unwrap().pa;
+    assert_eq!(address, 0x3ffa_3944);
+    assert_eq!(
+        board.read_cacheable_xword(address & !7).unwrap() as u32,
+        0x8d81_2000
+    );
+    assert_eq!((cpu.read_reg(4), cpu.pstate), (4, 0x14)); // wr %g4,0,%fprs
     let [a, b] = board.take_serial_output();
-    assert!(a.ends_with(b"Decompressing into Memory Done\r\nSize = 0000.0000.0006.eba0"));
+    assert!(a.ends_with(
+        b"Decompressing into Memory Done\r\nSize = 0000.0000.0006.eba0\r\nttya initialized\r\n"
+    ));
     assert!(b.is_empty());
 }
 
