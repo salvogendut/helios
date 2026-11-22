@@ -10,6 +10,10 @@
 
 use crate::v9::{UnmappedData, V9Cpu, V9DataBus, PHYSICAL_ADDRESS_MASK};
 
+mod board;
+mod serial;
+pub use board::Ultra5ResetBoard;
+
 pub const FLASH_BASE: u64 = 0x01ff_f000_0000;
 pub const FLASH_SIZE: usize = 1 << 20;
 pub const POWER_ON_RESET_OFFSET: usize = 0x20;
@@ -39,19 +43,24 @@ impl ResetNvram {
             image: image.into_boxed_slice(),
         })
     }
+    fn sram_index(&self, pa: u64, width: usize) -> Result<usize, String> {
+        let offset = pa
+            .checked_sub(RESET_NVRAM_BASE)
+            .filter(|&offset| offset < RESET_NVRAM_SIZE as u64)
+            .ok_or_else(|| format!("unmapped Ultra 5 NVRAM address {pa:#x}"))?
+            as usize;
+        if offset + width > M48T59_REGISTERS {
+            return Err(format!(
+                "unsupported Ultra 5 M48T59 register access at {pa:#x}"
+            ));
+        }
+        Ok(offset)
+    }
 }
 
 impl V9DataBus for ResetNvram {
     fn read_bypass_xword(&mut self, pa: u64) -> Result<u64, String> {
-        if !(RESET_NVRAM_BASE..RESET_NVRAM_BASE + RESET_NVRAM_SIZE as u64).contains(&pa) {
-            return Err(format!("unmapped Ultra 5 physical read at {pa:#x}"));
-        }
-        let offset = (pa - RESET_NVRAM_BASE) as usize;
-        if offset + 8 > M48T59_REGISTERS {
-            return Err(format!(
-                "unsupported Ultra 5 M48T59 register read at {pa:#x}"
-            ));
-        }
+        let offset = self.sram_index(pa, 8)?;
         Ok(u64::from_be_bytes(
             self.image[offset..offset + 8].try_into().unwrap(),
         ))

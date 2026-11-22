@@ -63,25 +63,20 @@ machines should become explicit profiles; SPARC V9 is a separate CPU milestone.
 
 ## Ultra 5 serial console
 
-**Parked at `501b46c` on `feat/ultra5-reset-window-state` (21 November 2026).**
-At the time of parking, `main` contains the preceding MMU-context checkpoint
-at `6fd5ac4`. On the feature branch, original Ultra 5/10 OBP 3.31.0 reads
-the NVRAM reset marker, clears both MMU contexts, exits RED_state and sets
-up the register windows. Both tested paths reach `wrpr 5, %tl` at virtual
-PC `0xffff_ffff_f000_1614`. This takes 38 instructions with zero-filled
-NVRAM and 47 with the `soft-rst` marker and reset `%g7 = 0`. The trace
-ends before any serial-controller access. [Reset trace and reproduction](ultra5.md#initialize-interrupt-and-register-window-state)
+**First diagnostic text on serial A verified on 22 November 2026.** On the
+headless board fixture, original OBP 3.31.0 initializes the Siemens serial
+controller and prints its power-on diagnostic when NVRAM byte 1 is nonzero.
 
-| Milestone after resuming | Acceptance |
+| Milestone | Evidence |
 | --- | --- |
-| First firmware access to the serial controller | Start with OBP's five-level trap-stack setup. Follow the original ROM through the CPU and board initialization it actually exercises. Capture the guest PC, physical address, direction and width of the first access and identify the corresponding EBus serial register. |
-| First firmware text | Implement the register behavior the trace exercises. Capture repeatable, readable OBP output on headless serial from reset and correlate the first transmitted byte with its guest write. |
-| Interactive OpenBoot console | Reach the serial `ok` prompt, enter `1 2 + .` over that same port, and capture the reply `3` followed by another `ok` prompt. |
+| First serial register access | At virtual PC `0xffff_ffff_f000_033c`, the guest stores one byte, `0xc3`, at physical `0x01ff_f140_002c` (channel A CCR0). Both tested reset-marker paths reach this write. |
+| First firmware text | Serial A emits `Hardware Power ON` on the cold path and `Software Power ON` on the matching-marker path. Each ends in CR/LF. With the diagnostic byte clear, these writes to the transmit FIFO are skipped. |
+| Interactive OpenBoot console | Open. Acceptance is a serial `ok` prompt that takes `1 2 + .`, replies `3` and prompts again. |
 
-Allow **several focused development days** from resumption for first text
-and **one to several weeks in total** for an interactive prompt. These
-are planning estimates. The main unknown is how much board initialization
-OBP needs before touching the serial controller. Revisit both estimates
-at the first confirmed access. Sun's board device tree places the serial
-devices on EBus. [Sun Ultra 5/10 Product Notes, code example 2](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-4970-10/805-4970-10.pdf#page=16)
-
+The next board access to model is the 32-bit store at PC
+`0xffff_ffff_f000_18fc`, physical address `0x01ff_f172_6000`. Follow the
+original ROM through that access and subsequent initialization, then verify
+serial receive from a host terminal. The earlier estimate of one to several
+weeks for an interactive prompt remains provisional. Firmware progress beyond
+this diagnostic and the receive path are the main uncertainties.
+[Run the headless diagnostic](ultra5.md#run-the-first-serial-diagnostic)

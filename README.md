@@ -26,6 +26,10 @@ parallel-port DMA register. Installed Solaris boot checkpoints are described
 below. See the
 [latest firmware checkpoint](docs/firmware.md#timer-and-ethernet-bring-up).
 
+On the experimental **Ultra 5**, original OpenBoot 3.31.0 transmits its first
+power-on message on serial A in a headless example. An interactive Ultra 5
+prompt is still in development. [Run the serial diagnostic](docs/ultra5.md#run-the-first-serial-diagnostic)
+
 **SPARCstation 20** and **Axil 320** profiles boot their original firmware to
 the serial `ok` prompt with either one CPU or two 75 MHz SuperSPARC-II modules.
 Fast clocks (100 ns per outcome) remain the default for quicker boots.

@@ -135,6 +135,12 @@ test rather than assuming either emulator defines the hardware.
 - [Sun Ultra 5 Service Manual, 805-7763-12](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf):
   section C.1.6.3 describes the 1 MiB flash and its OBP and POST/OBDiag
   halves. Table C-14 describes the PROM address assignments.
+- Sun identifies the external A/B serial controller as a Siemens part and
+  assigns the keyboard and mouse to the Super I/O UARTs. The SAB 82532
+  manual defines the ASYNC transmit pool, CCR0, STAR.XFW and CMDR.XF.
+  The National data sheet describes the Super I/O index-port identification
+  sequence and paired configuration writes used by OBP.
+  [Sun board devices, §§C.1.6.1–2](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf#page=222) · [Siemens ESCC2 data sheet](https://media.digikey.com/pdf/Data%20Sheets/Infineon%20PDFS/SAB%2CSAF82532.pdf) · [National Super I/O, §§2.2–2.4](https://ardent-tool.com/datasheets/NS_PC87332VLJ.pdf)
 - The Ultra 5/10 product notes locate EEPROM at EBus `14,0`; the service
   manual (§C.1.6.4) identifies the NVRAM/TOD, and the parts list gives
   the 48T59. Force's technical reference documents the shared PCIO chip's

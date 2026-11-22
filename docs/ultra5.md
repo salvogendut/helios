@@ -1,10 +1,59 @@
 # Ultra 5/10 firmware reset instructions
 
-With an 8 KiB NVRAM image attached, the headless Ultra 5/10 fixture executes
-the original OBP 3.31.0 reset-time marker check, clears both MMU contexts,
-and initializes the interrupt and register-window state. Both tested paths
-reach virtual PC `0xffff_ffff_f000_1614`, where trap-stack setup begins.
-Development is parked at this checkpoint. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
+The headless Ultra 5/10 fixture runs original OBP 3.31.0 far enough to
+transmit the first reset diagnostic on serial port A. An interactive
+OpenBoot prompt remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
+
+## Run the first serial diagnostic
+
+From the repository root, use the reconstructed 1 MiB flash and a temporary
+8 KiB NVRAM seed. This example sets byte 1 to enable the diagnostic, leaves
+the reset marker clear, and stops at the last byte of the line.
+
+```sh
+u5_nvram=$(mktemp)
+python3 -c 'import sys; from pathlib import Path; Path(sys.argv[1]).write_bytes(bytes([0, 1]) + bytes(8190))' "$u5_nvram"
+cargo run --quiet --locked --offline --example ultra5_serial -- \
+  local/firmware/ultra5/ultra5-obp331-post310-1mb.bin "$u5_nvram" 1075
+rm -- "$u5_nvram"
+```
+
+Standard output carries the 19 guest bytes `Hardware Power ON\r\n`.
+The example reports its instruction count and PC on standard error and
+keeps NVRAM writes in memory. With ASCII `soft-rst` at offsets
+`0x10..0x18` and byte 1 set, the guest instead emits
+`Software Power ON\r\n`. A zero diagnostic byte suppresses both messages.
+The two-channel SAB 82532 drives the external serial ports. The Super I/O
+UARTs serve the keyboard and mouse. [Sun Ultra 5 Service Manual, §§C.1.6.1–2](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf#page=222)
+
+| Original OBP event | Cold marker | Matching marker |
+| --- | ---: | ---: |
+| Channel A CCR0 write retires | 219 | 228 |
+| First byte transmitted with diagnostics enabled | 607 | 595 |
+| Final line feed transmitted | 1,075 | 1,063 |
+
+The first access is a byte store from virtual PC `0xffff_ffff_f000_033c`
+to physical `0x01ff_f140_002c`. OBP writes `0xc3` through ASI `0x15` to
+select asynchronous mode and power up channel A. The firmware reads the
+register offset and value from flash, repeats its configuration on channel B,
+polls STAR, writes each character to XFIFO and issues the transmit command
+at PC `0xffff_ffff_f000_0380`. The fixture completes transmission
+synchronously and exposes the transmitted bytes through
+`Ultra5ResetBoard::take_serial_output()`. Serial input, baud-rate timing
+and interrupt delivery remain open. [Siemens SAB 82532 register descriptions](https://media.digikey.com/pdf/Data%20Sheets/Infineon%20PDFS/SAB%2CSAF82532.pdf)
+
+The reset board models the host and APB bus numbers used to route the
+onboard PCIO configuration access, the reset BAR1 value, and the three
+observed EBus setup writes. It assumes the documented Super I/O index-port
+strap at `0x398`. The installed board's strap has not been independently
+verified. The fixture implements the one-shot identification byte and
+double-write configuration protocol. PCI enumeration, BAR relocation,
+EBus wait-state timing and peripheral functions behind the Super I/O
+configuration registers remain open. [PCIO reset mapping, tables 36–37](https://www.artisantg.com/info/force_cpci_520_series_manual.pdf) · [National Super I/O, §§2.2–2.4](https://ardent-tool.com/datasheets/NS_PC87332VLJ.pdf)
+
+With a larger instruction budget, both paths reach the next unimplemented
+word store at virtual PC `0xffff_ffff_f000_18fc`, physical
+`0x01ff_f172_6000`, value `0xffff_ffff`.
 
 ## Reset and flash mapping
 
@@ -245,13 +294,13 @@ registers before and after the writes, including SOFTINT through ASR 22.
 The fixture implements register readback and each of the four IIi global
 register banks. A guest PSTATE write that enables interrupts, changes the
 memory model, selects little-endian operation or requests 32-bit addressing
-stops explicitly. Interrupt delivery, register-window traps and trap-stack
-execution remain open. The window counters, PIL and TBA start at zero for
+stops explicitly. Interrupt delivery, register-window traps and trap entry/return
+remain open. The window counters, PIL and TBA start at zero for
 repeatability where hardware reset values are unspecified.
 [IIi software interrupts, table 11-9](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=163) · [IIi window registers, §14.2.1](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223) · [IIi PSTATE and global banks, tables 14-12/13](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=235)
 
-With the reconstructed image installed, run the ten local-ROM checks together.
+With the reconstructed image installed, run the twelve local-ROM checks together.
 
 ```sh
-cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts --test ultra5_reset_setup -- --ignored --nocapture
+cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts --test ultra5_reset_setup --test ultra5_first_serial_access -- --ignored --nocapture
 ```

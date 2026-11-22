@@ -250,7 +250,7 @@ fn rejected_bypass_access_preserves_cpu_and_memory() {
         ), // %g0 still reads
         (true, 0x10, PROBE | (1 << 13), "alternate address space 0x0"), // initial %asi
         (true, 0x10, PROBE ^ (8 << 5), "alternate address space"),      // little-endian ASI 0x1d
-        (true, 0x10, 0xd2f2_82a0, "alternate address space"),           // stxa
+        (true, 0x10, 0xd2f2_83a0, "alternate address space"),           // little-endian STXA
     ] {
         let mut cpu = flat_cpu(privileged);
         cpu.write_reg(10, address);

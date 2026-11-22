@@ -17,7 +17,16 @@ const PSTATE_IG: u16 = 1 << 11;
 const GLOBAL_SELECT: u16 = PSTATE_AG | PSTATE_MG | PSTATE_IG;
 pub(crate) const PHYSICAL_ADDRESS_MASK: u64 = (1 << 41) - 1;
 const ASI_PHYS_BYPASS_EC_WITH_EBIT: u8 = 0x15;
+const ASI_PHYS_BYPASS_EC_WITH_EBIT_LE: u8 = 0x1d;
 const ASI_DMMU: u8 = 0x58;
+const MAX_TL: u8 = 5;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TrapFrame {
+    tpc: u64,
+    tnpc: u64,
+    tt: u16,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct V9Cpu {
@@ -33,6 +42,8 @@ pub struct V9Cpu {
     pstate: u16,
     pil: u8,
     tba: u64,
+    tl: u8,
+    traps: [TrapFrame; MAX_TL as usize],
     softint: u16,
     cansave: u8,
     canrestore: u8,
@@ -50,6 +61,9 @@ pub struct V9Memory {
 /// Data accesses are independent of the instruction source. A reset-time
 /// peripheral may implement physical bypass reads without mapping virtual RAM.
 pub(crate) trait V9DataBus {
+    fn load_byte(&mut self, va: u64) -> Result<u8, String> {
+        Err(format!("unmapped V9 LDUB at {va:#x}"))
+    }
     fn load_xword(&mut self, _va: u64) -> Result<u64, String> {
         Err("V9 LDX requires mapped data memory".into())
     }
@@ -61,12 +75,48 @@ pub(crate) trait V9DataBus {
             "unmapped V9 physical read: ASI=0x15 PA={pa:#x} width=8"
         ))
     }
+    fn read_bypass_byte(&mut self, pa: u64) -> Result<u8, String> {
+        Err(format!("unmapped V9 physical byte read at {pa:#x}"))
+    }
+    fn write_bypass_byte(&mut self, pa: u64, value: u8) -> Result<(), String> {
+        Err(format!(
+            "unmapped V9 physical byte write at {pa:#x} value={value:#x}"
+        ))
+    }
+    fn write_bypass_le_word(&mut self, pa: u64, value: u32) -> Result<(), String> {
+        Err(format!(
+            "unmapped V9 physical LE word write at {pa:#x} value={value:#x}"
+        ))
+    }
+    fn write_bypass_xword(&mut self, pa: u64, _value: u64) -> Result<(), String> {
+        Err(format!("unmapped V9 physical xword write at {pa:#x}"))
+    }
+    fn read_bypass_word(&mut self, pa: u64) -> Result<u32, String> {
+        Err(format!("unmapped V9 physical word read at {pa:#x}"))
+    }
+    fn write_bypass_word(&mut self, pa: u64, _value: u32) -> Result<(), String> {
+        Err(format!("unmapped V9 physical word write at {pa:#x}"))
+    }
 }
 
 pub(crate) struct UnmappedData;
 impl V9DataBus for UnmappedData {}
 
 impl V9DataBus for V9Memory {
+    fn load_byte(&mut self, va: u64) -> Result<u8, String> {
+        Ok(self.bytes[self.checked_range(va, 1, 1)?])
+    }
+    fn write_bypass_xword(&mut self, pa: u64, value: u64) -> Result<(), String> {
+        self.try_write_u64(pa, value)
+    }
+    fn read_bypass_word(&mut self, pa: u64) -> Result<u32, String> {
+        self.try_read_word(pa)
+    }
+    fn write_bypass_word(&mut self, pa: u64, value: u32) -> Result<(), String> {
+        let at = self.checked_range(pa, 4, 4)?;
+        self.bytes[at..at + 4].copy_from_slice(&value.to_be_bytes());
+        Ok(())
+    }
     fn load_xword(&mut self, va: u64) -> Result<u64, String> {
         self.try_read_u64(va)
     }
@@ -75,6 +125,19 @@ impl V9DataBus for V9Memory {
     }
     fn read_bypass_xword(&mut self, pa: u64) -> Result<u64, String> {
         self.try_read_u64(pa)
+    }
+    fn read_bypass_byte(&mut self, pa: u64) -> Result<u8, String> {
+        Ok(self.bytes[self.checked_range(pa, 1, 1)?])
+    }
+    fn write_bypass_byte(&mut self, pa: u64, value: u8) -> Result<(), String> {
+        let at = self.checked_range(pa, 1, 1)?;
+        self.bytes[at] = value;
+        Ok(())
+    }
+    fn write_bypass_le_word(&mut self, pa: u64, value: u32) -> Result<(), String> {
+        let at = self.checked_range(pa, 4, 4)?;
+        self.bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        Ok(())
     }
 }
 
@@ -157,6 +220,12 @@ impl From<PowerOnReset> for V9Cpu {
                 | (u16::from(reset.interrupt_globals) << 11),
             // IIi table 17-5 leaves CWP unknown at POR. Use the value observed on QEMU sun4u.
             cwp: 7,
+            tl: MAX_TL,
+            traps: {
+                let mut frames = [TrapFrame::default(); MAX_TL as usize];
+                frames[MAX_TL as usize - 1].tt = 1; // power_on_reset
+                frames
+            },
             // UltraSPARC-IIi User's Manual, table 17-5: all LSU_CONTROL bits clear on POR.
             lsu_control: 0,
             ..Self::new(reset.pc)
@@ -179,6 +248,8 @@ impl V9Cpu {
             pstate: 0,
             pil: 0,
             tba: 0,
+            tl: 0,
+            traps: [TrapFrame::default(); MAX_TL as usize],
             softint: 0,
             cansave: 0,
             canrestore: 0,
@@ -285,9 +356,36 @@ impl V9Cpu {
                     return Ok(());
                 }
             }
+            1 => {
+                let displacement = i64::from((word << 2) as i32);
+                self.write_reg(15, self.pc);
+                next_npc = self.pc.wrapping_add_signed(displacement);
+            }
             2 => match op3 {
                 0x02 => self.write_reg(rd, self.read_reg(rs1) | b),
                 0x00 => self.write_reg(rd, self.read_reg(rs1).wrapping_add(b)),
+                0x04 => self.write_reg(rd, self.read_reg(rs1).wrapping_sub(b)),
+                0x05 => self.write_reg(rd, self.read_reg(rs1) & !b),
+                0x11 => {
+                    let result = self.read_reg(rs1) & b;
+                    let low = result as u32;
+                    self.ccr = (u8::from((result as i64) < 0) << 7)
+                        | (u8::from(result == 0) << 6)
+                        | (u8::from((low as i32) < 0) << 3)
+                        | (u8::from(low == 0) << 2);
+                    self.write_reg(rd, result);
+                }
+                0x38 => {
+                    if word & (1 << 13) == 0 && word & 0x1fe0 != 0 {
+                        return Err(format!("unsupported V9 JMPL word {word:#x}"));
+                    }
+                    let target = self.read_reg(rs1).wrapping_add(b);
+                    if target & 3 != 0 || !matches!((target as i64) >> 43, 0 | -1) {
+                        return Err(format!("invalid V9 JMPL target {target:#x}"));
+                    }
+                    self.write_reg(rd, self.pc);
+                    next_npc = target;
+                }
                 0x10 => {
                     let a = self.read_reg(rs1);
                     let result = a.wrapping_add(b);
@@ -358,6 +456,10 @@ impl V9Cpu {
                 _ => return Err(format!("unsupported V9 op3 {op3:#x}")),
             },
             3 => match op3 {
+                0x01 => {
+                    let byte = memory.load_byte(self.read_reg(rs1).wrapping_add(b))?;
+                    self.write_reg(rd, u64::from(byte));
+                }
                 0x0e => {
                     let address = self.read_reg(rs1).wrapping_add(b);
                     memory.store_xword(address, self.read_reg(rd))?;
@@ -367,7 +469,7 @@ impl V9Cpu {
                     let value = memory.load_xword(address)?;
                     self.write_reg(rd, value);
                 }
-                0x1b | 0x1e => {
+                0x10 | 0x11 | 0x14 | 0x15 | 0x1b | 0x1e => {
                     let asi = if word & (1 << 13) != 0 {
                         self.asi
                     } else {
@@ -377,13 +479,48 @@ impl V9Cpu {
                         return Err(format!("privileged V9 alternate address space {asi:#x}"));
                     }
                     let address = self.read_reg(rs1).wrapping_add(b);
-                    match asi {
-                        ASI_PHYS_BYPASS_EC_WITH_EBIT if op3 == 0x1b => {
-                            let value = Self::read_physical_bypass(address, memory)?;
+                    match (asi, op3) {
+                        (ASI_PHYS_BYPASS_EC_WITH_EBIT, 0x10) => {
+                            let value =
+                                memory.read_bypass_word(Self::bypass_address(address, 4)?)?;
+                            self.write_reg(rd, u64::from(value));
+                        }
+                        (ASI_PHYS_BYPASS_EC_WITH_EBIT, 0x14) => {
+                            memory.write_bypass_word(
+                                Self::bypass_address(address, 4)?,
+                                self.read_reg(rd) as u32,
+                            )?;
+                        }
+                        (ASI_PHYS_BYPASS_EC_WITH_EBIT, 0x1e) => {
+                            memory.write_bypass_xword(
+                                Self::bypass_address(address, 8)?,
+                                self.read_reg(rd),
+                            )?;
+                        }
+                        (ASI_PHYS_BYPASS_EC_WITH_EBIT, 0x1b) => {
+                            let pa = Self::bypass_address(address, 8)?;
+                            let value = memory.read_bypass_xword(pa)?;
                             self.write_reg(rd, value);
                         }
-                        0x45 => self.access_lsu_control(op3, address, rd)?,
-                        ASI_DMMU => self.access_mmu_context(op3, address, rd)?,
+                        (ASI_PHYS_BYPASS_EC_WITH_EBIT, 0x11) => {
+                            let value =
+                                memory.read_bypass_byte(Self::bypass_address(address, 1)?)?;
+                            self.write_reg(rd, u64::from(value));
+                        }
+                        (ASI_PHYS_BYPASS_EC_WITH_EBIT, 0x15) => {
+                            memory.write_bypass_byte(
+                                Self::bypass_address(address, 1)?,
+                                self.read_reg(rd) as u8,
+                            )?;
+                        }
+                        (ASI_PHYS_BYPASS_EC_WITH_EBIT_LE, 0x14) => {
+                            memory.write_bypass_le_word(
+                                Self::bypass_address(address, 4)?,
+                                self.read_reg(rd) as u32,
+                            )?;
+                        }
+                        (0x45, 0x1b | 0x1e) => self.access_lsu_control(op3, address, rd)?,
+                        (ASI_DMMU, 0x1b | 0x1e) => self.access_mmu_context(op3, address, rd)?,
                         _ => {
                             return Err(format!("unsupported V9 alternate address space {asi:#x}"))
                         }
@@ -407,8 +544,12 @@ impl V9Cpu {
 
     fn read_pr(&self, selector: u8) -> Result<u64, String> {
         Ok(match selector {
+            0 => self.traps[self.trap_index()?].tpc,
+            1 => self.traps[self.trap_index()?].tnpc,
+            3 => u64::from(self.traps[self.trap_index()?].tt),
             5 => self.tba,
             6 => u64::from(self.pstate),
+            7 => u64::from(self.tl),
             8 => u64::from(self.pil),
             9 => u64::from(self.cwp),
             10 => u64::from(self.cansave),
@@ -420,10 +561,28 @@ impl V9Cpu {
         })
     }
 
+    fn trap_index(&self) -> Result<usize, String> {
+        self.tl
+            .checked_sub(1)
+            .map(usize::from)
+            .ok_or_else(|| "illegal V9 trap register access at TL=0".into())
+    }
+
     fn write_pr(&mut self, selector: u8, value: u64) -> Result<(), String> {
         // IIi §14.2.1 truncates each window counter independently to three bits.
         let count = value as u8 & WINDOW_MASK;
         match selector {
+            0 | 1 | 3 => {
+                let index = self.trap_index()?;
+                // IIi stores VA[43:2] and sign-extends the trap PC on read.
+                let pc = (((value << 20) as i64 >> 20) as u64) & !3;
+                let frame = &mut self.traps[index];
+                match selector {
+                    0 => frame.tpc = pc,
+                    1 => frame.tnpc = pc,
+                    _ => frame.tt = value as u16 & 0x1ff,
+                }
+            }
             5 => {
                 if !matches!((value as i64) >> 43, 0 | -1) {
                     return Err(format!("unsupported IIi TBA address {value:#x}"));
@@ -441,6 +600,8 @@ impl V9Cpu {
                 self.pstate = value as u16;
             }
             8 => self.pil = value as u8 & 0xf,
+            7 if value <= u64::from(MAX_TL) => self.tl = value as u8,
+            7 => return Err(format!("unsupported IIi trap level {value:#x}")),
             9 => self.cwp = count,
             10 => self.cansave = count,
             11 => self.canrestore = count,
@@ -452,7 +613,7 @@ impl V9Cpu {
         Ok(())
     }
 
-    fn read_physical_bypass(address: u64, memory: &mut dyn V9DataBus) -> Result<u64, String> {
+    fn bypass_address(address: u64, width: u64) -> Result<u64, String> {
         // IIi §§4.2 and 15.10: 44-bit sign-extended VA, 41-bit physical bus.
         if !matches!((address as i64) >> 43, 0 | -1) {
             return Err(format!(
@@ -460,12 +621,12 @@ impl V9Cpu {
             ));
         }
         let physical = address & PHYSICAL_ADDRESS_MASK;
-        if physical % 8 != 0 {
+        if physical % width != 0 {
             return Err(format!(
-                "misaligned V9 physical bypass read at {physical:#x}"
+                "misaligned V9 physical bypass access at {physical:#x}"
             ));
         }
-        memory.read_bypass_xword(physical)
+        Ok(physical)
     }
 
     fn access_lsu_control(&mut self, op3: u32, address: u64, rd: u8) -> Result<(), String> {
