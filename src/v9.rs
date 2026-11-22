@@ -28,6 +28,10 @@ const ASI_PHYS_BYPASS_EC_WITH_EBIT: u8 = 0x15;
 const ASI_PHYS_BYPASS_EC_WITH_EBIT_LE: u8 = 0x1d;
 const ASI_DMMU: u8 = 0x58;
 const ASI_IMMU: u8 = 0x50;
+const ASI_IMMU_DEMAP: u8 = 0x57;
+const ASI_DMMU_DEMAP: u8 = 0x5f;
+const ASI_ITLB_DATA_IN: u8 = 0x54;
+const ASI_DTLB_DATA_IN: u8 = 0x5c;
 const ASI_ITLB_DATA_ACCESS: u8 = 0x55;
 const ASI_ITLB_TAG_READ: u8 = 0x56;
 const ASI_DTLB_DATA_ACCESS: u8 = 0x5d;
@@ -48,7 +52,45 @@ const VERSION: u64 = 0x0017_0012_9100_0000 | ((MAX_TL as u64) << 8) | WINDOW_MAS
 struct TrapFrame {
     tpc: u64,
     tnpc: u64,
+    tstate: u64,
     tt: u16,
+}
+
+#[derive(Debug)]
+pub(crate) enum CpuFault {
+    TlbMiss(TlbMiss),
+    Stop(String),
+}
+
+#[derive(Debug)]
+pub(crate) struct TlbMiss {
+    address: u64,
+    context: u16,
+    access: Access,
+}
+
+impl From<String> for CpuFault {
+    fn from(message: String) -> Self {
+        Self::Stop(message)
+    }
+}
+
+impl From<&str> for CpuFault {
+    fn from(message: &str) -> Self {
+        Self::Stop(message.into())
+    }
+}
+
+impl From<CpuFault> for String {
+    fn from(fault: CpuFault) -> Self {
+        match fault {
+            CpuFault::Stop(message) => message,
+            CpuFault::TlbMiss(miss) => format!(
+                "IIi TLB miss for {:?} VA={:#x} context={:#x}",
+                miss.access, miss.address, miss.context
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +100,7 @@ pub struct V9Cpu {
     pc: u64,
     npc: u64,
     ccr: u8,
+    fprs: u8,
     cwp: u8,
     asi: u8,
     primary_context: u16,
@@ -370,6 +413,7 @@ impl V9Cpu {
             pc,
             npc: pc.wrapping_add(4),
             ccr: 0,
+            fprs: 0, // IIi leaves FPRS unknown at POR.
             cwp: 0,
             asi: 0,
             primary_context: 0,
@@ -447,14 +491,14 @@ impl V9Cpu {
     pub fn step(&mut self, memory: &mut V9Memory) -> Result<(), String> {
         let fetch = self.instruction_address()?;
         let word = memory.try_read_word(fetch.pa)?;
-        self.retire_fetch(fetch, word, memory)
+        Ok(self.retire_fetch(fetch, word, memory)?)
     }
 
-    pub(crate) fn instruction_address(&self) -> Result<Translation, String> {
+    pub(crate) fn instruction_address(&self) -> Result<Translation, CpuFault> {
         self.translate(self.pc, 4, Access::Fetch)
     }
 
-    fn translate(&self, address: u64, width: u64, access: Access) -> Result<Translation, String> {
+    fn translate(&self, address: u64, width: u64, access: Access) -> Result<Translation, CpuFault> {
         let va = if self.pstate & (1 << 3) != 0 {
             address & 0xffff_ffff
         } else {
@@ -467,7 +511,7 @@ impl V9Cpu {
         };
         if !enabled {
             if access == Access::Flush {
-                return Err(format!("IIi FLUSH on side-effect bypass at VA={va:#x}"));
+                return Err(format!("IIi FLUSH on side-effect bypass at VA={va:#x}").into());
             }
             return Ok(Translation {
                 pa: physical,
@@ -494,7 +538,7 @@ impl V9Cpu {
         fetch: Translation,
         word: u32,
         memory: &mut dyn V9DataBus,
-    ) -> Result<(), String> {
+    ) -> Result<(), CpuFault> {
         // Make Used visible to the instruction itself. A directed write to
         // its own I-TLB slot can then replace that bit in program order.
         let previous = fetch
@@ -513,7 +557,7 @@ impl V9Cpu {
         &mut self,
         word: u32,
         memory: &mut dyn V9DataBus,
-    ) -> Result<(), String> {
+    ) -> Result<(), CpuFault> {
         let next_pc = self.npc;
         let mut next_npc = self.npc.wrapping_add(4);
         let rd = ((word >> 25) & 31) as u8;
@@ -537,7 +581,7 @@ impl V9Cpu {
                     let flags = match cc {
                         0 => self.ccr,
                         2 => self.ccr >> 4,
-                        _ => return Err(format!("unsupported V9 BPcc word {word:#x}")),
+                        _ => return Err(format!("unsupported V9 BPcc word {word:#x}").into()),
                     };
                     (((word << 13) as i32) >> 11, flags)
                 } else {
@@ -578,11 +622,11 @@ impl V9Cpu {
                 }
                 0x38 => {
                     if word & (1 << 13) == 0 && word & 0x1fe0 != 0 {
-                        return Err(format!("unsupported V9 JMPL word {word:#x}"));
+                        return Err(format!("unsupported V9 JMPL word {word:#x}").into());
                     }
                     let target = self.read_reg(rs1).wrapping_add(b);
                     if target & 3 != 0 || !matches!((target as i64) >> 43, 0 | -1) {
-                        return Err(format!("invalid V9 JMPL target {target:#x}"));
+                        return Err(format!("invalid V9 JMPL target {target:#x}").into());
                     }
                     self.write_reg(rd, self.pc);
                     next_npc = target;
@@ -590,7 +634,7 @@ impl V9Cpu {
                 0x39 | 0x3c | 0x3d => {
                     // SAVE, RESTORE and RETURN read their operands in the old window.
                     if (word & (1 << 13) == 0 && word & 0x1fe0 != 0) || (op3 == 0x39 && rd != 0) {
-                        return Err(format!("unsupported V9 window instruction {word:#x}"));
+                        return Err(format!("unsupported V9 window instruction {word:#x}").into());
                     }
                     let sum = self.read_reg(rs1).wrapping_add(b);
                     match op3 {
@@ -611,7 +655,7 @@ impl V9Cpu {
                             }
                             if op3 == 0x39 {
                                 if sum & 3 != 0 || !matches!((sum as i64) >> 43, 0 | -1) {
-                                    return Err(format!("invalid V9 RETURN target {sum:#x}"));
+                                    return Err(format!("invalid V9 RETURN target {sum:#x}").into());
                                 }
                                 next_npc = sum;
                             }
@@ -654,6 +698,7 @@ impl V9Cpu {
                 0x28 if rs1 == 2 => self.write_reg(rd, u64::from(self.ccr)),
                 0x28 if rs1 == 3 && word & 0x3fff == 0 => self.write_reg(rd, u64::from(self.asi)),
                 0x28 if rs1 == 5 && word & 0x3fff == 0 => self.write_reg(rd, self.pc),
+                0x28 if rs1 == 6 && word & 0x3fff == 0 => self.write_reg(rd, u64::from(self.fprs)),
                 0x28 if rs1 == 18 && word & 0x3fff == 0 => {
                     self.require_privilege("RD dispatch control")?;
                     self.write_reg(rd, u64::from(self.dispatch_control));
@@ -665,18 +710,35 @@ impl V9Cpu {
                 // MEMBAR #Sync: all earlier operations in this single-CPU
                 // fixture have already completed when an instruction retires.
                 0x28 if word == 0x8143_e040 => {}
+                0x3e if rd <= 1 && word & 0x7ffff == 0 => {
+                    self.require_privilege("DONE/RETRY")?;
+                    let frame = self.traps[self.trap_index()?];
+                    self.ccr = (frame.tstate >> 32) as u8;
+                    self.asi = (frame.tstate >> 24) as u8;
+                    self.pstate = ((frame.tstate >> 8) & 0xfff) as u16;
+                    self.cwp = frame.tstate as u8 & WINDOW_MASK;
+                    self.tl -= 1;
+                    (self.pc, self.npc) = if rd == 1 {
+                        (frame.tpc, frame.tnpc)
+                    } else {
+                        (frame.tnpc, frame.tnpc.wrapping_add(4))
+                    };
+                    return Ok(());
+                }
                 0x3a => {
                     // V9 A.61. Format 4 encodes cc in the usual simm13 field.
                     let immediate = word & (1 << 13) != 0;
                     let reserved = if immediate { 0x780 } else { 0x7e0 };
                     if word & ((1 << 29) | reserved) != 0 {
-                        return Err(format!("unsupported V9 Tcc word {word:#x}"));
+                        return Err(format!("unsupported V9 Tcc word {word:#x}").into());
                     }
                     let flags = match (word >> 11) & 3 {
                         0 => self.ccr,
                         2 => self.ccr >> 4,
                         _ => {
-                            return Err(format!("unsupported V9 Tcc condition codes in {word:#x}"))
+                            return Err(
+                                format!("unsupported V9 Tcc condition codes in {word:#x}").into()
+                            )
                         }
                     };
                     if Self::condition(u32::from(rd), flags) {
@@ -685,7 +747,8 @@ impl V9Cpu {
                         return Err(format!(
                             "V9 software trap TT={:#x} entry not implemented",
                             0x100 + number
-                        ));
+                        )
+                        .into());
                     }
                 }
                 0x3b if rd == 0 && (word & (1 << 13) != 0 || word & 0x1fe0 == 0) => {
@@ -701,33 +764,40 @@ impl V9Cpu {
                     self.require_privilege("RDPR")?;
                     // V9 A.43: rs1 selects the privileged register; bits 13:0 are reserved.
                     if word & 0x3fff != 0 {
-                        return Err(format!("unsupported V9 RDPR word {word:#x}"));
+                        return Err(format!("unsupported V9 RDPR word {word:#x}").into());
                     }
                     self.write_reg(rd, self.read_pr(rs1)?);
                 }
                 0x30 if rd == 3 => {
                     if word & (1 << 13) == 0 && word & 0x1fe0 != 0 {
-                        return Err(format!("unsupported V9 WRASI word {word:#x}"));
+                        return Err(format!("unsupported V9 WRASI word {word:#x}").into());
                     }
                     self.asi = (self.read_reg(rs1) ^ b) as u8;
+                }
+                0x30 if rd == 6 && (word & (1 << 13) != 0 || word & 0x1fe0 == 0) => {
+                    self.fprs = (self.read_reg(rs1) ^ b) as u8 & 7;
                 }
                 0x30 if rd == 18 => {
                     self.require_privilege("WR dispatch control")?;
                     if word & (1 << 13) == 0 && word & 0x1fe0 != 0 {
-                        return Err(format!("unsupported V9 WR dispatch control word {word:#x}"));
+                        return Err(
+                            format!("unsupported V9 WR dispatch control word {word:#x}").into()
+                        );
                     }
                     let value = self.read_reg(rs1) ^ b;
                     // IIi Appendix I.1.2: GS[5:3], MVX[2], MS[0]. Groups
                     // 5 and 6 are undefined. This fixture has no UPA trace pins.
                     if value & !0x3d != 0 || matches!(value >> 3, 5 | 6) {
-                        return Err(format!("unsupported IIi dispatch control value {value:#x}"));
+                        return Err(
+                            format!("unsupported IIi dispatch control value {value:#x}").into()
+                        );
                     }
                     self.dispatch_control = value as u8;
                 }
                 0x30 if rd == 22 => {
                     self.require_privilege("WR SOFTINT")?;
                     if word & (1 << 13) == 0 && word & 0x1fe0 != 0 {
-                        return Err(format!("unsupported V9 WR SOFTINT word {word:#x}"));
+                        return Err(format!("unsupported V9 WR SOFTINT word {word:#x}").into());
                     }
                     let value = self.read_reg(rs1) ^ b;
                     self.softint = u16::try_from(value)
@@ -737,11 +807,11 @@ impl V9Cpu {
                     self.require_privilege("WRPR")?;
                     let reserved_bits_set = word & (1 << 13) == 0 && word & 0x1fe0 != 0;
                     if reserved_bits_set {
-                        return Err(format!("unsupported V9 WRPR word {word:#x}"));
+                        return Err(format!("unsupported V9 WRPR word {word:#x}").into());
                     }
                     self.write_pr(rd, self.read_reg(rs1) ^ b)?;
                 }
-                _ => return Err(format!("unsupported V9 op3 {op3:#x}")),
+                _ => return Err(format!("unsupported V9 op3 {op3:#x}").into()),
             },
             3 => match op3 {
                 0x00..=0x02 | 0x04..=0x06 | 0x0b | 0x0e => {
@@ -777,7 +847,9 @@ impl V9Cpu {
                         (word >> 5) as u8
                     };
                     if asi < 0x80 && self.pstate & PSTATE_PRIV == 0 {
-                        return Err(format!("privileged V9 alternate address space {asi:#x}"));
+                        return Err(
+                            format!("privileged V9 alternate address space {asi:#x}").into()
+                        );
                     }
                     let address = self.read_reg(rs1).wrapping_add(b);
                     match (asi, op3) {
@@ -854,7 +926,8 @@ impl V9Cpu {
                             if address & !0x3fe0 != 0 {
                                 return Err(format!(
                                     "invalid IIi cache tag address {address:#x} for ASI {asi:#x}"
-                                ));
+                                )
+                                .into());
                             }
                             let index = (address >> 5) as usize;
                             let value = self.read_reg(rd);
@@ -914,6 +987,22 @@ impl V9Cpu {
                                 self.write_reg(rd, tag);
                             }
                         }
+                        (ASI_IMMU_DEMAP | ASI_DMMU_DEMAP, 0x1e) => {
+                            let tlb = if asi == ASI_IMMU_DEMAP {
+                                &mut self.instruction_tlb
+                            } else {
+                                &mut self.data_tlb
+                            };
+                            tlb.demap(address, self.primary_context, self.secondary_context)?;
+                        }
+                        (ASI_ITLB_DATA_IN | ASI_DTLB_DATA_IN, 0x1e) if address == 0 => {
+                            let value = self.read_reg(rd);
+                            if asi == ASI_ITLB_DATA_IN {
+                                self.instruction_tlb.insert(value, true);
+                            } else {
+                                self.data_tlb.insert(value, false);
+                            }
+                        }
                         (ASI_ITLB_DATA_ACCESS | ASI_DTLB_DATA_ACCESS, 0x1b | 0x1e)
                         | (ASI_ITLB_TAG_READ | ASI_DTLB_TAG_READ, 0x1b) => {
                             let index = Tlb::index(address)?;
@@ -939,17 +1028,64 @@ impl V9Cpu {
                         }
                         (ASI_DMMU, 0x1b | 0x1e) => self.access_mmu_context(op3, address, rd)?,
                         _ => {
-                            return Err(format!("unsupported V9 alternate address space {asi:#x}"))
+                            return Err(
+                                format!("unsupported V9 alternate address space {asi:#x}").into()
+                            )
                         }
                     }
                 }
-                _ => return Err(format!("unsupported V9 memory op3 {op3:#x}")),
+                _ => return Err(format!("unsupported V9 memory op3 {op3:#x}").into()),
             },
-            _ => return Err(format!("unsupported V9 word {word:#x}")),
+            _ => return Err(format!("unsupported V9 word {word:#x}").into()),
         }
         self.pc = next_pc;
         self.npc = next_npc;
         Ok(())
+    }
+
+    /// IIi normal fast MMU miss entry. RED_state and trap-stack exhaustion
+    /// need separate architectural transitions and remain explicit stops.
+    pub(crate) fn enter_mmu_miss(
+        &mut self,
+        miss: TlbMiss,
+        fetch: Option<Translation>,
+    ) -> Result<u16, String> {
+        if self.pstate & PSTATE_RED != 0 || self.tl >= MAX_TL - 1 {
+            return Err(format!(
+                "unsupported IIi MMU miss in RED_state or at TL {}",
+                self.tl
+            ));
+        }
+        if let Some(slot) = fetch.and_then(|hit| hit.slot) {
+            // The fetch completed even though its operand translation missed.
+            self.instruction_tlb.set_used(slot, true);
+        }
+        let (tt, tlb) = if miss.access == Access::Fetch {
+            (0x64u16, &mut self.instruction_tlb)
+        } else {
+            (0x68u16, &mut self.data_tlb)
+        };
+        tlb.stage_tag((miss.address & !0x1fff) | u64::from(miss.context));
+        let nested = self.tl != 0;
+        self.traps[usize::from(self.tl)] = TrapFrame {
+            tpc: self.pc,
+            tnpc: self.npc,
+            tt,
+            tstate: (u64::from(self.ccr) << 32)
+                | (u64::from(self.asi) << 24)
+                | (u64::from(self.pstate) << 8)
+                | u64::from(self.cwp),
+        };
+        self.tl += 1;
+        // Keep MM and TLE, copy TLE to CLE, and select the MMU globals.
+        self.pstate = (self.pstate & 0x1c0)
+            | ((self.pstate & 0x100) << 1)
+            | PSTATE_PRIV
+            | PSTATE_PEF
+            | PSTATE_MG;
+        self.pc = self.tba | (u64::from(nested) << 14) | (u64::from(tt) << 5);
+        self.npc = self.pc + 4;
+        Ok(tt)
     }
 
     fn require_privilege(&self, operation: &str) -> Result<(), String> {
@@ -963,6 +1099,7 @@ impl V9Cpu {
         Ok(match selector {
             0 => self.traps[self.trap_index()?].tpc,
             1 => self.traps[self.trap_index()?].tnpc,
+            2 => self.traps[self.trap_index()?].tstate,
             3 => u64::from(self.traps[self.trap_index()?].tt),
             5 => self.tba,
             6 => u64::from(self.pstate),
@@ -1240,7 +1377,7 @@ mod tests {
         let before = cpu.clone();
         for (op, tt) in [(TE_XCC, 0x13e), (0x91d0_4002, 0x103), (0x91d0_607f, 0x17e)] {
             let err = cpu.execute_fetched(op, &mut UnmappedData).unwrap_err();
-            assert!(err.contains(&format!("TT={tt:#x}")));
+            assert!(String::from(err).contains(&format!("TT={tt:#x}")));
             assert_eq!(cpu, before);
         }
         for mask in [1 << 29, 1 << 11, 1 << 7] {
@@ -1248,6 +1385,32 @@ mod tests {
                 .execute_fetched(TE_XCC | mask, &mut UnmappedData)
                 .is_err());
             assert_eq!(cpu, before);
+        }
+    }
+
+    #[test]
+    fn fprs_is_user_read_write_and_independent_of_pef_and_ccr() {
+        const READ: u32 = 0x8941_8000; // rd %fprs,%g4
+        const WRITE: u32 = 0x8d80_4002; // wr %g1,%g2,%fprs
+        for mode in [0, PSTATE_PRIV | PSTATE_PEF] {
+            let mut cpu = V9Cpu::new(0x40);
+            cpu.pstate = mode;
+            cpu.ccr = 0xa5;
+            for value in 0..8 {
+                cpu.write_reg(1, u64::MAX ^ value);
+                cpu.write_reg(2, 7);
+                cpu.execute_fetched(WRITE, &mut UnmappedData).unwrap();
+                cpu.execute_fetched(READ, &mut UnmappedData).unwrap();
+                assert_eq!((cpu.read_reg(4), cpu.ccr, cpu.pstate), (value, 0xa5, mode));
+            }
+            cpu.write_reg(4, 4);
+            cpu.execute_fetched(0x8d81_2000, &mut UnmappedData).unwrap(); // original OBP WRFPRS
+            assert_eq!(cpu.fprs, 4);
+            let before = cpu.clone();
+            for bad in [WRITE | (1 << 8), READ | 1] {
+                assert!(cpu.execute_fetched(bad, &mut UnmappedData).is_err());
+                assert_eq!(cpu, before);
+            }
         }
     }
 
@@ -1396,6 +1559,7 @@ mod tests {
             let before = cpu.clone();
             assert!(cpu
                 .execute_fetched(word, &mut UnmappedData)
+                .map_err(String::from)
                 .unwrap_err()
                 .contains(reason));
             assert_eq!(cpu, before);
@@ -1438,6 +1602,7 @@ mod tests {
             let before = user.clone();
             assert!(user
                 .execute_fetched(restricted, &mut UnmappedData)
+                .map_err(String::from)
                 .unwrap_err()
                 .contains("privileged"));
             assert_eq!(user, before);

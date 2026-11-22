@@ -1,5 +1,5 @@
 //! Bounded original-ROM diagnostic output on Ultra 5 serial port A.
-use helios::ultra5::{BootFlash, PowerOnReset, ResetNvram, Ultra5ResetBoard};
+use helios::ultra5::{BoardStep, BootFlash, PowerOnReset, ResetNvram, Ultra5ResetBoard};
 use helios::v9::V9Cpu;
 use std::{
     env, fs,
@@ -21,14 +21,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
     let mut stdout = io::stdout().lock();
-    for retired in 0..budget {
-        board.step_mapped(&mut cpu).map_err(|error| {
+    let mut retired = 0;
+    let mut traps = 0;
+    for _ in 0..budget {
+        let outcome = board.step_outcome(&mut cpu).map_err(|error| {
             format!(
-                "retired={retired} PC={:#018x} nPC={:#018x}: {error}",
+                "retired={retired} traps={traps} PC={:#018x} nPC={:#018x}: {error}",
                 cpu.pc(),
                 cpu.npc()
             )
         })?;
+        match outcome {
+            BoardStep::Retired(_) => retired += 1,
+            BoardStep::TrapTaken { .. } => traps += 1,
+        }
         let [port_a, _] = board.take_serial_output();
         if !port_a.is_empty() {
             stdout.write_all(&port_a)?;
@@ -36,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     eprintln!(
-        "retired={budget} PC={:#018x} nPC={:#018x}",
+        "retired={retired} traps={traps} PC={:#018x} nPC={:#018x}",
         cpu.pc(),
         cpu.npc()
     );

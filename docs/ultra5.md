@@ -150,7 +150,8 @@ each slot from 63 down to 0. Each directed store captures the matching
 staged tag along with the entry data. Separate indexed data and tag ports
 support readback. The original-ROM check starts with 128 populated entries
 and verifies every tag and data word after the loop. OBP later loads mappings
-through these same ports. Automatic replacement and demap remain open.
+through these same ports. Later its fast-miss handler inserts entries via
+the Data In port. The guest also demaps translations by page.
 [Sun UltraSPARC-IIi User’s Manual, §§15.2 and 15.9.8–9](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
 
 To stop at the first DRAM read on a cold start, use the serial example with a
@@ -208,9 +209,9 @@ The first fetch after the store uses I-TLB slot 2 to read
 `membar #Sync` at physical `0x01fff0001f94`. The slot 0 mapping is a
 separate RAM destination with the same low 32 virtual-address bits.
 The following `flush [%g0]` checks the translation for VA zero in D-TLB
-slot 3. TLB misses and protection violations currently stop the fixture
-before retirement. Architectural MMU trap delivery, fault registers and
-cache timing remain open. [Sun IIi User’s Manual, §§14.4.4 and 15.2–15.7](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+slot 3. The board can deliver normal fast instruction and data MMU misses.
+Protection violations, RED-state miss handling and other synchronous MMU
+fault registers remain open. [Sun IIi User’s Manual, §§14.4.4 and 15.2–15.7](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
 
 ## Executing OpenBoot from RAM
 
@@ -270,9 +271,29 @@ fills, diagnostic tag reads and external debug pins remain open.
 
 The expanded firmware reaches its `fprs!` routine at VA `0xf0023944`
 (PA `0x3ffa3944`), after printing `ttya initialized`. The next instruction
-is `wr %g4,0,%fprs`, with `%g4 = 4` and `PSTATE = 0x14`. Both quiet
-controls reach the same instruction with zero serial output. Interactive
-input and an `ok` prompt remain open.
+is `wr %g4,0,%fprs`, with `%g4 = 4` and `PSTATE = 0x14`. It sets the
+floating-point enable bit. FPRS and its two dirty bits support integer
+register reads and writes from user and supervisor mode. The IIi leaves
+their power-on values unspecified. The fixture starts them at zero.
+
+## OpenBoot handles its first MMU misses
+
+The original firmware installs its trap table at VA `0xf0000000`. The first
+`ldx` at VA `0xf0009018` that references `0xffffffffff000f00` misses the
+D-TLB. The guest takes TT `0x68` at vector `0xf0000d00`, reads the faulting
+page from D-MMU Tag Access, installs a translation via ASI `0x5c` and
+executes `retry`. The retried load reads zero from PA `0x3ff6cf00`.
+The same handler refills three more pages on stores. OBP then reaches a
+64-bit store of `0x000000140020010f` to the IIi PCI Control/Status register
+at PA `0x01fe00002000`. [IIi MMU traps, TLB ports and PCI registers, chapters 15 and 19](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
+Use the serial example with a limit of `53466992` (cold diagnostic) or
+`22915900` (soft diagnostic) to stop immediately before the PCI store.
+Each run includes four trap entries. The example uses
+`Ultra5ResetBoard::step_outcome`, whose result distinguishes a retired
+instruction from trap entry. The retirement-only `step_mapped` API retains
+its stop-on-miss behavior. The serial output still ends at `ttya initialized`
+with diagnostics enabled. Interactive input and an `ok` prompt remain open.
 
 ## Reset and flash mapping
 
@@ -513,8 +534,8 @@ registers before and after the writes, including SOFTINT through ASR 22.
 The fixture implements register readback and each of the four IIi global
 register banks. A guest PSTATE write that enables interrupts, changes the
 memory model, selects little-endian operation or requests 32-bit addressing
-stops explicitly. Interrupt delivery, register-window traps and trap entry/return
-remain open. The window counters, PIL and TBA start at zero for
+stops explicitly. Normal fast-MMU trap entry, DONE and RETRY are implemented.
+Interrupt delivery and register-window traps remain open. The window counters, PIL and TBA start at zero for
 repeatability where hardware reset values are unspecified.
 [IIi software interrupts, table 11-9](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=163) · [IIi window registers, §14.2.1](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223) · [IIi PSTATE and global banks, tables 14-12/13](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=235)
 

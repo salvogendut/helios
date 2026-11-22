@@ -2,7 +2,7 @@ use super::dram::Dram;
 use super::keyboard_uart::KeyboardUart;
 use super::serial::Serial;
 use super::{BootFlash, FlashFetch, ResetNvram, FLASH_BASE};
-use crate::v9::{Translation, V9Cpu, V9DataBus};
+use crate::v9::{CpuFault, Translation, V9Cpu, V9DataBus};
 
 const PCI_CONFIG: u64 = 0x01fe_0100_0000;
 const APB_TICK_OFFSET: u64 = 0x08b0; // primary bus, device 1 function 0
@@ -27,6 +27,13 @@ struct BusNumbers {
 pub struct BoardInstruction {
     pub physical_address: u64,
     pub instruction: u32,
+}
+
+/// A trap enters the guest handler without retiring the faulting instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoardStep {
+    Retired(BoardInstruction),
+    TrapTaken { fault_pc: u64, tt: u16, vector: u64 },
 }
 
 /// The Ultra 5 reset-time bus. Flash supplies both instructions and the
@@ -95,14 +102,39 @@ impl Ultra5ResetBoard {
 
     pub fn step_mapped(&mut self, cpu: &mut V9Cpu) -> Result<BoardInstruction, String> {
         let mapping = cpu.instruction_address()?;
-        self.step_at(cpu, mapping)
+        Ok(self.step_at(cpu, mapping)?)
+    }
+
+    /// Run one architectural outcome, delivering a normal I/D TLB miss to
+    /// the guest. The retirement-only step_mapped API stops at that boundary.
+    pub fn step_outcome(&mut self, cpu: &mut V9Cpu) -> Result<BoardStep, String> {
+        let fault_pc = cpu.pc();
+        let mapping = cpu.instruction_address();
+        let fetch = mapping.as_ref().ok().copied();
+        let result = match mapping {
+            Ok(fetch) => self.step_at(cpu, fetch),
+            Err(fault) => Err(fault),
+        };
+        match result {
+            Ok(step) => Ok(BoardStep::Retired(step)),
+            Err(CpuFault::TlbMiss(miss)) => {
+                let tt = cpu.enter_mmu_miss(miss, fetch)?;
+                self.elapsed_ns = self.elapsed_ns.saturating_add(crate::machine::STEP_NS);
+                Ok(BoardStep::TrapTaken {
+                    fault_pc,
+                    tt,
+                    vector: cpu.pc(),
+                })
+            }
+            Err(CpuFault::Stop(message)) => Err(message),
+        }
     }
 
     fn step_at(
         &mut self,
         cpu: &mut V9Cpu,
         mapping: Translation,
-    ) -> Result<BoardInstruction, String> {
+    ) -> Result<BoardInstruction, CpuFault> {
         let instruction = if mapping.cacheable {
             let word = self.dram.read(mapping.pa & !7, self.mem_control0)?;
             if mapping.pa & 4 == 0 {
@@ -271,9 +303,14 @@ impl V9DataBus for Ultra5ResetBoard {
             }
             _ => {}
         }
-        let i = self.nvram.sram_index(pa, 8)?;
-        self.nvram.image[i..i + 8].copy_from_slice(&value.to_be_bytes());
-        Ok(())
+        if matches!(Self::ebus_offset(pa), Some(0..=0x0f_ffff)) {
+            let i = self.nvram.sram_index(pa, 8)?;
+            self.nvram.image[i..i + 8].copy_from_slice(&value.to_be_bytes());
+            return Ok(());
+        }
+        Err(format!(
+            "unmapped Ultra 5 physical xword write at {pa:#x} value={value:#018x}"
+        ))
     }
     fn read_bypass_word(&mut self, pa: u64) -> Result<u32, String> {
         if self.is_tick(pa) {

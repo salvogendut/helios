@@ -36,6 +36,7 @@ fn lookup_respects_page_size_context_global_and_the_full_virtual_tag() {
         tlb.write_data(3, tte, true);
         assert!(tlb
             .lookup(va, 7, true, Access::Fetch)
+            .map_err(String::from)
             .unwrap_err()
             .contains("multiple"));
         tlb.write_data(63, 0, true);
@@ -547,11 +548,68 @@ fn original_obp_expands_the_image_and_executes_its_entry_in_ram() {
         0x8d81_2000
     );
     assert_eq!((cpu.read_reg(4), cpu.pstate), (4, 0x14)); // wr %g4,0,%fprs
+    let first = board.step_outcome(&mut cpu).unwrap();
+    assert!(
+        matches!(first, crate::ultra5::BoardStep::Retired(step) if step.instruction == 0x8d81_2000)
+    );
+    assert_eq!((cpu.pc(), cpu.fprs), (0xf002_3948, 4));
+    verify_obp_mmu_refills(&mut board, &mut cpu);
     let [a, b] = board.take_serial_output();
     assert!(a.ends_with(
         b"Decompressing into Memory Done\r\nSize = 0000.0000.0006.eba0\r\nttya initialized\r\n"
     ));
     assert!(b.is_empty());
+}
+
+fn verify_obp_mmu_refills(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
+    use crate::ultra5::BoardStep;
+    let mut traps = Vec::new();
+    let mut first_retry_completed = false;
+    for _ in 0..2_500_000 {
+        let pc = cpu.pc();
+        if pc == 0xf000_9238 && cpu.read_reg(4) == 0xfffc_6000 && traps.len() == 4 {
+            let target = cpu.translate(cpu.read_reg(4), 8, Access::Write).unwrap();
+            assert_eq!(
+                (target.pa, target.cacheable, cpu.read_reg(16)),
+                (0x01fe_0000_2000, false, 0x14_0020_010f)
+            );
+            assert_eq!(
+                traps,
+                [
+                    (0xf000_9018, 0xffff_ffff_ff00_0000),
+                    (0xf000_9238, 0xffff_fffc_003f_e000),
+                    (0xf000_9238, 0xffff_fffc_003c_0000),
+                    (0xf000_9238, 0xfffc_6000),
+                ]
+            );
+            assert!(first_retry_completed);
+            return;
+        }
+        match board.step_outcome(cpu).unwrap() {
+            BoardStep::TrapTaken {
+                fault_pc,
+                tt,
+                vector,
+            } => {
+                assert_eq!((fault_pc, tt, vector, cpu.tl), (pc, 0x68, 0xf000_0d00, 1));
+                traps.push((pc, cpu.data_tlb.tag_access()));
+            }
+            BoardStep::Retired(step) if pc == 0xf000_0f78 && traps.len() == 1 => {
+                assert_eq!(step.instruction, 0x83f0_0000); // RETRY
+                assert_eq!(
+                    (cpu.pc(), cpu.npc(), cpu.tl, cpu.pstate, cpu.read_reg(4)),
+                    (0xf000_9018, 0xf000_901c, 0, 0x14, 0xffff_ffff_ff00_0f00)
+                );
+                let page = cpu.translate(cpu.read_reg(4), 8, Access::Read).unwrap();
+                assert_eq!((page.slot, page.pa), (Some(5), 0x3ff6_cf00));
+                assert_eq!(board.step_mapped(cpu).unwrap().instruction, 0xc859_2000);
+                assert_eq!(cpu.read_reg(4), 0);
+                first_retry_completed = true;
+            }
+            _ => {}
+        }
+    }
+    panic!("did not reach PCI control, PC={:#x}", cpu.pc());
 }
 
 #[test]

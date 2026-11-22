@@ -78,7 +78,8 @@ Cold and soft-reset runs reach the same entry with diagnostics enabled or disabl
 | MMU enable and relocation | The original ROM copies 256 KiB to PA `0x3ff00000`, branches to VA `0x2038` backed by RAM and starts its decompressor. Both diagnostic runs print the flash and RAM PCs. |
 | Decompression and entry | OBP expands 453,536 bytes at VA `0xf0000000` and executes the entry at VA `0xf0051f8c`. A local-ROM test compares every byte against an independent decoder. |
 | Serial initialization in the expanded image | The guest clears both on-chip cache tag banks and prints `ttya initialized` with diagnostics on. Both reset paths then enter `fprs!`. |
+| MMU trap handling | The guest handles four data-TLB misses, retries the faulting memory operations and reaches the PCI host bridge. |
 | Interactive OpenBoot console | Open. Acceptance is a serial `ok` prompt that takes `1 2 + .`, replies `3` and prompts again. |
 
-The next instruction is a write of `4` to the floating-point registers state
-register (FPRS) at VA `0xf0023944`. [Reproduce the current checkpoint](ultra5.md#executing-the-expanded-firmware)
+The next access is the PCI Control/Status register at PA `0x01fe00002000`,
+with the store instruction at VA `0xf0009238`. [Reproduce the current checkpoint](ultra5.md#openboot-handles-its-first-mmu-misses)

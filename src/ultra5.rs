@@ -14,7 +14,7 @@ mod board;
 mod dram;
 mod keyboard_uart;
 mod serial;
-pub use board::{BoardInstruction, Ultra5ResetBoard};
+pub use board::{BoardInstruction, BoardStep, Ultra5ResetBoard};
 
 pub const FLASH_BASE: u64 = 0x01ff_f000_0000;
 pub const FLASH_SIZE: usize = 1 << 20;

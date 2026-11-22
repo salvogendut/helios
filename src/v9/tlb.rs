@@ -1,9 +1,11 @@
 //! UltraSPARC-IIi I/D TLB translation and directed accesses. Sun manual chapter 15.
 
 #[cfg(test)]
+mod miss_tests;
+#[cfg(test)]
 mod tests;
 
-use super::PHYSICAL_ADDRESS_MASK;
+use super::{CpuFault, TlbMiss, PHYSICAL_ADDRESS_MASK};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Access {
@@ -25,6 +27,18 @@ pub(crate) struct Translation {
 struct Entry {
     tag: u64,
     data: u64,
+}
+
+impl Entry {
+    fn matches_page(self, address: u64, context: u16) -> bool {
+        self.data >> 63 != 0
+            && (self.data & 1 != 0 || self.tag & 0x1fff == u64::from(context))
+            && (self.tag ^ address) & !self.page_mask() == 0
+    }
+
+    fn page_mask(self) -> u64 {
+        (8192u64 << (3 * ((self.data >> 61) & 3))) - 1
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,37 +63,30 @@ impl Tlb {
         context: u16,
         privileged: bool,
         access: Access,
-    ) -> Result<Translation, String> {
+    ) -> Result<Translation, CpuFault> {
         let mut hit = None;
         for (slot, entry) in self.entries.iter().enumerate() {
-            let data = entry.data;
-            if data >> 63 == 0 || (data & 1 == 0 && entry.tag & 0x1fff != u64::from(context)) {
-                continue;
-            }
-            let page_mask = (8192u64 << (3 * ((data >> 61) & 3))) - 1;
-            if (entry.tag ^ va) & !page_mask != 0 {
+            if !entry.matches_page(va, context) {
                 continue;
             }
             if hit.is_some() {
-                return Err(format!(
-                    "multiple IIi TLB matches for {access:?} VA={va:#x}"
-                ));
+                return Err(format!("multiple IIi TLB matches for {access:?} VA={va:#x}").into());
             }
-            hit = Some((slot, data, page_mask));
+            hit = Some((slot, entry.data, entry.page_mask()));
         }
-        let (slot, data, page_mask) = hit.ok_or_else(|| {
-            format!("IIi TLB miss for {access:?} VA={va:#x} context={context:#x}")
-        })?;
+        let (slot, data, page_mask) = hit.ok_or(CpuFault::TlbMiss(TlbMiss {
+            access,
+            address: va,
+            context,
+        }))?;
         if !privileged && data & 4 != 0 {
-            return Err(format!("IIi privileged page for {access:?} VA={va:#x}"));
+            return Err(format!("IIi privileged page for {access:?} VA={va:#x}").into());
         }
         if access == Access::Write && data & 2 == 0 {
-            return Err(format!("IIi write protection at VA={va:#x}"));
+            return Err(format!("IIi write protection at VA={va:#x}").into());
         }
         if data & (1 << 60) != 0 || (access == Access::Flush && data & 8 != 0) {
-            return Err(format!(
-                "IIi prohibited {access:?} page attributes at VA={va:#x}"
-            ));
+            return Err(format!("IIi prohibited {access:?} page attributes at VA={va:#x}").into());
         }
         Ok(Translation {
             pa: (data & PHYSICAL_ADDRESS_MASK & !page_mask) | (va & page_mask),
@@ -118,6 +125,59 @@ impl Tlb {
 
     pub(super) fn read_data(&self, index: usize) -> u64 {
         self.entries[index].data
+    }
+
+    pub(super) fn demap(
+        &mut self,
+        address: u64,
+        primary: u16,
+        secondary: u16,
+    ) -> Result<(), String> {
+        if !matches!((address as i64) >> 43, 0 | -1) || address & 0xf != 0 {
+            return Err(format!("invalid IIi demap address {address:#x}"));
+        }
+        let context = match (address >> 4) & 3 {
+            0 => primary,
+            1 => secondary,
+            2 => 0,
+            _ => return Ok(()),
+        };
+        for entry in &mut self.entries {
+            let remove = if address & 0x40 == 0 {
+                entry.matches_page(address, context)
+            } else {
+                entry.data & 1 == 0 && entry.tag & 0x1fff == u64::from(context)
+            };
+            if remove {
+                entry.data &= !(1 << 63);
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn insert(&mut self, value: u64, instruction: bool) {
+        // IIi §15.11.2. Choose the lowest eligible slot at each priority.
+        const LOCK: u64 = 1 << 6;
+        const USED: u64 = 1 << 41;
+        let victim = if let Some(i) = self.entries.iter().position(|e| e.data >> 63 == 0) {
+            i
+        } else if let Some(i) = self
+            .entries
+            .iter()
+            .position(|e| e.data & (USED | LOCK) == 0)
+        {
+            i
+        } else {
+            // Model hardware Uclear at the replacement boundary.
+            for e in &mut self.entries {
+                e.data &= !USED;
+            }
+            self.entries
+                .iter()
+                .position(|e| e.data & LOCK == 0)
+                .unwrap_or(63)
+        };
+        self.write_data(victim, value, instruction);
     }
 
     pub(super) fn write_data(&mut self, index: usize, value: u64, instruction: bool) {

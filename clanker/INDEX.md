@@ -1,5 +1,7 @@
 # Agent notes
 
+- [Ultra 5 fast MMU misses](ultra5-mmu-refill.md) — original OpenBoot FPRS enable, trap entry, guest refill, retry and first PCI control store.
+
 - [Ultra 5 firmware decompression](ultra5-decompression.md) — independent expanded-image comparison, both primary cache tag clears and the original ROM’s `ttya initialized` output.
 
 - [Ultra 5 MMU enable and relocated execution](ultra5-mmu-enable.md) — first translated fetch, full ROM-copy comparison and decompressor entry.
