@@ -26,18 +26,14 @@ parallel-port DMA register. Installed Solaris boot checkpoints are described
 below. See the
 [latest firmware checkpoint](docs/firmware.md#timer-and-ethernet-bring-up).
 
-On the experimental **Ultra 5**, original OpenBoot 3.31.0 detects the
-module's 2 MiB external cache, prints its firmware version on serial A and
-clears the cache tags. Cold boot finishes the unplugged keyboard probe. Both
-reset paths discover 512 MiB, enable the instruction and data MMUs, copy
-256 KiB from flash and run the relocated decompressor. It expands 453,536
-bytes and jumps into that image in RAM. With diagnostics enabled, the
-expanded firmware prints `ttya initialized` on serial A. It handles six
-data-TLB misses, configures the PCI host and both Simba secondary buses,
-initializes the IOMMU and uses CPU timer interrupts to calibrate its delay loop.
-Both reset paths then read the onboard EBus base address. The interactive
-Ultra 5 prompt is still in development.
-[Reproduce the latest checkpoint](docs/ultra5.md#onboard-ebus-configuration)
+The experimental **Ultra 5** boots original OpenBoot 3.31 to an interactive
+serial A monitor. OBP identifies the 440 MHz UltraSPARC-IIi and 512 MiB of
+RAM, enumerates the onboard PCI devices and prints its normal banner. With
+`auto-boot?` disabled it enters the monitor directly. A serial BREAK after
+the banner also works with factory defaults. In both cases, typing
+`1 2 + .` returns `3` and another `ok`. The headless example is the current
+entry point. Ultra 5 OS boot and Heliacal integration remain open.
+[Run the Ultra 5 serial console](docs/ultra5.md#interactive-serial-console)
 
 **SPARCstation 20** and **Axil 320** profiles boot their original firmware to
 the serial `ok` prompt with either one CPU or two 75 MHz SuperSPARC-II modules.

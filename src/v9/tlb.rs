@@ -19,6 +19,7 @@ pub(super) enum Access {
 pub(crate) struct Translation {
     pub(crate) pa: u64,
     pub(crate) cacheable: bool,
+    pub(super) virtual_cacheable: bool,
     pub(super) invert_endian: bool,
     pub(super) slot: Option<usize>,
 }
@@ -91,6 +92,7 @@ impl Tlb {
         Ok(Translation {
             pa: (data & PHYSICAL_ADDRESS_MASK & !page_mask) | (va & page_mask),
             cacheable: data & 0x20 != 0,
+            virtual_cacheable: data & 0x10 != 0,
             invert_endian: data & (1 << 59) != 0,
             slot: Some(slot),
         })

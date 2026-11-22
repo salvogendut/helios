@@ -1,16 +1,69 @@
-# Ultra 5/10 firmware reset instructions
+# Ultra 5/10 OpenBoot and serial console
 
-The headless Ultra 5/10 fixture runs original OBP 3.31.0 far enough to
-transmit its version banner on serial A, clear the external-cache tags and
-complete the cold-start probe with the keyboard disconnected. Both boot paths
-clear the instruction and data TLBs, complete DRAM discovery, enable translation
-and execute the 453,536-byte firmware image expanded in RAM. The expanded
-firmware initializes serial A and prints `ttya initialized` in diagnostic mode.
-It then configures the PCI host and both Simba secondary buses, handles a
-sixth data-TLB miss and initializes the IOMMU. Both paths take a level-14
-CPU timer interrupt, finish the calibration calculation and read the onboard
-EBus base address.
-An interactive OpenBoot prompt remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
+Original Sun OpenBoot 3.31.0 reaches a responsive `ok` prompt on serial
+port A in the headless Ultra 5. The firmware reports a 440 MHz UltraSPARC-IIi,
+512 MiB of memory and no keyboard. It initializes both Simba PCI buses and
+enumerates EBus, Ethernet, graphics and IDE before printing the banner.
+
+## Interactive serial console
+
+Use the original 1 MiB OBP 3.31 flash. On the development machine the saved
+8 KiB configuration below has `auto-boot?` disabled. Run the example from the repository root.
+
+```sh
+cargo run --release --locked --offline --example ultra5_serial -- \
+  local/firmware/ultra5/ultra5-obp331-post310-1mb.bin \
+  local/ultra5-serial-console-2026-11-22/console.nvram 100000000000 --interactive
+```
+
+After the 440 MHz / 512 MB banner and the memory initialization progress
+indicator, wait for `ok`, type a line and press Enter. Ctrl+C exits the host
+example. It keeps NVRAM writes in memory.
+
+```text
+ok 1 2 + .
+3
+ok
+```
+
+For a fresh checkout, create a blank seed in a temporary file and use it as
+the second argument. On first boot the ROM restores its defaults. After
+the banner, press Ctrl+] followed by Enter to send a serial BREAK and enter
+the monitor before the firmware tries its diagnostic network boot.
+
+```sh
+u5_nvram=$(mktemp)
+truncate -s 8192 "$u5_nvram"
+cargo run --release --locked --offline --example ultra5_serial -- \
+  local/firmware/ultra5/ultra5-obp331-post310-1mb.bin "$u5_nvram" \
+  100000000000 --interactive
+rm -- "$u5_nvram"
+```
+
+A blank seed also produces an invalid-IDPROM warning. The saved configuration
+uses MAC `08:00:20:c0:ff:ee` and host ID `80c0ffee`. The release regression
+`original_obp_accepts_a_serial_command_after_the_normal_banner` builds a
+fresh seed with that identity and sends BREAK after the banner. The check
+requires the local Sun flash.
+
+```sh
+cargo test --release --locked --offline --test ultra5_first_serial_access \
+  original_obp_accepts_a_serial_command_after_the_normal_banner -- --ignored
+```
+
+The firmware enumerates EBus, Ethernet, Mach64 and CMD646 IDE on Simba B and
+reports empty slots on Simba A. PCI configuration and aperture sizing are
+implemented for these functions. Ethernet support covers the MIF probe,
+Mach64 covers firmware register and video-memory accesses, and IDE models
+an empty task file. The ROM creates disk and CD-ROM device nodes even with
+no drives installed. Graphics scanout, disk transfers and network boot remain
+open.
+
+The example batches iterations of a resident SPARC delay loop while preserving
+the counter, PC/nPC, tick, device time and interrupt boundary. Its step limit
+includes these retirements. SAB channel A exposes received bytes through the
+receive FIFO, polls interrupt status for short packets and recognizes BREAK.
+The example paces host input for the 9600-baud console.
 
 ## Run the first serial diagnostic
 
@@ -47,12 +100,11 @@ register offset and value from flash, repeats its configuration on channel B,
 polls STAR, writes each character to XFIFO and issues the transmit command
 at PC `0xffff_ffff_f000_0380`. The fixture completes transmission
 synchronously and exposes the transmitted bytes through
-`Ultra5ResetBoard::take_serial_output()`. Serial input, baud-rate timing
-and interrupt delivery remain open. [Siemens SAB 82532 register descriptions](https://media.digikey.com/pdf/Data%20Sheets/Infineon%20PDFS/SAB%2CSAF82532.pdf)
+`Ultra5ResetBoard::take_serial_output()`. The monitor polls for serial input; external UART interrupt delivery and transmit-line timing remain open. [Siemens SAB 82532 register descriptions](https://media.digikey.com/pdf/Data%20Sheets/Infineon%20PDFS/SAB%2CSAF82532.pdf)
 
 The IIi host retains its software bus numbers. Its primary PCI bus stays
 at bus 0. Simba’s bus numbers route downstream PCIO configuration cycles.
-The fixture supports the reset BAR1 value and three EBus setup writes. It assumes the documented Super I/O index-port
+The fixture supports the PCIO configuration header, reset BAR1 value and three EBus setup writes. It assumes the documented Super I/O index-port
 strap at `0x398`. The installed board's strap has not been independently
 verified. The fixture implements the one-shot identification byte and
 double-write configuration protocol. PCI enumeration, BAR relocation,
@@ -99,8 +151,7 @@ With the `soft-rst` marker, the last character appears at instruction `8977`.
 The mask-9.1 CPU module in the reference machine has a 2 MiB direct-mapped
 E-cache with 64-byte lines. Its POST transcript and OpenBoot device tree
 both report the capacity. The headless fixture models diagnostic data
-and tag SRAM for that module. Normal cache fills, writeback and cache
-timing remain open. [Ultra 5 hardware transcript and device tree](https://rob.com/sun/sun4u-ss5/)
+and tag SRAM for that module. Normal E-cache fills, writeback and timing remain open. [Ultra 5 hardware transcript and device tree](https://rob.com/sun/sun4u-ss5/)
 
 OBP writes the data array through ASI `0x76`, reads cell zero through ASI
 `0x7e` and gets `0x0020_0000`. It programs UPA_CONFIG.ELIM to 3, then
@@ -269,8 +320,8 @@ VA `0xf0051fb8`. ASR 18 is the privileged IIi dispatch control register.
 The guest programs the recommended value and clears error enables through
 ASI `0x4b`. It then clears 512 D-cache tags (ASI `0x47`) and 512 I-cache
 tags (ASI `0x67`) in descending address order from `0x3fe0` through zero.
-The fixture models the diagnostic tag stores. Dispatch timing, runtime cache
-fills, diagnostic tag reads and external debug pins remain open.
+The diagnostic stores invalidate the same tags used by the runtime primary caches.
+Dispatch timing, diagnostic tag reads and external debug pins remain open.
 [UltraSPARC-IIi User’s Manual, §§A.3, A.7.2, A.8.2 and I.1.2](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
 
 The expanded firmware reaches its `fprs!` routine at VA `0xf0023944`
@@ -297,7 +348,7 @@ Each run includes four trap entries. The example uses
 `Ultra5ResetBoard::step_outcome`, whose result distinguishes a retired
 instruction from trap entry. The retirement-only `step_mapped` API retains
 its stop-on-miss behavior. The serial output still ends at `ttya initialized`
-with diagnostics enabled. Interactive input and an `ok` prompt remain open.
+at this earlier instruction budget with diagnostics enabled.
 
 ## PCI interrupt initialization
 
@@ -413,10 +464,113 @@ configuration address reaches the register.
 With diagnostics enabled, run the serial example for **54,406,992 outcomes**
 on cold reset or **23,855,900 outcomes** on soft reset. Both stop at PC
 `0xf0042ff4`, immediately before a halfword store to PA `0x01fe01010804`.
-Bytes `46 01` specify PCI command `0x0146`. The PCIO command register
-is the next unimplemented access. Each run takes eight synchronous MMU
-misses and five timer interrupts. The last diagnostic line is
-`ttya initialized`.
+Bytes `46 01` specify PCI command `0x0146`. At this point each run has
+taken eight synchronous MMU misses and five timer interrupts.
+
+## Timekeeper and reset report
+
+OBP writes command `0x0146` twice to the onboard EBus function. Its
+memory-enable bit controls flash and the EBus peripheral window. The first
+16 configuration bytes include the function identity, command/status, cache
+line size and latency timer. BAR relocation and PCIO DMA remain open.
+[Sun's PCIO diagnostic, §4.7.2.1](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf#page=89) · [illumos EBus initialization](https://github.com/illumos/illumos-gate/blob/master/usr/src/uts/sun4/io/ebus.c#L890-L908)
+
+The M48T59 at PA `0x01fff1000000` follows elapsed board time. Its byte
+registers support BCD calendar reads, read latching, staged writes and
+oscillator stop/restart. A blank calendar starts at Saturday 2000-01-01.
+The year byte uses Sun's 1968 base. With a blank configuration, both reset
+paths and both diagnostic settings print these lines on serial A.
+
+```text
+Incorrect configuration checksum;
+Setting NVRAM parameters to default values.
+Setting diag-switch? NVRAM parameter to true
+Reset Control: BXIR:0 BPOR:0 SXIR:0 SPOR:0 POR:1
+```
+
+Use the serial example above with `--release` and the outcome budget for the
+seed. These budgets finish just before OBP writes `0x80000000` to the IIi
+Reset Control register at PA `0x01fe0000f020`, PC/nPC
+`0xf0009238/0xf000923c`. One additional outcome retires the store and clears the POR indication.
+
+| NVRAM seed | Diagnostics | Outcome budget |
+| --- | --- | ---: |
+| Cold | On | 81,671,779 |
+| Cold | Off | 81,661,296 |
+| Soft marker | On | 51,120,687 |
+| Soft marker | Off | 51,110,580 |
+
+The example holds NVRAM edits in memory. The test seeds deliberately lack
+a valid configuration checksum. Alarm matching, watchdog operation and
+oscillator calibration are still open. [ST M48T59 register map, table 5 and §§3.1–3.3](https://media.digikey.com/pdf/Data%20Sheets/ST%20Microelectronics%20PDFS/M48T59%2CY_V.pdf)
+
+## Module and memory-bank report
+
+After printing the reset cause, OBP writes one to the POR bit in the
+IIi Reset Control register. Readback changes from `0x80000000` to zero.
+Software reset requests use separate bits and currently stop explicitly.
+OBP clears the CPU data-buffer error registers through ASI `0x77` and
+acknowledges the PCI programmed-I/O, DMA uncorrectable and DMA correctable
+fault registers. The CPU and bus registers support flag acknowledgement
+and readback. ECC error generation and PCI error interrupt delivery remain
+open. [Sun UltraSPARC-IIi manual, §§16.6.4–5, 17.2.7.3, 19.3.0.2 and 19.4.3](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
+OpenBoot then reads the big-endian `OBMD` signature at the start of flash
+through its translated data mapping. With all four test seeds, these lines appear on serial A.
+
+```text
+UltraSPARC-IIi 2-2-2 module
+Probing Memory Bank #0   0 +   0 :   0 Megabytes
+Probing Memory Bank #2 256 + 256 : 512 Megabytes
+```
+
+Pass the appropriate outcome budget to the release `ultra5_serial` example
+to reproduce the complete report. All four runs reach PC/nPC
+`0xf000923c/0xf0009240` with 39 synchronous trap entries and 476 interrupts.
+
+| NVRAM seed | Diagnostics | Outcome budget |
+| --- | --- | ---: |
+| Cold | On | 101,676,720 |
+| Cold | Off | 101,666,237 |
+| Soft marker | On | 71,125,628 |
+| Soft marker | Off | 71,115,521 |
+
+## DRAM refresh and PCI identification
+
+OBP changes Mem_Control0 from `0x9000143d` to zero, temporarily switching
+from 11-column to 10-column DRAM addressing. The raw xword at PA
+`0x3ff89238` now reads zero. The CPU still fetches `0xc859e008` at its next
+PC, `0xf000923c`, from the resident instruction line. The firmware completes
+its second store to Mem_Control0 with `0x900014d6`, restoring 11-column addressing.
+
+The IIi model has a 16 KiB two-way instruction cache with 32-byte lines.
+Ordinary CPU stores leave those lines intact. FLUSH translates through the
+D-MMU and invalidates the matching physical instruction line. The 16 KiB
+direct-mapped data cache uses a virtual index, a physical tag and two
+independently valid 16-byte subblocks per line. Stores write through and update
+a resident subblock. Allocation on a load miss requires a virtually cacheable
+mapping. ASI `0x14` can hit an existing subblock at its physical index.
+Cache replacement is deterministic. Pipeline timing, DMA snooping and normal
+external-cache writeback remain open. [IIi User’s Manual, §§3.1.1, 8.2, 8.6 and Appendices A.7–8](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
+OBP reads ATI device ID `0x4754` into `%g4` at PC `0xf002657c` using a
+little-endian halfword load. The display identity follows device 2, function 0,
+on the secondary bus assigned to Simba B. This implements PCI identification
+only. Both Simba functions expose Sun ID `108e:5000`, revision `0x11`, class
+`060400` and header type `0x81`. [Reference Ultra 5 device tree](https://rob.com/sun/sun4u-ss5/) · [Sun System Handbook, Simba diagnostic register dump](https://dogemicrosystems.ca/pub/Sun/System_Handbook/Sun_syshbk_V3.4/collections/TECHNICALINSTRUCTIONSURE/1-71-1010580.1-1.html)
+
+All four seeds reach the Simba A Interrupt Pin byte, PCI `00:01.0` offset
+`0x3d`, at PA `0x01fe0100083d` and PC/nPC `0xf000909c/0xf00090a0`.
+The table gives the outcome limit to stop just before that access in the
+release serial example. The following outcome reads the bridge’s interrupt pin.
+Each run takes 47 synchronous traps and 577 timer interrupts.
+
+| NVRAM seed | Diagnostics | Outcome budget |
+| --- | --- | ---: |
+| Cold | On | 111,693,963 |
+| Cold | Off | 111,683,480 |
+| Soft marker | On | 81,147,464 |
+| Soft marker | Off | 81,137,357 |
 
 ## Reset and flash mapping
 
@@ -493,9 +647,8 @@ Execution stops with PC/nPC at `0xffff_ffff_f000_0028` / `0xffff_ffff_f000_002c`
 If the second instruction fails, the first is already retired and the CPU
 stays at the second instruction with its effects unapplied.
 
-The fixture models register storage for the instruction and data cache enables
-(IC and DC, bits 0 and 1) and independently controls translation with IM and
-DM (bits 2 and 3). The all-off write clears the register. Watchpoint and
+LSU control enables the instruction and data caches with IC and DC (bits 0 and 1)
+and controls translation independently with IM and DM (bits 2 and 3). The all-off write clears the register. Watchpoint and
 parity-injection writes return an explicit unsupported-operation error.
 [UltraSPARC IIi User’s Manual, Appendix A.6](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=413)
 
@@ -587,7 +740,7 @@ as a 48T59. [Ultra 5/10 Product Notes, code example 2](https://docs.oracle.com/c
 Pass an 8192-byte image to `ResetNvram::new`, then call
 `flash.step_with_nvram(&mut cpu, &mut nvram)` for each step. The device
 serves aligned big-endian reads in its SRAM region. The final 16 bytes
-contain device registers and accesses there stop explicitly. The load
+contain device registers. The board accesses these through its byte port. The load
 reads the supplied bytes at offsets `0x10..0x18` on every CPU reset.
 The battery-backed SRAM has no fixed cold-boot marker value. [ST M48T59 data sheet, data retention and register map](https://media.digikey.com/pdf/Data%20Sheets/ST%20Microelectronics%20PDFS/M48T59%2CY_V.pdf)
 
@@ -666,5 +819,5 @@ repeatability where hardware reset values are unspecified.
 With the reconstructed image installed, run the local-ROM checks together.
 
 ```sh
-cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts --test ultra5_reset_setup --test ultra5_first_serial_access --test ultra5_ecache --test ultra5_keyboard_timeout -- --ignored --nocapture
+cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_second_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts --test ultra5_reset_setup --test ultra5_first_serial_access --test ultra5_ecache --test ultra5_keyboard_timeout -- --ignored --nocapture
 ```

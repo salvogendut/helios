@@ -135,3 +135,78 @@ stop records are in `local/ultra5-calibration-2026-11-22/`. For the next
 step, distinguish the PCIO function's PCI command bits from the IIi host
 bridge and Simba command registers already implemented.
 [Reproduction](../docs/ultra5.md#onboard-ebus-configuration)
+
+## PCIO command, RTC and reset report
+
+All four OBP 3.31.0 seeds now stop at the Reset Control store on the same PC,
+`0xf0009238`, after 12 synchronous trap entries and 277 timer interrupts.
+Soft reset retired 51,120,398 (diagnostics on) and 51,110,291 (off).
+Cold reset retired 81,671,490 (on) and 81,661,007 (off). The configurations
+were intentionally uninitialized apart from byte 1 and the reset marker.
+The soft marker steers the firmware path while both fixtures start the board
+with POR asserted.
+
+The original-ROM regression checks two retired EBus command writes, distinct
+guest reads of latched RTC seconds, the serial-A checksum/default/reset
+messages, and the translated address and value of the next store. The guest
+uses its own timekeeping and console routines. The four serial transcripts,
+stop records and validation logs are under
+`local/ultra5-pcio-timekeeper-2026-11-22/`.
+[Reproduction and remaining limits](../docs/ultra5.md#timekeeper-and-reset-report)
+
+## IIi acknowledgements and memory-bank probe
+
+The original ROM retires the Reset Control acknowledgement, clears the two
+CPU data-buffer error ports and clears PCI fault status at PBM offsets
+`2010`, `0030` and `0040`. The diagnostic ROM test checks both pairs of
+SDB clears, the three PCI clears, a mapped word read of `OBMD`, the module
+and bank messages and the later guest store to Mem_Control0.
+
+A bounded soft-marker trace shows the Forth routine computing
+`0x900014d6` from `0x9000143d`. Its thread at VA `0xf0059494` contains
+`0 mc-control0! mc-control0!`. The first store retires at PC `0xf0009238`.
+The following fetch at VA `0xf000923c` still maps to PA `0x3ff8923c`
+with LSU_CONTROL `0xf`. A diagnostic read of the backing xword in the
+old geometry returns `0xe0700004c859e008`; in the new geometry it returns
+zero. The second register write has not retired. Establish the hardware
+cache behavior for code, Forth thread and stack accesses across this interval
+before changing DRAM decoding. The trace does not identify the supplying
+cache on physical silicon.
+
+The four TTYA transcripts, stop records and soft-marker memory trace are in
+`local/ultra5-reset-cause-2026-11-22/`.
+[Reproduction and exact budgets](../docs/ultra5.md#module-and-memory-bank-report)
+
+## Refresh and PCI enumeration
+
+The original-ROM regression checks the zero raw backing xword during the
+geometry change, the cached instruction that still retires, the guest’s
+second Mem_Control0 write and readback (`0x900014d6`), and the subsequent
+little-endian ATI device-ID load. At PA `0x01fe01011002` the latter returns
+`0x4754`. Both the bridge and display identities match the published
+440 MHz Ultra 5 configuration. The normal external-cache data path and
+display MMIO remain open.
+
+With all four seeds the next unserved operation is a byte read from
+Simba A at PA `0x01fe0100083d` (PCI Interrupt Pin). The serial-console continuation covers this register and subsequent PCI enumeration. The latest serial
+transcripts and exact stop records are in `local/ultra5-refresh-cache-2026-11-22/`.
+[Reproduction and budgets](../docs/ultra5.md#dram-refresh-and-pci-identification)
+
+## Interactive serial A monitor
+
+The normal OBP banner is followed by an interactive prompt with the saved
+`auto-boot? false` configuration. Factory recovery defaults select net;
+sending SAB BREAK after the banner enters the same monitor. The host waited
+for each prompt before delivering the bytes of `1 2 + .\r`. Both transcripts
+end with the echoed command, `3`, and a new prompt. Evidence and the 8 KiB
+console seed are in `local/ultra5-serial-console-2026-11-22/`.
+
+An earlier recovery prompt followed an instruction MMU miss during the first
+onboard PCI probe. A master-abort load had already retired when the deferred
+trap arrived. DONE skipped the next unretired Forth instruction. Preserving
+that instruction as the continuation lets the firmware finish enumeration.
+The recovery capture is retained separately from the normal-banner evidence.
+The SAB driver masks external interrupts and polls ISR0 with IPC.VIS set.
+A short command below its 32-byte threshold needs the four-frame TIME event
+and subsequent RFRD to expose the bytes.
+[Console instructions](../docs/ultra5.md#interactive-serial-console)

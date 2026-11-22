@@ -13,6 +13,11 @@ impl Default for Simba {
     fn default() -> Self {
         let mut config = [[0; 256]; 2];
         for port in &mut config {
+            // Both functions on the reference Ultra 5 identify as 108e:5000,
+            // revision 11 (hex), conventional PCI-to-PCI bridge class 060400.
+            port[..4].copy_from_slice(&0x5000_108eu32.to_le_bytes());
+            port[8..12].copy_from_slice(&0x0604_0011u32.to_le_bytes());
+            port[0x0e] = 0x81; // multifunction PCI bridge, Sun System Handbook
             port[6..8].copy_from_slice(&0x02a0u16.to_le_bytes());
             port[0x1e..0x20].copy_from_slice(&0x0280u16.to_le_bytes());
         }
@@ -33,7 +38,7 @@ impl Simba {
         let start = offset & 0xff;
         (start..start + N)
             .all(|i| {
-                matches!(i, 4..=7 | 0x0d | 0x18..=0x1b | 0x1e..=0x1f | 0xc0 |
+                matches!(i, 0..=0x0b | 0x0d..=0x0e | 0x18..=0x1b | 0x1e..=0x1f | 0x28..=0x2f | 0x3d | 0xc0 |
                 0xc8..=0xcf | 0xd8..=0xdc | 0xde..=0xef)
             })
             .then_some((offset >> 8, start))
@@ -67,9 +72,27 @@ impl Simba {
         true
     }
 
-    pub(super) fn onboard_config_bus(&self) -> Option<u8> {
+    pub(super) fn onboard_config(&self, pa: u64) -> Option<(usize, usize)> {
         let b = &self.config[1];
-        (b[0x18] == 0 && b[0x19] != 0 && b[0x19] <= b[0x1a]).then_some(b[0x19])
+        if b[0x18] != 0 || b[0x19] == 0 || b[0x19] > b[0x1a] {
+            return None;
+        }
+        let base = PCI_CONFIG + (u64::from(b[0x19]) << 16);
+        let offset = u16::try_from(pa.checked_sub(base)?).ok()?;
+        let function = match offset >> 8 {
+            0x08 => 0,
+            0x09 => 1,
+            0x10 => 2,
+            0x18 => 3,
+            _ => return None,
+        };
+        Some((function, usize::from(offset & 0xff)))
+    }
+
+    pub(super) fn forwards_onboard_io(&self, addr: u32) -> bool {
+        let window = 1 << (addr >> 21);
+        let selects = |port: &[u8; 256]| port[4] & 1 != 0 && port[0xde] & window != 0;
+        selects(&self.config[1]) && !selects(&self.config[0])
     }
 
     pub(super) fn forwards_onboard_memory(&self, address: u32) -> bool {

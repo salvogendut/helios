@@ -4,6 +4,7 @@
 
 use crate::ultra5::PowerOnReset;
 mod ecache;
+mod primary_cache;
 #[cfg(test)]
 mod tick_tests;
 mod tlb;
@@ -23,6 +24,8 @@ const PSTATE_RED: u16 = 1 << 5;
 const PSTATE_MG: u16 = 1 << 10;
 const PSTATE_IG: u16 = 1 << 11;
 const GLOBAL_SELECT: u16 = PSTATE_AG | PSTATE_MG | PSTATE_IG;
+const LSU_IC: u64 = 1;
+const LSU_DC: u64 = 2;
 const LSU_IM: u64 = 4;
 const LSU_DM: u64 = 8;
 pub(crate) const PHYSICAL_ADDRESS_MASK: u64 = (1 << 41) - 1;
@@ -43,6 +46,8 @@ const ASI_DCACHE_TAG: u8 = 0x47;
 const ASI_ICACHE_TAG: u8 = 0x67;
 const ASI_ESTATE_ERROR_EN: u8 = 0x4b;
 const ASI_AFSR: u8 = 0x4c;
+const ASI_SDB_WRITE: u8 = 0x77;
+const ASI_SDB_READ: u8 = 0x7f;
 const ASI_UPA_CONFIG: u8 = 0x4a;
 const ASI_ECACHE_TAG_DATA: u8 = 0x4e;
 const ASI_ECACHE_WRITE: u8 = 0x76;
@@ -65,6 +70,7 @@ struct TrapFrame {
 
 #[derive(Debug)]
 pub(crate) enum CpuFault {
+    DataAccessError,
     DivisionByZero,
     Interrupt(u8),
     TlbMiss(TlbMiss),
@@ -94,6 +100,7 @@ impl From<CpuFault> for String {
     fn from(fault: CpuFault) -> Self {
         match fault {
             CpuFault::Stop(message) => message,
+            CpuFault::DataAccessError => "IIi deferred data access error (TT=0x32)".into(),
             CpuFault::DivisionByZero => "V9 division_by_zero (TT=0x28)".into(),
             CpuFault::Interrupt(level) => format!("IIi interrupt pending at level {level}"),
             CpuFault::TlbMiss(miss) => format!(
@@ -112,6 +119,7 @@ pub struct V9Cpu {
     npc: u64,
     ccr: u8,
     fprs: u8,
+    y: u32,
     cwp: u8,
     asi: u8,
     primary_context: u16,
@@ -135,10 +143,16 @@ pub struct V9Cpu {
     dispatch_control: u8,
     estate_error_enable: u8,
     async_fault_status: u64,
+    async_fault_address: u64,
+    data_error_pending: bool,
+    sdb_error: u16, // SDBH UE/CE and the recorded syndrome (IIi table 16-8).
     // Diagnostic tag RAM (IIi A.7.2 and A.8.2). Both ports use VA[13:5].
     // I-cache stores valid:tag right-justified; D-cache stores tag:valid.
     icache_tags: Box<[u32; 512]>,
     dcache_tags: Box<[u32; 512]>,
+    icache_data: Box<[[u64; 4]; 512]>,
+    icache_next: Box<[bool; 256]>,
+    dcache_data: Box<[[u64; 4]; 512]>,
     ecache: Ecache,
 }
 
@@ -187,7 +201,18 @@ pub(crate) trait V9DataBus {
             "unmapped V9 cacheable physical xword write at {pa:#x}"
         ))
     }
+    fn pci_read_aborted(&mut self, _pa: u64) -> bool {
+        false
+    }
     fn read_integer(
+        &mut self,
+        pa: u64,
+        width: IntegerWidth,
+        cacheable: bool,
+    ) -> Result<u64, String> {
+        self.read_physical_integer(pa, width, cacheable)
+    }
+    fn read_physical_integer(
         &mut self,
         pa: u64,
         width: IntegerWidth,
@@ -432,6 +457,7 @@ impl V9Cpu {
             pc,
             npc: pc.wrapping_add(4),
             ccr: 0,
+            y: 0,
             fprs: 0, // IIi leaves FPRS unknown at POR.
             cwp: 0,
             asi: 0,
@@ -456,8 +482,14 @@ impl V9Cpu {
             dispatch_control: 0, // IIi table 17-5, power-on reset
             estate_error_enable: 0,
             async_fault_status: 0,
+            async_fault_address: 0,
+            data_error_pending: false,
+            sdb_error: 0,
             icache_tags: Box::new([0; 512]),
             dcache_tags: Box::new([0; 512]),
+            icache_data: Box::new([[0; 4]; 512]),
+            icache_next: Box::new([false; 256]),
+            dcache_data: Box::new([[0; 4]; 512]),
             ecache: Ecache::default(),
         }
     }
@@ -511,11 +543,18 @@ impl V9Cpu {
 
     pub fn step(&mut self, memory: &mut V9Memory) -> Result<(), String> {
         let fetch = self.instruction_address()?;
-        let word = memory.try_read_word(fetch.pa)?;
-        Ok(self.retire_fetch(fetch, word, memory)?)
+        if fetch.cacheable && self.lsu_control & LSU_IC != 0 {
+            self.retire_ram_instruction(fetch, memory)?;
+        } else {
+            self.retire_fetch(fetch, memory.try_read_word(fetch.pa)?, memory)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn instruction_address(&self) -> Result<Translation, CpuFault> {
+        if self.data_error_pending {
+            return Err(CpuFault::DataAccessError);
+        }
         if self.softint != 0 && self.pstate & (PSTATE_RED | PSTATE_IE) == PSTATE_IE {
             let levels = (self.softint & !1) | ((self.softint & 1) << 14);
             let level = 15 - levels.leading_zeros() as u8;
@@ -544,6 +583,7 @@ impl V9Cpu {
             return Ok(Translation {
                 pa: physical,
                 cacheable: false,
+                virtual_cacheable: false,
                 invert_endian: false,
                 slot: None,
             });
@@ -731,6 +771,10 @@ impl V9Cpu {
                     };
                     self.write_reg(rd, value);
                 }
+                0x28 if rs1 == 0 && word & 0x3fff == 0 => self.write_reg(rd, u64::from(self.y)),
+                0x30 if rd == 0 && (word & (1 << 13) != 0 || word & 0x1fe0 == 0) => {
+                    self.y = (self.read_reg(rs1) ^ b) as u32
+                }
                 0x28 if rs1 == 2 => self.write_reg(rd, u64::from(self.ccr)),
                 0x28 if rs1 == 3 && word & 0x3fff == 0 => self.write_reg(rd, u64::from(self.asi)),
                 0x28 if rs1 == 4 && word & 0x3fff == 0 => {
@@ -745,9 +789,17 @@ impl V9Cpu {
                     self.require_privilege("RD dispatch control")?;
                     self.write_reg(rd, u64::from(self.dispatch_control));
                 }
+                0x28 if rs1 == 0 && word & 0x3fff == 0 => self.write_reg(rd, u64::from(self.y)),
+                0x30 if rd == 0 && (word & (1 << 13) != 0 || word & 0x1fe0 == 0) => {
+                    self.y = (self.read_reg(rs1) ^ b) as u32
+                }
                 0x28 if rs1 == 22 && word & 0x3fff == 0 => {
                     self.require_privilege("RD SOFTINT")?;
                     self.write_reg(rd, u64::from(self.softint));
+                }
+                0x28 if rs1 == 0 && word & 0x3fff == 0 => self.write_reg(rd, u64::from(self.y)),
+                0x30 if rd == 0 && (word & (1 << 13) != 0 || word & 0x1fe0 == 0) => {
+                    self.y = (self.read_reg(rs1) ^ b) as u32
                 }
                 0x28 if rs1 == 23 && word & 0x3fff == 0 => {
                     self.require_privilege("RD TICK_CMPR")?;
@@ -798,10 +850,11 @@ impl V9Cpu {
                     }
                 }
                 0x3b if rd == 0 && (word & (1 << 13) != 0 || word & 0x1fe0 == 0) => {
-                    // IIi §14.4.4. FLUSH checks the D-side mapping, without
-                    // issuing a device read. Instruction stores are synchronous.
+                    // IIi §14.4.4. FLUSH checks the D-side mapping, then invalidates the
+                    // matching physical I-cache line without issuing a device read.
                     let access =
                         self.translate(self.read_reg(rs1).wrapping_add(b), 1, Access::Flush)?;
+                    self.flush_instruction(access.pa);
                     if let Some(slot) = access.slot {
                         self.data_tlb.set_used(slot, true);
                     }
@@ -813,6 +866,9 @@ impl V9Cpu {
                         return Err(format!("unsupported V9 RDPR word {word:#x}").into());
                     }
                     self.write_reg(rd, self.read_pr(rs1)?);
+                }
+                0x30 if rd == 2 && (word & (1 << 13) != 0 || word & 0x1fe0 == 0) => {
+                    self.ccr = (self.read_reg(rs1) ^ b) as u8;
                 }
                 0x30 if rd == 3 => {
                     if word & (1 << 13) == 0 && word & 0x1fe0 != 0 {
@@ -870,6 +926,38 @@ impl V9Cpu {
                 _ => return Err(format!("unsupported V9 op3 {op3:#x}").into()),
             },
             3 => match op3 {
+                0x3c | 0x3e => {
+                    let asi = if word & 0x2000 == 0 {
+                        (word >> 5) as u8
+                    } else {
+                        self.asi
+                    };
+                    if !matches!(asi, 0x80 | 0x88) {
+                        return Err(format!("unsupported V9 compare-and-swap ASI {asi:#x}").into());
+                    }
+                    let width = if op3 == 0x3c {
+                        IntegerWidth::Word
+                    } else {
+                        IntegerWidth::Xword
+                    };
+                    let va = self.read_reg(rs1);
+                    let map = self.translate(va, width as u64, Access::Write)?;
+                    if !map.cacheable {
+                        return Err("unsupported V9 compare-and-swap on I/O".into());
+                    }
+                    let value = memory.read_integer(map.pa, width, true)?;
+                    let little = map.invert_endian ^ (asi == 0x88);
+                    let old = width.reorder(value, little);
+                    if old == self.read_reg((word & 31) as u8) & width.mask() {
+                        let new = width.reorder(self.read_reg(rd), little) & width.mask();
+                        memory.write_integer(map.pa, width, true, new)?;
+                        self.update_data_hit(va, map.pa, width, new);
+                    }
+                    self.write_reg(rd, old);
+                    if let Some(slot) = map.slot {
+                        self.data_tlb.set_used(slot, true);
+                    }
+                }
                 0x00..=0x02 | 0x04..=0x06 | 0x0b | 0x0e => {
                     let width = match op3 {
                         0x00 | 0x04 => IntegerWidth::Word,
@@ -888,8 +976,11 @@ impl V9Cpu {
                     if kind == Access::Write {
                         let value = width.reorder(self.read_reg(rd), little);
                         memory.write_integer(mapping.pa, width, mapping.cacheable, value)?;
+                        if mapping.cacheable {
+                            self.update_data_hit(va, mapping.pa, width, value);
+                        }
                     } else {
-                        let value = memory.read_integer(mapping.pa, width, mapping.cacheable)?;
+                        let value = self.load_data(memory, va, mapping, width)?;
                         self.write_reg(rd, width.reorder(value, little));
                     }
                     if let Some(slot) = mapping.slot {
@@ -924,24 +1015,34 @@ impl V9Cpu {
                                     width.reorder(self.read_reg(rd), little),
                                 )?;
                             } else {
-                                let value = memory.read_integer(pa, width, false)?;
+                                let value = self.uncached_read(memory, pa, width)?;
                                 self.write_reg(rd, width.reorder(value, little));
                             }
                         }
                         (ASI_PHYS_USE_EC, 0x1b) => {
-                            let value =
-                                memory.read_cacheable_xword(Self::bypass_address(address, 8)?)?;
+                            let pa = Self::bypass_address(address, 8)?;
+                            let mapping = Translation {
+                                pa,
+                                cacheable: true,
+                                virtual_cacheable: false,
+                                invert_endian: false,
+                                slot: None,
+                            };
+                            let value = self.load_data(memory, pa, mapping, IntegerWidth::Xword)?;
                             self.write_reg(rd, value);
                         }
                         (ASI_PHYS_USE_EC, 0x1e) => {
-                            memory.write_cacheable_xword(
-                                Self::bypass_address(address, 8)?,
-                                self.read_reg(rd),
-                            )?;
+                            let pa = Self::bypass_address(address, 8)?;
+                            let value = self.read_reg(rd);
+                            memory.write_cacheable_xword(pa, value)?;
+                            self.update_data_hit(pa, pa, IntegerWidth::Xword, value);
                         }
                         (ASI_PHYS_BYPASS_EC_WITH_EBIT | ASI_PHYS_BYPASS_EC_WITH_EBIT_LE, 0x10) => {
-                            let value =
-                                memory.read_bypass_word(Self::bypass_address(address, 4)?)?;
+                            let value = self.uncached_read(
+                                memory,
+                                Self::bypass_address(address, 4)?,
+                                IntegerWidth::Word,
+                            )? as u32;
                             let value = if asi == ASI_PHYS_BYPASS_EC_WITH_EBIT_LE {
                                 value.swap_bytes()
                             } else {
@@ -969,7 +1070,7 @@ impl V9Cpu {
                         }
                         (ASI_PHYS_BYPASS_EC_WITH_EBIT | ASI_PHYS_BYPASS_EC_WITH_EBIT_LE, 0x1b) => {
                             let pa = Self::bypass_address(address, 8)?;
-                            let value = memory.read_bypass_xword(pa)?;
+                            let value = self.uncached_read(memory, pa, IntegerWidth::Xword)?;
                             self.write_reg(
                                 rd,
                                 if asi == ASI_PHYS_BYPASS_EC_WITH_EBIT_LE {
@@ -980,8 +1081,11 @@ impl V9Cpu {
                             );
                         }
                         (ASI_PHYS_BYPASS_EC_WITH_EBIT, 0x11) => {
-                            let value =
-                                memory.read_bypass_byte(Self::bypass_address(address, 1)?)?;
+                            let value = self.uncached_read(
+                                memory,
+                                Self::bypass_address(address, 1)?,
+                                IntegerWidth::Byte,
+                            )? as u8;
                             self.write_reg(rd, u64::from(value));
                         }
                         (ASI_PHYS_BYPASS_EC_WITH_EBIT, 0x15) => {
@@ -1031,6 +1135,25 @@ impl V9Cpu {
                             if let Some(value) = self.ecache.read(address)? {
                                 self.write_reg(rd, value);
                             }
+                        }
+                        (ASI_SDB_READ, 0x1b) if address == 0 => {
+                            self.write_reg(rd, u64::from(self.sdb_error));
+                        }
+                        (ASI_SDB_WRITE, 0x1e) if address == 0 => {
+                            self.sdb_error &= !(self.read_reg(rd) as u16 & 0x300);
+                        }
+                        // IIi implements the lower data-buffer error and control
+                        // registers as read-zero/write-ignore (sections 16.6.5, 16.6.7).
+                        (ASI_SDB_READ, 0x1b) if matches!(address, 0x18 | 0x38) => {
+                            self.write_reg(rd, 0);
+                        }
+                        (ASI_SDB_WRITE, 0x1e) if matches!(address, 0x18 | 0x38) => {}
+                        (0x4d, 0x1b) if address == 0 => {
+                            self.write_reg(rd, self.async_fault_address)
+                        }
+                        (0x4d, 0x1e) if address == 0 => {
+                            self.async_fault_address =
+                                self.read_reg(rd) & PHYSICAL_ADDRESS_MASK & !7
                         }
                         (ASI_ESTATE_ERROR_EN | ASI_AFSR, 0x1b | 0x1e) if address == 0 => {
                             if op3 == 0x1b {
@@ -1134,6 +1257,48 @@ impl V9Cpu {
         tlb.stage_tag((miss.address & !0x1fff) | u64::from(miss.context));
         self.enter_normal_trap(tt, PSTATE_MG);
         Ok(tt)
+    }
+
+    pub(crate) fn enter_data_access_error(&mut self) -> Result<(), String> {
+        self.prepare_normal_trap(None)?;
+        self.data_error_pending = false;
+        self.lsu_control &= !(LSU_DC | LSU_IC);
+        // IIi §16.2.1 leaves TNPC undefined on a deferred timeout. Preserve
+        // the *first unretired* instruction as the DONE continuation. In
+        // particular OBP probes from Forth without a following MEMBAR, and
+        // its handler uses DONE without rewriting TNPC. A bracketed peek
+        // still reports the following MEMBAR in TPC.
+        let continuation = self.pc;
+        self.enter_normal_trap(0x32, PSTATE_AG);
+        self.traps[usize::from(self.tl - 1)].tnpc = continuation;
+        Ok(())
+    }
+
+    fn uncached_read(
+        &mut self,
+        memory: &mut dyn V9DataBus,
+        pa: u64,
+        width: IntegerWidth,
+    ) -> Result<u64, String> {
+        match memory.read_integer(pa, width, false) {
+            Err(_) if memory.pci_read_aborted(pa) => {
+                // IIi §§16.2.1, 16.4.6: nonresponding configuration cycle.
+                // The load completes with undefined data; deliver the deferred
+                // error at the next instruction boundary, before MEMBAR #Sync.
+                if self.async_fault_status & (1 << 27) != 0 {
+                    self.async_fault_status |= 1 << 32;
+                } else {
+                    self.async_fault_address = pa & !7;
+                }
+                self.async_fault_status |= 1 << 27;
+                if self.pstate & PSTATE_PRIV != 0 {
+                    self.async_fault_status |= 1 << 31;
+                }
+                self.data_error_pending = self.estate_error_enable & 2 != 0;
+                Ok(width.mask())
+            }
+            value => value,
+        }
     }
 
     pub(crate) fn enter_interrupt(&mut self, level: u8) -> Result<(), String> {
@@ -1247,7 +1412,7 @@ impl V9Cpu {
         // IIi §14.2.1 truncates each window counter independently to three bits.
         let count = value as u8 & WINDOW_MASK;
         match selector {
-            0 | 1 | 3 => {
+            0..=3 => {
                 let index = self.trap_index()?;
                 // IIi stores VA[43:2] and sign-extends the trap PC on read.
                 let pc = (((value << 20) as i64 >> 20) as u64) & !3;
@@ -1255,6 +1420,7 @@ impl V9Cpu {
                 match selector {
                     0 => frame.tpc = pc,
                     1 => frame.tnpc = pc,
+                    2 => frame.tstate = value & 0x00ff_ff0f_ff07,
                     _ => frame.tt = value as u16 & 0x1ff,
                 }
             }
@@ -1318,9 +1484,8 @@ impl V9Cpu {
             self.write_reg(rd, self.lsu_control);
         } else {
             let value = self.read_reg(rd);
-            // IIi A.6. IC/DC are retained; IM/DM control independent TLBs.
-            const CACHE_ENABLES: u64 = 0b11;
-            if value & !(CACHE_ENABLES | LSU_IM | LSU_DM) != 0 {
+            // IIi A.6. Independent instruction/data cache and translation enables.
+            if value & !(LSU_IC | LSU_DC | LSU_IM | LSU_DM) != 0 {
                 return Err(format!("unsupported LSU control write {value:#x}"));
             }
             self.lsu_control = value;
@@ -1420,6 +1585,60 @@ impl V9Cpu {
 mod tests {
     use super::*;
     use crate::ultra5::{BootFlash, FLASH_SIZE};
+
+    #[test]
+    fn config_timeout_preserves_first_address_and_enters_deferred_trap_only_when_enabled() {
+        struct Absent;
+        impl V9DataBus for Absent {
+            fn pci_read_aborted(&mut self, _: u64) -> bool {
+                true
+            }
+        }
+        let mut cpu = V9Cpu::new(0x40);
+        cpu.pstate = PSTATE_PRIV;
+        let mut bus = Absent;
+        assert_eq!(
+            cpu.uncached_read(&mut bus, 0x10824, IntegerWidth::Word)
+                .unwrap(),
+            0xffff_ffff
+        );
+        assert_eq!(cpu.async_fault_status, (1 << 31) | (1 << 27));
+        assert_eq!(cpu.async_fault_address, 0x10820);
+        assert!(!cpu.data_error_pending);
+        cpu.estate_error_enable = 2;
+        cpu.uncached_read(&mut bus, 0x20824, IntegerWidth::Half)
+            .unwrap();
+        assert_eq!(cpu.async_fault_status, (1 << 32) | (1 << 31) | (1 << 27));
+        assert_eq!(cpu.async_fault_address, 0x10820);
+        assert!(matches!(
+            cpu.instruction_address(),
+            Err(CpuFault::DataAccessError)
+        ));
+        cpu.enter_data_access_error().unwrap();
+        assert_eq!(
+            (cpu.traps[0].tt, cpu.traps[0].tpc, cpu.traps[0].tnpc),
+            (0x32, 0x40, 0x40)
+        );
+        assert!(!cpu.data_error_pending);
+    }
+
+    #[test]
+    fn trap_state_and_y_and_ccr_round_trip_register_widths() {
+        let mut cpu = V9Cpu::new(0);
+        cpu.tl = 2;
+        cpu.write_pr(2, u64::MAX).unwrap();
+        assert_eq!(cpu.traps[1].tstate, 0x00ff_ff0f_ff07);
+        assert_eq!(cpu.traps[0].tstate, 0);
+        cpu.tl = 0;
+        assert!(cpu.write_pr(2, 0).is_err());
+        cpu.write_reg(1, 0x1234_5678_dead_beaf);
+        let mut bus = UnmappedData;
+        cpu.execute_fetched(0x8180_6000, &mut bus).unwrap(); // wr %g1,0,%y
+        cpu.execute_fetched(0x8540_0000, &mut bus).unwrap(); // rd %y,%g2
+        assert_eq!(cpu.read_reg(2), 0xdead_beaf);
+        cpu.execute_fetched(0x8580_6000, &mut bus).unwrap(); // wr %g1,0,%ccr
+        assert_eq!(cpu.ccr, 0xaf);
+    }
 
     #[test]
     fn udivx_preserves_ccr_and_handles_full_width_aliases_and_immediates() {
@@ -1777,6 +1996,58 @@ mod tests {
                 .map_err(String::from)
                 .unwrap_err()
                 .contains(reason));
+            assert_eq!(cpu, before);
+        }
+    }
+
+    #[test]
+    fn sdbh_w1c_preserves_the_syndrome_and_sdbl_is_independent() {
+        let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
+        let load = 0xc4d8_4fe0; // ldxa [%g1] 0x7f,%g2
+        let store = 0xc6f0_4ee0; // stxa %g3,[%g1] 0x77
+        cpu.execute_fetched(load, &mut UnmappedData).unwrap();
+        assert_eq!(cpu.read_reg(2), 0);
+        cpu.ccr = 0xa5;
+        cpu.sdb_error = 0x35a;
+        cpu.write_reg(3, u64::MAX);
+        for address in [0x18, 0x38] {
+            cpu.write_reg(1, address);
+            cpu.execute_fetched(store, &mut UnmappedData).unwrap();
+            cpu.write_reg(2, u64::MAX);
+            cpu.execute_fetched(load, &mut UnmappedData).unwrap();
+            assert_eq!(cpu.read_reg(2), 0);
+        }
+        cpu.write_reg(1, 0);
+        for (write, expected) in [(0xff, 0x35a), (0x200, 0x15a), (u64::MAX, 0x5a)] {
+            cpu.write_reg(3, write);
+            cpu.execute_fetched(store, &mut UnmappedData).unwrap();
+            for _ in 0..2 {
+                cpu.execute_fetched(load, &mut UnmappedData).unwrap();
+                assert_eq!(cpu.read_reg(2), expected);
+            }
+        }
+        assert_eq!(cpu.ccr, 0xa5);
+    }
+
+    #[test]
+    fn sdb_ports_reject_wrong_direction_width_privilege_and_address_without_retirement() {
+        let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
+        cpu.sdb_error = 0x3a5;
+        for (word, addr, privileged) in [
+            (0xc4d8_4ee0, 0, true), // read on write ASI
+            (0xc6f0_4fe0, 0, true), // write on read ASI
+            (0xc480_4fe0, 0, true), // LDUWA
+            (0xc6a0_4ee0, 0, true), // STWA
+            (0xc4d8_4fe0, 1, true),
+            (0xc6f0_4ee0, 0x1000_0000_0018, true),
+            (0xc4d8_4fe0, 0x40, true), // interrupt receive port, separate function
+            (0xc6f0_4ee0, 0, false),
+            (0xc4d8_4fe0, 0x18, false),
+        ] {
+            cpu.pstate = if privileged { PSTATE_PRIV } else { 0 };
+            cpu.write_reg(1, addr);
+            let before = cpu.clone();
+            assert!(cpu.execute_fetched(word, &mut UnmappedData).is_err());
             assert_eq!(cpu, before);
         }
     }

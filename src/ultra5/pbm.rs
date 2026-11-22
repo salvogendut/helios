@@ -10,6 +10,7 @@ const SERR: u64 = 1 << 34;
 #[derive(Default)]
 pub(super) struct Pbm {
     control: u64,
+    faults: FaultStatus,
     iommu: Iommu,
     // One bit for each 512 MiB region of the incoming 32-bit PCI address space.
     target_regions: u8,
@@ -18,6 +19,23 @@ pub(super) struct Pbm {
     enabled: u64,
     pci_interrupts: u64,
     onboard_interrupts: u64,
+}
+
+// IIi tables 19-3, 19-44 and 19-46. The DMA byte mask reads 0x00ff at POR.
+struct FaultStatus {
+    pio_write: u64,
+    dma_uncorrectable: u64,
+    dma_correctable: u64,
+}
+
+impl Default for FaultStatus {
+    fn default() -> Self {
+        Self {
+            pio_write: 0,
+            dma_uncorrectable: 0xff << 32,
+            dma_correctable: 0xff << 32,
+        }
+    }
 }
 
 // First 16 configuration bytes of bus 0, device 0, function 0 in PCI byte
@@ -35,6 +53,10 @@ impl Default for PciHeader {
 }
 
 impl PciHeader {
+    pub(super) fn master_abort(&mut self) {
+        self.0[7] |= 0x20;
+    }
+
     fn offset<const N: usize>(pa: u64) -> Option<usize> {
         let offset = pa.checked_sub(PCI_CONFIG)?;
         (matches!(N, 1 | 2 | 4 | 8) && offset < 16 && offset % N as u64 == 0)
@@ -81,6 +103,9 @@ impl Pbm {
         match offset {
             0x200..=0x217 | 0xa580..=0xa67f => self.iommu.read(offset),
             0x2000 => Ok(self.control),
+            0x2010 => Ok(self.faults.pio_write),
+            0x0030 => Ok(self.faults.dma_uncorrectable),
+            0x0040 => Ok(self.faults.dma_correctable),
             0x2020 => Ok(u64::from(self.disable_retry_limit) << 6),
             0x2028 => Ok(u64::from(self.target_regions)),
             0xa800 => Ok(self.pci_interrupts),
@@ -102,6 +127,17 @@ impl Pbm {
             0x200..=0x217 | 0xa580..=0xa67f => self.iommu.write(offset, value),
             0x2000 => {
                 self.control = (self.control & SERR & !value) | (value & CONTROL_RW);
+                Ok(())
+            }
+            0x0030 | 0x0040 | 0x2010 => {
+                // Only primary and secondary cause bits are write-one-to-clear.
+                // Translation errors are logged by the uncorrectable DMA bank.
+                let (status, flags) = match offset {
+                    0x0030 => (&mut self.faults.dma_uncorrectable, 0x6f_u64),
+                    0x0040 => (&mut self.faults.dma_correctable, 0x6c_u64),
+                    _ => (&mut self.faults.pio_write, 0xff_u64),
+                };
+                *status &= !(value & (flags << 56));
                 Ok(())
             }
             0x2020 => {
@@ -157,6 +193,51 @@ impl Pbm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fault_status_reset_and_w1c_are_specific_to_each_register() {
+        let mut pbm = Pbm::default();
+        let regs = [0x2010, 0x0030, 0x0040];
+        for (offset, expected) in regs
+            .into_iter()
+            .zip([0, 0x00ff_0000_0000, 0x00ff_0000_0000])
+        {
+            assert_eq!(pbm.read(offset).unwrap(), expected);
+            pbm.write(offset, u64::MAX).unwrap();
+            assert_eq!(pbm.read(offset).unwrap(), expected);
+        }
+        // A secondary cause can remain set after acknowledgement of the primary.
+        // Check every W1C bit with representative read-only transfer metadata.
+        for (offset, causes, metadata) in [
+            (
+                0x2010,
+                &[63, 62, 61, 60, 59, 58, 57, 56][..],
+                0x005a_8000_0000,
+            ),
+            (0x0030, &[62, 61, 59, 58, 57, 56][..], 0xff00_a000_0000),
+            (0x0040, &[62, 61, 59, 58][..], 0x009b_00ff_4000_0000),
+        ] {
+            for &cause in causes {
+                let bit = 1u64 << cause;
+                let captured = bit | metadata;
+                match offset {
+                    0x2010 => pbm.faults.pio_write = captured,
+                    0x0030 => pbm.faults.dma_uncorrectable = captured,
+                    _ => pbm.faults.dma_correctable = captured,
+                }
+                pbm.write(offset, !bit).unwrap();
+                assert_eq!(pbm.read(offset).unwrap(), captured);
+                let before = regs.map(|r| pbm.read(r).unwrap());
+                pbm.write(offset, bit).unwrap();
+                for (r, prior) in regs.into_iter().zip(before) {
+                    assert_eq!(
+                        pbm.read(r).unwrap(),
+                        if r == offset { metadata } else { prior }
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn incoming_pci_regions_decode_both_edges_independently() {

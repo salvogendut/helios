@@ -63,7 +63,7 @@ machines should become explicit profiles; SPARC V9 is a separate CPU milestone.
 
 ## Ultra 5 serial console
 
-**Original OBP 3.31.0 executes its expanded firmware from RAM on 22 November 2026.**
+**Original OBP 3.31.0 reaches a responsive serial monitor on 22 November 2026.**
 Cold and soft-reset runs reach the same entry with diagnostics enabled or disabled.
 
 | Milestone | Evidence |
@@ -85,7 +85,11 @@ Cold and soft-reset runs reach the same entry with diagnostics enabled or disabl
 | IOMMU initialization | OBP clears the 16 I/O translations, sets the translation table base and enables the IOMMU on cold and soft boots. |
 | CPU timer | OBP programs TICK and TICK_CMPR, takes a level-14 interrupt in its calibration loop, and returns through RETRY. |
 | Clock calibration and onboard EBus | OBP executes its 64-bit unsigned divide, reads PCIO BAR1 and reaches the PCI command write. |
-| Interactive OpenBoot console | Open. Acceptance is a serial `ok` prompt that takes `1 2 + .`, replies `3` and prompts again. |
+| Timekeeper and reset report | OBP programs the EBus command register, reads latched RTC seconds, restores NVRAM defaults on the test seeds and prints the reset cause on TTYA. |
+| Module and memory banks | OBP acknowledges the reset and error flags, reads the flash signature and reports 512 MiB in bank 2 on serial A. |
+| DRAM refresh and PCI identification | OBP restores Mem_Control0 through the primary caches, reads the onboard ATI device ID and identifies the Simba multifunction bridge. |
+| PCI enumeration and banner | The guest probes UPA and both Simba buses, identifies the onboard devices and prints the 440 MHz / 512 MB Ultra 5/10 banner. |
+| Interactive OpenBoot console | Verified by typing `1 2 + .` and receiving `3` and a second `ok`, both with autoboot disabled and after serial BREAK. |
 
-The next device operation is a write of PCI command `0x0146` to the onboard
-PCIO EBus function. [Reproduce the current checkpoint](ultra5.md#onboard-ebus-configuration)
+The serial-console milestone is complete. Ultra 5 disk and network boot remain
+open. [Run the interactive example](ultra5.md#interactive-serial-console)

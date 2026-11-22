@@ -1,6 +1,6 @@
 # Agent notes
 
-- [Ultra 5 MMU refill and PCI setup](ultra5-mmu-refill.md) — original OBP trap handling, PCI and IOMMU setup, CPU timer calibration, and the onboard PCIO command boundary.
+- [Ultra 5 MMU refill and PCI setup](ultra5-mmu-refill.md) — original OBP trap handling, PCI and IOMMU setup, CPU timer calibration, PCIO configuration, RTC polling, error acknowledgements, cache-backed DRAM refresh, PCI enumeration, the normal banner and the verified interactive serial monitor.
 
 - [Ultra 5 firmware decompression](ultra5-decompression.md) — independent expanded-image comparison, both primary cache tag clears and the original ROM’s `ttya initialized` output.
 

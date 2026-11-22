@@ -115,6 +115,22 @@ test rather than assuming either emulator defines the hardware.
   64-bit register. Section 15.10 and table 15-18 give the 41-bit physical
   address and side-effect attribute for the ASI `0x15` bypass read.
   See the [Ultra 5 fixture](ultra5.md).
+- IIi table 17-2 gives the external reset acknowledgement bits and distinct
+  software-reset controls. Tables 16-8, 19-3, 19-44 and 19-46 specify the
+  CPU data-buffer and PCI error status fields, reset byte masks and
+  write-one-to-clear flags. Sections 16.6.5 and 16.6.7 define the lower
+  data-buffer registers. Table 18-3 and Appendix A.10.1 describe the column
+  selection and refresh programming used after the memory probe.
+  [Sun UltraSPARC-IIi manual](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+- IIi §§3.1.1 and 8.2 specify the primary cache geometry, allocation and
+  instruction invalidation rules. Section 8.6 describes D-cache hits on an
+  ASI `0x14` physical load. Appendices A.7.2 and A.8.2 define the indexed
+  diagnostic tag and validity fields shared with these caches.
+  [Sun UltraSPARC-IIi User’s Manual](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+- The 440 MHz Ultra 5 device tree lists ATI `1002:4754` revision `9a`
+  behind Simba B, and two Sun `108e:5000` bridges at revision `11`.
+  The Sun System Handbook shows the bridge header byte `81` at offset `0e`.
+  [Original device tree](https://rob.com/sun/sun4u-ss5/) · [Sun System Handbook](https://dogemicrosystems.ca/pub/Sun/System_Handbook/Sun_syshbk_V3.4/collections/TECHNICALINSTRUCTIONSURE/1-71-1010580.1-1.html)
 - IIi §§14.4.4 and 15.2–15.7 specify D-side FLUSH checks, page sizes,
   privilege and context selection, including I-side bypass in RED_state.
   Section 15.11 describes the TLB Used bit. The pinned QEMU SPARC64
@@ -188,6 +204,20 @@ seven-bit trap number for Tcc. The original Ultra 5 firmware uses STW,
   operands and XOR. UltraSPARC-IIi §14.2.1 specifies eight windows and
   truncation of CWP writes to three bits.
   [V9 register windows](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf#page=57) · [IIi implementation details](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223)
+- UltraSPARC-IIi §§6.2.4 and 16.2.1/16.4.6 describe vacant UPA64S reads
+  and deferred timeouts on PCI probes. The model delivers a PCI read timeout
+  before the next instruction. It selects the first unretired instruction as
+  the undefined TNPC continuation used by the firmware's DONE handler.
+  [UltraSPARC-IIi User’s Manual](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+- The reference machine's OpenBoot tree records onboard PCI identities,
+  BAR sizes and interrupt pins. NetBSD documents the PCIO MIF pins and the
+  CMD646 native-channel configuration. ATI describes the two 8 MiB apertures,
+  clock indexing and register-block locations.
+  [Ultra 5 device tree](https://rob.com/sun/sun4u-ss5/) · [NetBSD HME registers](https://github.com/NetBSD/src/blob/trunk/sys/dev/ic/hmereg.h) · [NetBSD CMD646 registers](https://github.com/NetBSD/src/blob/trunk/sys/dev/pci/pciide_cmd_reg.h) · [ATI mach64 Register Reference Guide, chapter 2](https://bitsavers.computerhistory.org/components/ati/RRG-G02700_mach64_Register_Reference_Guide_ATI-264VT_and_3D_RAGE_1996.pdf)
+- Siemens specifies SAB ASYNC receive-pool release, four-frame receive timeout,
+  BRK/BRKT and masked-status visibility (IPC.VIS). NetBSD's SPARC64 baud table
+  gives the divisors for 9600 baud on this board.
+  [SAB 82532 ASYNC register descriptions](https://media.digikey.com/pdf/Data%20Sheets/Infineon%20PDFs/SAB%2CSAF82532.pdf) · [NetBSD SAB driver](https://github.com/NetBSD/src/blob/trunk/sys/arch/sparc64/dev/sab.c)
 - [Sun Ultra 5 Service Manual, 805-7763-12](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf):
   section C.1.6.3 describes the 1 MiB flash and its OBP and POST/OBDiag
   halves. Table C-14 describes the PROM address assignments.
@@ -197,6 +227,16 @@ seven-bit trap number for Tcc. The original Ultra 5 firmware uses STW,
   The National data sheet describes the Super I/O index-port identification
   sequence and paired configuration writes used by OBP.
   [Sun board devices, §§C.1.6.1–2](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf#page=222) · [Siemens ESCC2 data sheet](https://media.digikey.com/pdf/Data%20Sheets/Infineon%20PDFS/SAB%2CSAF82532.pdf) · [National Super I/O, §§2.2–2.4](https://ardent-tool.com/datasheets/NS_PC87332VLJ.pdf)
+- Sun's PCI/PCIO diagnostic specifies IDs `108e:1000`, class `068000`
+  and status capabilities `0280`. A board device-tree dump gives revision 1
+  and the two PCI memory apertures. The illumos driver enables memory,
+  bus master, parity response and SERR. QEMU initializes its EBus command to
+  `0x0006`, the initial value used in this fixture.
+  [Sun service manual, §4.7.2.1](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf#page=89) · [Ultra 5 device tree](https://rob.com/sun/sun4u-ss5/) · [illumos EBus driver](https://github.com/illumos/illumos-gate/blob/master/usr/src/uts/sun4/io/ebus.c#L890-L908) · [Pinned QEMU EBus initialization](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/sparc64/sun4u.c#L397-L415)
+- ST table 5 and §§3.1–3.3, 3.8–3.11 define the M48T59 calendar,
+  transfer latches, stop bit, flags, century control and power-up defaults.
+  QEMU's sun4u board sets the year base to 1968.
+  [ST M48T59 data sheet](https://media.digikey.com/pdf/Data%20Sheets/ST%20Microelectronics%20PDFS/M48T59%2CY_V.pdf) · [Pinned QEMU sun4u clock setup](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/sparc64/sun4u.c#L704)
 - The Ultra 5/10 product notes locate EEPROM at EBus `14,0`; the service
   manual (§C.1.6.4) identifies the NVRAM/TOD, and the parts list gives
   the 48T59. Force's technical reference documents the shared PCIO chip's

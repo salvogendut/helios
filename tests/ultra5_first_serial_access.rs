@@ -238,3 +238,66 @@ fn original_power_on_diagnostics_are_transmitted_only_when_enabled() {
         }
     }
 }
+
+#[test]
+#[ignore = "requires original Ultra 5 OBP and a release build for the full boot"]
+fn original_obp_accepts_a_serial_command_after_the_normal_banner() {
+    // New battery-backed configuration. OBP restores its factory defaults,
+    // which select diagnostic net boot. BREAK after the banner enters the monitor.
+    let mut seed = vec![0; RESET_NVRAM_SIZE];
+    seed[1] = 1;
+    seed[0x10..0x18].copy_from_slice(b"soft-rst");
+    seed[0x1fd8..0x1fe8].copy_from_slice(&[
+        1, 0x80, 8, 0, 0x20, 0xc0, 0xff, 0xee, 0, 0, 0, 0, 0xc0, 0xff, 0xee, 0xa9,
+    ]);
+    let mut board = Ultra5ResetBoard::new(original_flash(), ResetNvram::new(seed).unwrap());
+    let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
+    let mut out = Vec::new();
+    let mut steps = 0u64;
+    let mut sent_break = false;
+    let mut send_at = None;
+    let mut command = b"1 2 + .\r".as_slice();
+    let limit = 20_000_000_000;
+    while steps < limit {
+        if send_at.is_some_and(|at| steps >= at) && !command.is_empty() {
+            assert!(board.receive_serial_a(command[0]));
+            command = &command[1..];
+            send_at = Some(steps + 10_417);
+        }
+        if steps % 257 == 0 {
+            let budget = if command.is_empty() {
+                limit - steps
+            } else {
+                send_at.unwrap_or(limit).saturating_sub(steps)
+            };
+            let repeated = board.repeat_countdown(&mut cpu, budget);
+            if repeated != 0 {
+                steps += repeated;
+                continue;
+            }
+        }
+        board.step_outcome(&mut cpu).unwrap();
+        steps += 1;
+        let [a, _] = board.take_serial_output();
+        if a.is_empty() {
+            continue;
+        }
+        out.extend(a);
+        if !sent_break && out.ends_with(b"Host ID: 80c0ffee.\r\n") {
+            assert!(board.receive_serial_break());
+            sent_break = true;
+        }
+        if sent_break && send_at.is_none() && out.ends_with(b"\r\nok ") {
+            send_at = Some(steps);
+        }
+        if command.is_empty() && out.ends_with(b"ok 1 2 + .\r\n3 \r\nok ") {
+            assert!(out.windows(13).any(|w| w == b"OpenBoot 3.31"));
+            assert!(!out.windows(8).any(|w| w == b"MMU Miss"));
+            return;
+        }
+    }
+    panic!(
+        "no completed ttya exchange after {steps} outcomes: {}",
+        String::from_utf8_lossy(&out)
+    );
+}

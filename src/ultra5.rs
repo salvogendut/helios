@@ -12,11 +12,15 @@ use crate::v9::{UnmappedData, V9Cpu, V9DataBus, PHYSICAL_ADDRESS_MASK};
 
 mod board;
 mod dram;
+mod hme;
 mod iommu;
 mod keyboard_uart;
+mod mach64;
 mod pbm;
+mod pcio;
 mod serial;
 mod simba;
+mod timekeeper;
 pub use board::{BoardInstruction, BoardStep, Ultra5ResetBoard};
 
 pub const FLASH_BASE: u64 = 0x01ff_f000_0000;
@@ -34,6 +38,7 @@ const M48T59_REGISTERS: usize = 0x1ff0;
 /// contain device registers and cannot be served as plain SRAM.
 pub struct ResetNvram {
     image: Box<[u8]>,
+    clock: timekeeper::Timekeeper,
 }
 
 impl ResetNvram {
@@ -45,9 +50,33 @@ impl ResetNvram {
             ));
         }
         Ok(Self {
+            clock: timekeeper::Timekeeper::from_registers(&image[M48T59_REGISTERS..]),
             image: image.into_boxed_slice(),
         })
     }
+
+    fn register_offset(pa: u64) -> Option<usize> {
+        pa.checked_sub(RESET_NVRAM_BASE + M48T59_REGISTERS as u64)
+            .filter(|&offset| offset < (RESET_NVRAM_SIZE - M48T59_REGISTERS) as u64)
+            .map(|offset| offset as usize)
+    }
+
+    fn read_byte(&mut self, pa: u64, now_ns: u64) -> Result<u8, String> {
+        if let Some(reg) = Self::register_offset(pa) {
+            return self.clock.read(reg, now_ns);
+        }
+        Ok(self.image[self.sram_index(pa, 1)?])
+    }
+
+    fn write_byte(&mut self, pa: u64, value: u8, now_ns: u64) -> Result<(), String> {
+        if let Some(reg) = Self::register_offset(pa) {
+            return self.clock.write(reg, value, now_ns);
+        }
+        let offset = self.sram_index(pa, 1)?;
+        self.image[offset] = value;
+        Ok(())
+    }
+
     fn sram_index(&self, pa: u64, width: usize) -> Result<usize, String> {
         let offset = pa
             .checked_sub(RESET_NVRAM_BASE)

@@ -10,7 +10,7 @@ const READ: u8 = 0x40;
 const WRITE: u8 = 0x80;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Clock {
+pub(crate) struct Clock {
     second: u8,
     minute: u8,
     hour: u8,
@@ -35,7 +35,7 @@ impl Clock {
             _ => 31,
         }
     }
-    fn encode(self) -> [u8; 7] {
+    pub(crate) fn encode(self) -> [u8; 7] {
         fn bcd(v: u8) -> u8 {
             ((v / 10) << 4) | (v % 10)
         }
@@ -49,7 +49,7 @@ impl Clock {
             bcd(self.year),
         ]
     }
-    fn decode(bytes: &[u8]) -> Option<Self> {
+    pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
         fn bcd(v: u8, min: u8, max: u8) -> Option<u8> {
             let value = (v >> 4) * 10 + (v & 15);
             if v & 15 > 9 || v >> 4 > 9 || !(min..=max).contains(&value) {
@@ -70,9 +70,10 @@ impl Clock {
         };
         (clock.date <= clock.days_in_month()).then_some(clock)
     }
-    fn advance(&mut self, seconds: u64) {
+    /// Return true when an odd number of two-digit year rollovers occurred.
+    pub(crate) fn advance(&mut self, seconds: u64) -> bool {
         if self.stopped {
-            return;
+            return false;
         }
         let within_day = u64::from(self.hour) * 3600
             + u64::from(self.minute) * 60
@@ -85,6 +86,7 @@ impl Clock {
         self.weekday = ((u64::from(self.weekday - 1) + days % 7) % 7 + 1) as u8;
         // The chip's two-digit year repeats after 100 years, including 25 leap
         // days. Reduce before walking months to bound work for any u64 input.
+        let mut century_changed = days / 36525 % 2 != 0;
         let mut days = days % 36525;
         while days != 0 {
             let remaining = u64::from(self.days_in_month() - self.date + 1);
@@ -98,8 +100,12 @@ impl Clock {
             if self.month > 12 {
                 self.month = 1;
                 self.year = (self.year + 1) % 100;
+                if self.year == 0 {
+                    century_changed = !century_changed;
+                }
             }
         }
+        century_changed
     }
 }
 

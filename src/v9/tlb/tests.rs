@@ -555,6 +555,10 @@ fn original_obp_expands_the_image_and_executes_its_entry_in_ram() {
         b"Decompressing into Memory Done\r\nSize = 0000.0000.0006.eba0\r\nttya initialized\r\n"
     ));
     assert!(b.is_empty());
+    verify_obp_timekeeper_and_reset_report(&mut board, &mut cpu);
+    verify_obp_fault_clears_and_memory_banks(&mut board, &mut cpu);
+    verify_obp_restores_refresh(&mut board, &mut cpu);
+    verify_obp_probes_simba(&mut board, &mut cpu);
 }
 
 fn run_to(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu, pc: u64, limit: usize) {
@@ -907,6 +911,226 @@ fn verify_obp_clock_calibration(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
     }
     panic!(
         "OBP did not reach the PCIO command write, PC={:#x}",
+        cpu.pc()
+    );
+}
+
+fn verify_obp_timekeeper_and_reset_report(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
+    use crate::ultra5::BoardStep;
+    const COMMAND: u64 = 0x01fe_0101_0804;
+    const CONTROL: u64 = 0x01ff_f100_1ff8;
+    let mut command_writes = 0;
+    let mut latched = false;
+    let mut seconds = Vec::new();
+    for _ in 0..28_000_000 {
+        let pc = cpu.pc();
+        let target = match pc {
+            0xf004_2ff4 => cpu.translate(cpu.read_reg(4), 2, Access::Write),
+            0xf000_92a4 => cpu.translate(cpu.read_reg(4), 1, Access::Write),
+            0xf000_909c => cpu.translate(cpu.read_reg(4), 1, Access::Read),
+            0xf000_9238 => cpu.translate(cpu.read_reg(4), 8, Access::Write),
+            _ => {
+                board.step_outcome(cpu).unwrap();
+                continue;
+            }
+        }
+        .ok()
+        .map(|mapping| mapping.pa);
+        let value = cpu.read_reg(16);
+        if pc == 0xf000_9238 && target == Some(0x01fe_0000_f020) {
+            assert_eq!((cpu.npc(), value), (0xf000_923c, 0x8000_0000));
+            assert_eq!(command_writes, 2);
+            assert!(seconds.len() >= 2, "guest RTC seconds {seconds:?}");
+            let [a, b] = board.take_serial_output();
+            assert_eq!(
+                a,
+                concat!(
+                    "Incorrect configuration checksum; \r\n",
+                    "Setting NVRAM parameters to default values.\r\n",
+                    "Setting diag-switch? NVRAM parameter to true\r\n",
+                    "Reset Control: BXIR:0 BPOR:0 SXIR:0 SPOR:0 POR:1 \r\n"
+                )
+                .as_bytes()
+            );
+            assert!(b.is_empty());
+            return;
+        }
+        if let BoardStep::Retired(_) = board.step_outcome(cpu).unwrap() {
+            match (pc, target) {
+                (0xf004_2ff4, Some(COMMAND)) => {
+                    assert_eq!(value, 0x4601);
+                    assert_eq!(board.read_bypass_half(COMMAND).unwrap(), 0x4601);
+                    command_writes += 1;
+                }
+                (0xf000_92a4, Some(CONTROL)) => latched = value & 0x40 != 0,
+                (0xf000_909c, Some(pa)) if pa == CONTROL + 1 && latched => {
+                    let second = cpu.read_reg(4);
+                    assert!(second <= 0x59 && second & 15 <= 9);
+                    if seconds.last() != Some(&second) {
+                        seconds.push(second);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    panic!("OBP did not report its reset cause, PC={:#x}", cpu.pc());
+}
+
+fn verify_obp_fault_clears_and_memory_banks(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
+    use crate::ultra5::{BoardStep, FLASH_BASE};
+
+    const RESET: u64 = 0x01fe_0000_f020;
+    const MCU: u64 = 0x01fe_0000_f010;
+    const PBM: u64 = 0x01fe_0000_0000;
+    assert_eq!(board.read_bypass_xword(RESET).unwrap(), 1 << 31);
+    assert_eq!(board.step_mapped(cpu).unwrap().instruction, 0xe070_0004);
+    assert_eq!(
+        (cpu.pc(), board.read_bypass_xword(RESET).unwrap()),
+        (0xf000_923c, 0)
+    );
+
+    let mut sdb = Vec::new();
+    let mut faults = Vec::new();
+    let mut read_obmd = false;
+    for _ in 0..21_000_000 {
+        let pc = cpu.pc();
+        let source = cpu.read_reg(16);
+        if pc == 0xf004_7f58 && cpu.asi == 0x77 {
+            let operand = (cpu.read_reg(17), cpu.read_reg(4));
+            if let BoardStep::Retired(step) = board.step_outcome(cpu).unwrap() {
+                assert_eq!(step.instruction, 0xc8f4_6000);
+                sdb.push(operand);
+            }
+            continue;
+        }
+        if pc == 0xf000_9238 {
+            if let Ok(mapping) = cpu.translate(cpu.read_reg(4), 8, Access::Write) {
+                if matches!(mapping.pa.checked_sub(PBM), Some(0x2010 | 0x30 | 0x40)) {
+                    if let BoardStep::Retired(_) = board.step_outcome(cpu).unwrap() {
+                        assert!(!mapping.cacheable);
+                        assert_eq!(source, u64::MAX);
+                        faults.push(mapping.pa - PBM);
+                    }
+                    continue;
+                }
+                if mapping.pa == MCU && source == 0 {
+                    assert_eq!(sdb, [(0, u64::MAX), (0x18, u64::MAX)].repeat(2));
+                    assert_eq!(faults, [0x2010, 0x30, 0x40]);
+                    assert!(read_obmd);
+                    let [a, b] = board.take_serial_output();
+                    assert_eq!(
+                        a,
+                        concat!(
+                            "UltraSPARC-IIi 2-2-2 module\r\n",
+                            "Probing Memory Bank #0   0 +   0 :   0 Megabytes\r\n",
+                            "Probing Memory Bank #2 256 + 256 : 512 Megabytes\r\n"
+                        )
+                        .as_bytes()
+                    );
+                    assert!(b.is_empty());
+                    assert_eq!(board.read_bypass_xword(MCU).unwrap(), 0x9000_143d);
+                    assert_eq!(board.step_mapped(cpu).unwrap().instruction, 0xe070_0004);
+                    assert_eq!(
+                        (cpu.pc(), board.read_bypass_xword(MCU).unwrap()),
+                        (0xf000_923c, 0)
+                    );
+                    return;
+                }
+            }
+        }
+        if !read_obmd
+            && pc == 0xf000_9030
+            && cpu
+                .translate(cpu.read_reg(4), 4, Access::Read)
+                .is_ok_and(|mapping| !mapping.cacheable && mapping.pa == FLASH_BASE)
+        {
+            if let BoardStep::Retired(step) = board.step_outcome(cpu).unwrap() {
+                assert_eq!(step.instruction, 0xc801_2000);
+                assert_eq!(cpu.read_reg(4), u64::from(u32::from_be_bytes(*b"OBMD")));
+                read_obmd = true;
+            }
+            continue;
+        }
+        board.step_outcome(cpu).unwrap();
+    }
+    panic!(
+        "OBP did not finish reporting both memory banks, PC={:#x}",
+        cpu.pc()
+    );
+}
+
+fn verify_obp_restores_refresh(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
+    use crate::ultra5::BoardStep;
+    const MCU: u64 = 0x01fe_0000_f010;
+    assert_eq!(cpu.instruction_address().unwrap().pa, 0x3ff8_923c);
+    assert_eq!(board.read_cacheable_xword(0x3ff8_9238).unwrap(), 0);
+    let fetch = board.step_mapped(cpu).unwrap();
+    assert_eq!(
+        (fetch.physical_address, fetch.instruction),
+        (0x3ff8_923c, 0xc859_e008)
+    );
+    let mut restored = false;
+    for _ in 0..1200 {
+        let pc = cpu.pc();
+        let store = pc == 0xf000_9238
+            && cpu
+                .translate(cpu.read_reg(4), 8, Access::Write)
+                .is_ok_and(|m| m.pa == MCU);
+        if pc == 0xf002_657c {
+            assert!(restored);
+            // LDUHA ASI_PHYS_BYPASS_EC_WITH_EBIT_LE reads device 2, function 0.
+            assert_eq!((cpu.asi, cpu.read_reg(16)), (0x1d, 0x01fe_0101_1002));
+            let step = board.step_mapped(cpu).unwrap();
+            assert_eq!(
+                (step.physical_address, step.instruction),
+                (0x3ffa_657c, 0xc894_2000)
+            );
+            assert_eq!(cpu.read_reg(4), 0x4754);
+            return;
+        }
+        let value = cpu.read_reg(16);
+        if let BoardStep::Retired(step) = board.step_outcome(cpu).unwrap() {
+            if store {
+                assert_eq!(step.instruction, 0xe070_0004);
+                assert_eq!(value, 0x9000_14d6);
+                assert_eq!(board.read_bypass_xword(MCU).unwrap(), value);
+                restored = true;
+            }
+        }
+    }
+    panic!("firmware did not reach its next PCI probe");
+}
+
+fn verify_obp_probes_simba(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
+    use crate::ultra5::BoardStep;
+
+    const SIMBA_A: u64 = 0x01fe_0100_0800;
+    let mut read_header = false;
+    for _ in 0..10_200_000 {
+        if cpu.pc() == 0xf000_909c {
+            let Ok(mapping) = cpu.translate(cpu.read_reg(4), 1, Access::Read) else {
+                board.step_outcome(cpu).unwrap();
+                continue;
+            };
+            if mapping.pa == SIMBA_A + 0x3d {
+                assert!(read_header);
+                assert!(!mapping.cacheable);
+                return;
+            }
+            if mapping.pa == SIMBA_A + 0x0e {
+                if let BoardStep::Retired(step) = board.step_outcome(cpu).unwrap() {
+                    assert_eq!(step.instruction, 0xc809_2000);
+                    assert_eq!(cpu.read_reg(4), 0x81);
+                    read_header = true;
+                }
+                continue;
+            }
+        }
+        board.step_outcome(cpu).unwrap();
+    }
+    panic!(
+        "OBP did not reach the Simba interrupt-pin probe, PC={:#x}",
         cpu.pc()
     );
 }
