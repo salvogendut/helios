@@ -23,10 +23,19 @@ fn check_obp_cwp_read(flash: &BootFlash, mut cpu: V9Cpu) {
         (0xffff_ffff_f000_210c, 0xffff_ffff_f000_2110)
     );
     let mut expected = V9Cpu::from(PowerOnReset {
-        pc: 0xffff_ffff_f000_2110,
-        npc: 0xffff_ffff_f000_2114,
+        pc: 0xffff_ffff_f000_2100,
+        npc: 0xffff_ffff_f000_2104,
         ..PowerOnReset::ultra_sparc_ii()
     });
+    let nops = flash_with(&[
+        (0x2100, 0x0100_0000),
+        (0x2104, 0x0100_0000),
+        (0x2108, 0x0100_0000),
+        (0x210c, 0x0100_0000),
+    ]);
+    for _ in 0..4 {
+        nops.step(&mut expected).unwrap();
+    }
     expected.write_reg(1, 7);
     expected.write_reg(3, initial_g3);
     assert_eq!(cpu, expected);

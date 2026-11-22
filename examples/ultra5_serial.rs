@@ -23,10 +23,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut stdout = io::stdout().lock();
     let mut retired = 0;
     let mut traps = 0;
+    let mut interrupts = 0;
     for _ in 0..budget {
         let outcome = board.step_outcome(&mut cpu).map_err(|error| {
             format!(
-                "retired={retired} traps={traps} PC={:#018x} nPC={:#018x}: {error}",
+                "retired={retired} traps={traps} interrupts={interrupts} PC={:#018x} nPC={:#018x}: {error}",
                 cpu.pc(),
                 cpu.npc()
             )
@@ -34,6 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match outcome {
             BoardStep::Retired(_) => retired += 1,
             BoardStep::TrapTaken { .. } => traps += 1,
+            BoardStep::InterruptTaken { .. } => interrupts += 1,
         }
         let [port_a, _] = board.take_serial_output();
         if !port_a.is_empty() {
@@ -42,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     eprintln!(
-        "retired={retired} traps={traps} PC={:#018x} nPC={:#018x}",
+        "retired={retired} traps={traps} interrupts={interrupts} PC={:#018x} nPC={:#018x}",
         cpu.pc(),
         cpu.npc()
     );

@@ -178,6 +178,11 @@ seven-bit trap number for Tcc. The original Ultra 5 firmware uses STW,
   14-12 and 14-13 define PSTATE and the mutually exclusive global bank
   selectors used during Ultra 5 reset.
   [IIi SOFTINT](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=163) · [IIi PSTATE](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=235)
+- IIi §§14.1.8 and 14.5.1 specify the 63-bit cycle counter and comparator.
+  Section 11.11 maps the compare latch to interrupt level 14. Table 6-12
+  selects alternate globals on entry. The reference Ultra 5 device tree gives
+  the CPU clock frequency as `0x1a39de00` (440 MHz).
+  [IIi User’s Manual](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf) · [Ultra 5 firmware device tree](https://rob.com/sun/sun4u-ss5/)
 - V9 §5.1.1.3 defines the direction of window overlap, including the last
   window's outs sharing the first window's ins. Appendix A.62 defines WRPR
   operands and XOR. UltraSPARC-IIi §14.2.1 specifies eight windows and

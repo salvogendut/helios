@@ -34,8 +34,9 @@ reset paths discover 512 MiB, enable the instruction and data MMUs, copy
 bytes and jumps into that image in RAM. With diagnostics enabled, the
 expanded firmware prints `ttya initialized` on serial A. It handles six
 data-TLB misses, configures the PCI host and both Simba secondary buses,
-initializes the IOMMU and reaches the first write to the CPU tick counter. The interactive Ultra 5 prompt is
-still in development. [Reproduce the latest checkpoint](docs/ultra5.md#iommu-initialization)
+initializes the IOMMU and runs its first CPU timer interrupt handler. The
+interactive Ultra 5 prompt is still in development.
+[Reproduce the latest checkpoint](docs/ultra5.md#cpu-timer-and-clock-calibration)
 
 **SPARCstation 20** and **Axil 320** profiles boot their original firmware to
 the serial `ok` prompt with either one CPU or two 75 MHz SuperSPARC-II modules.

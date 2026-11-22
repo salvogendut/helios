@@ -1,6 +1,6 @@
 # Agent notes
 
-- [Ultra 5 MMU refill and PCI setup](ultra5-mmu-refill.md) — original OBP trap handling, host and Simba configuration, and IOMMU initialization through the first CPU TICK write.
+- [Ultra 5 MMU refill and PCI setup](ultra5-mmu-refill.md) — original OBP trap handling, PCI and IOMMU setup, and the CPU timer interrupt during clock calibration.
 
 - [Ultra 5 firmware decompression](ultra5-decompression.md) — independent expanded-image comparison, both primary cache tag clears and the original ROM’s `ttya initialized` output.
 

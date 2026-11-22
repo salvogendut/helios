@@ -7,8 +7,8 @@ clear the instruction and data TLBs, complete DRAM discovery, enable translation
 and execute the 453,536-byte firmware image expanded in RAM. The expanded
 firmware initializes serial A and prints `ttya initialized` in diagnostic mode.
 It then configures the PCI host and both Simba secondary buses, handles a
-sixth data-TLB miss and initializes the IOMMU. Both paths reach the first
-privileged write to the CPU tick counter.
+sixth data-TLB miss and initializes the IOMMU. Both paths take a level-14
+CPU timer interrupt and return to the firmware’s clock-calibration routine.
 An interactive OpenBoot prompt remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
 
 ## Run the first serial diagnostic
@@ -375,8 +375,25 @@ The register ports accept aligned, uncached eight-byte accesses.
 With diagnostics enabled, an outcome limit of `53682359` (cold) or
 `23131267` (soft) stops the serial example immediately before
 `wrpr %g4, 0, %tick` at PC `0xf00235f0`. The guest has handled six
-data-TLB misses and `%g4` holds zero. Running one more outcome reaches
-the unsupported TICK write. Serial A still ends with `ttya initialized`.
+data-TLB misses and `%g4` holds zero.
+
+## CPU timer and clock calibration
+
+The Ultra 5 fixture models the 440 MHz CPU reported by the reference machine.
+The 63-bit TICK counter advances by 44 cycles per 100 ns board outcome,
+including trap and interrupt entry. These are functional timings. The APB
+counter advances separately at 66 MHz. A TICK_CMPR match sets SOFTINT bit 0
+even between instruction boundaries. With PSTATE.IE set and PIL below 14,
+the CPU enters the guest’s level-14 handler with the interrupted PC/nPC pair.
+[Ultra 5 device tree](https://rob.com/sun/sun4u-ss5/) · [IIi User’s Manual, §§11.11, 14.1.8 and 14.5.1](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
+Original OBP resets TICK, writes its first compare value of 2,700,000 cycles
+and later arms the calibration interrupt for `0x0107ac00`. It interrupts
+a branch delay slot, enters the handler at `0xf00009c0`, and uses RETRY
+to leave its wait loop. With diagnostics enabled, outcome limits of
+`54078149` (cold) and `23527057` (soft) stop immediately before
+`udivx %l4,%l3,%l3` at `0xf00564b4`. Each run has six synchronous
+MMU misses and one interrupt. Serial A still ends with `ttya initialized`.
 
 ## Reset and flash mapping
 
@@ -615,10 +632,11 @@ redirection described above. A separate seeded guest checked all ten
 registers before and after the writes, including SOFTINT through ASR 22.
 
 The fixture implements register readback and each of the four IIi global
-register banks. A guest PSTATE write that enables interrupts, changes the
-memory model, selects little-endian operation or requests 32-bit addressing
-stops explicitly. Normal fast-MMU trap entry, DONE and RETRY are implemented.
-Interrupt delivery and register-window traps remain open. The window counters, PIL and TBA start at zero for
+register banks. A guest PSTATE write can enable software interrupts. Writes that
+change the memory model, select little-endian operation or request 32-bit
+addressing stop explicitly. Normal fast-MMU trap entry, DONE and RETRY are
+implemented. External interrupt delivery and register-window traps remain
+open. The window counters, PIL and TBA start at zero for
 repeatability where hardware reset values are unspecified.
 [IIi software interrupts, table 11-9](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=163) · [IIi window registers, §14.2.1](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223) · [IIi PSTATE and global banks, tables 14-12/13](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=235)
 

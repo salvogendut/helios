@@ -27,6 +27,7 @@ pub struct BoardInstruction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BoardStep {
     Retired(BoardInstruction),
+    InterruptTaken { pc: u64, level: u8, vector: u64 },
     TrapTaken { fault_pc: u64, tt: u16, vector: u64 },
 }
 
@@ -101,8 +102,8 @@ impl Ultra5ResetBoard {
         Ok(self.step_at(cpu, mapping)?)
     }
 
-    /// Run one architectural outcome, delivering a normal I/D TLB miss to
-    /// the guest. The retirement-only step_mapped API stops at that boundary.
+    /// Run one retirement, fast MMU miss or eligible software interrupt.
+    /// The retirement-only step_mapped API stops before trap or interrupt entry.
     pub fn step_outcome(&mut self, cpu: &mut V9Cpu) -> Result<BoardStep, String> {
         let fault_pc = cpu.pc();
         let mapping = cpu.instruction_address();
@@ -119,6 +120,15 @@ impl Ultra5ResetBoard {
                 Ok(BoardStep::TrapTaken {
                     fault_pc,
                     tt,
+                    vector: cpu.pc(),
+                })
+            }
+            Err(CpuFault::Interrupt(level)) => {
+                cpu.enter_interrupt(level)?;
+                self.elapsed_ns = self.elapsed_ns.saturating_add(crate::machine::STEP_NS);
+                Ok(BoardStep::InterruptTaken {
+                    pc: fault_pc,
+                    level,
                     vector: cpu.pc(),
                 })
             }

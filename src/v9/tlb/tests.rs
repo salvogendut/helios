@@ -548,6 +548,7 @@ fn original_obp_expands_the_image_and_executes_its_entry_in_ram() {
     verify_obp_pci_host_setup(&mut board, &mut cpu);
     verify_obp_simba_setup(&mut board, &mut cpu);
     verify_obp_iommu_setup(&mut board, &mut cpu);
+    verify_obp_tick_interrupt(&mut board, &mut cpu);
     let [a, b] = board.take_serial_output();
     assert!(a.ends_with(
         b"Decompressing into Memory Done\r\nSize = 0000.0000.0006.eba0\r\nttya initialized\r\n"
@@ -820,6 +821,46 @@ fn verify_obp_iommu_setup(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
         }
     }
     panic!("OBP did not reach the TICK write, PC={:#x}", cpu.pc());
+}
+
+fn verify_obp_tick_interrupt(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
+    use crate::ultra5::BoardStep;
+    assert_ne!(cpu.tick >> 63, 0);
+    assert_eq!(board.step_mapped(cpu).unwrap().instruction, 0x8991_2000);
+    assert_eq!(cpu.tick, 44);
+    run_to(board, cpu, 0xf004_8958, 12);
+    assert_eq!((cpu.tick, cpu.read_reg(4)), (528, 2_700_000));
+    assert_eq!(board.step_mapped(cpu).unwrap().instruction, 0xaf81_2000);
+    assert_eq!(cpu.tick_compare, 2_700_000);
+
+    // The calibration loop spins on a branch with a counting delay slot.
+    // OBP programs a later compare and redirects its trap return past the loop.
+    let mut interrupts = 0;
+    for _ in 0..400_000 {
+        match board.step_outcome(cpu).unwrap() {
+            BoardStep::InterruptTaken { pc, level, vector } => {
+                assert_eq!((pc, level, vector), (0xf005_6484, 14, 0xf000_09c0));
+                assert_eq!((cpu.traps[0].tnpc, cpu.traps[0].tt), (0xf005_6480, 0x4e));
+                assert_eq!((cpu.tick_compare, cpu.softint), (0x107_ac00, 1));
+                interrupts += 1;
+            }
+            BoardStep::Retired(step) if step.instruction == 0x83f0_0000 && interrupts == 1 => {
+                assert_eq!((cpu.pc(), cpu.npc(), cpu.tl), (0xf005_648c, 0xf005_6490, 0));
+                run_to(board, cpu, 0xf005_64b4, 16);
+                assert_eq!(
+                    (cpu.read_reg(20), cpu.read_reg(19)),
+                    (0x42c9_7920_0000, 0x27_8d75)
+                );
+                return;
+            }
+            BoardStep::Retired(_) => {}
+            BoardStep::TrapTaken { tt, .. } => panic!("unexpected synchronous trap {tt:#x}"),
+        }
+    }
+    panic!(
+        "OBP did not return from its calibration interrupt, PC={:#x}",
+        cpu.pc()
+    );
 }
 
 #[test]

@@ -18,10 +18,19 @@ fn check_original_prefix(flash: &BootFlash) {
     assert_eq!(fetches[2].physical_address, 0x01ff_f000_0028);
 
     let mut expected = V9Cpu::from(PowerOnReset {
-        pc: TARGET,
-        npc: TARGET + 4,
+        pc: TARGET - 12,
+        npc: TARGET - 8,
         ..PowerOnReset::ultra_sparc_ii()
     });
+    // Three sequential NOPs reach the same PC/nPC and elapsed CPU clock.
+    let mut nops = vec![0; FLASH_SIZE];
+    for word in nops[0x2100..0x210c].chunks_exact_mut(4) {
+        word.copy_from_slice(&0x0100_0000u32.to_be_bytes());
+    }
+    let nops = BootFlash::new(nops).unwrap();
+    for _ in 0..3 {
+        nops.step(&mut expected).unwrap();
+    }
     expected.write_reg(3, 17);
     expected.write_reg(4, 31);
     assert_eq!(cpu, expected);

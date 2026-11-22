@@ -111,3 +111,15 @@ with 16 valid cacheable entries. The unmodified-ROM serial transcripts are
 byte-identical to the Simba checkpoint. Per-seed results and validation
 logs are in `local/ultra5-iommu-2026-11-22/`.
 [Reproduction](../docs/ultra5.md#iommu-initialization)
+
+## First CPU timer interrupt
+
+All four original-ROM seeds took six fast data misses and one level-14
+interrupt before reaching UDIVX at `0xf00564b4`. Cold boot retired
+54,078,142 instructions with diagnostics on and 54,067,659 with them off.
+Soft boot retired 23,527,050 and 23,516,943 respectively. The soft diagnostic
+trace records PC/nPC `0xf0056484/0xf0056480` at interrupt entry. The guest
+rewrote the trap return PCs to leave its spin loop. Serial output matched the
+IOMMU checkpoint byte for byte. The transcripts, traced timer registers and
+validation logs are in `local/ultra5-tick-2026-11-22/`.
+[Reproduction](../docs/ultra5.md#cpu-timer-and-clock-calibration)

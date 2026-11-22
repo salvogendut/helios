@@ -4,6 +4,8 @@
 
 use crate::ultra5::PowerOnReset;
 mod ecache;
+#[cfg(test)]
+mod tick_tests;
 mod tlb;
 use ecache::Ecache;
 pub(crate) use tlb::Translation;
@@ -14,6 +16,7 @@ const WINDOW_MASK: u8 = WINDOW_COUNT - 1;
 const GLOBAL_REGISTERS: usize = 4 * 8;
 const REGISTER_COUNT: usize = GLOBAL_REGISTERS + WINDOW_COUNT as usize * 16;
 const PSTATE_AG: u16 = 1;
+const PSTATE_IE: u16 = 1 << 1;
 const PSTATE_PRIV: u16 = 1 << 2;
 const PSTATE_PEF: u16 = 1 << 4;
 const PSTATE_RED: u16 = 1 << 5;
@@ -45,6 +48,10 @@ const ASI_ECACHE_TAG_DATA: u8 = 0x4e;
 const ASI_ECACHE_WRITE: u8 = 0x76;
 const ASI_ECACHE_READ: u8 = 0x7e;
 const MAX_TL: u8 = 5;
+const TICK_NPT: u64 = 1 << 63;
+const TICK_INT_DIS: u64 = 1 << 63;
+// 440 MHz module in the reference Ultra 5. Each 100 ns board outcome spans 44 cycles.
+const TICK_CYCLES_PER_OUTCOME: u64 = crate::machine::STEP_NS * 440 / 1000;
 // TI UltraSPARC-IIi mask 9.1, as reported by original Ultra 5/10 hardware.
 const VERSION: u64 = 0x0017_0012_9100_0000 | ((MAX_TL as u64) << 8) | WINDOW_MASK as u64;
 
@@ -58,6 +65,7 @@ struct TrapFrame {
 
 #[derive(Debug)]
 pub(crate) enum CpuFault {
+    Interrupt(u8),
     TlbMiss(TlbMiss),
     Stop(String),
 }
@@ -85,6 +93,7 @@ impl From<CpuFault> for String {
     fn from(fault: CpuFault) -> Self {
         match fault {
             CpuFault::Stop(message) => message,
+            CpuFault::Interrupt(level) => format!("IIi interrupt pending at level {level}"),
             CpuFault::TlbMiss(miss) => format!(
                 "IIi TLB miss for {:?} VA={:#x} context={:#x}",
                 miss.access, miss.address, miss.context
@@ -113,6 +122,8 @@ pub struct V9Cpu {
     tl: u8,
     traps: [TrapFrame; MAX_TL as usize],
     softint: u16,
+    tick: u64,
+    tick_compare: u64,
     cansave: u8,
     canrestore: u8,
     cleanwin: u8,
@@ -432,6 +443,8 @@ impl V9Cpu {
             tl: 0,
             traps: [TrapFrame::default(); MAX_TL as usize],
             softint: 0,
+            tick: TICK_NPT,
+            tick_compare: TICK_INT_DIS, // low bits unspecified at reset
             cansave: 0,
             canrestore: 0,
             cleanwin: 0,
@@ -501,6 +514,13 @@ impl V9Cpu {
     }
 
     pub(crate) fn instruction_address(&self) -> Result<Translation, CpuFault> {
+        if self.softint != 0 && self.pstate & (PSTATE_RED | PSTATE_IE) == PSTATE_IE {
+            let levels = (self.softint & !1) | ((self.softint & 1) << 14);
+            let level = 15 - levels.leading_zeros() as u8;
+            if level > self.pil {
+                return Err(CpuFault::Interrupt(level));
+            }
+        }
         self.translate(self.pc, 4, Access::Fetch)
     }
 
@@ -551,10 +571,10 @@ impl V9Cpu {
             .slot
             .map(|slot| (slot, self.instruction_tlb.set_used(slot, true)));
         let result = self.execute_fetched(word, memory);
-        if result.is_err() {
-            if let Some((slot, used)) = previous {
-                self.instruction_tlb.set_used(slot, used);
-            }
+        if result.is_ok() {
+            self.advance_tick();
+        } else if let Some((slot, used)) = previous {
+            self.instruction_tlb.set_used(slot, used);
         }
         result
     }
@@ -703,6 +723,12 @@ impl V9Cpu {
                 }
                 0x28 if rs1 == 2 => self.write_reg(rd, u64::from(self.ccr)),
                 0x28 if rs1 == 3 && word & 0x3fff == 0 => self.write_reg(rd, u64::from(self.asi)),
+                0x28 if rs1 == 4 && word & 0x3fff == 0 => {
+                    if self.tick & TICK_NPT != 0 {
+                        self.require_privilege("RDTICK with TICK.NPT set")?;
+                    }
+                    self.write_reg(rd, self.tick);
+                }
                 0x28 if rs1 == 5 && word & 0x3fff == 0 => self.write_reg(rd, self.pc),
                 0x28 if rs1 == 6 && word & 0x3fff == 0 => self.write_reg(rd, u64::from(self.fprs)),
                 0x28 if rs1 == 18 && word & 0x3fff == 0 => {
@@ -712,6 +738,10 @@ impl V9Cpu {
                 0x28 if rs1 == 22 && word & 0x3fff == 0 => {
                     self.require_privilege("RD SOFTINT")?;
                     self.write_reg(rd, u64::from(self.softint));
+                }
+                0x28 if rs1 == 23 && word & 0x3fff == 0 => {
+                    self.require_privilege("RD TICK_CMPR")?;
+                    self.write_reg(rd, self.tick_compare);
                 }
                 // MEMBAR #Sync: all earlier operations in this single-CPU
                 // fixture have already completed when an instruction retires.
@@ -800,14 +830,24 @@ impl V9Cpu {
                     }
                     self.dispatch_control = value as u8;
                 }
-                0x30 if rd == 22 => {
+                0x30 if (20..=22).contains(&rd) => {
                     self.require_privilege("WR SOFTINT")?;
                     if word & (1 << 13) == 0 && word & 0x1fe0 != 0 {
                         return Err(format!("unsupported V9 WR SOFTINT word {word:#x}").into());
                     }
                     let value = self.read_reg(rs1) ^ b;
-                    self.softint = u16::try_from(value)
+                    let bits = u16::try_from(value)
                         .map_err(|_| format!("unsupported IIi SOFTINT bits in {value:#x}"))?;
+                    match rd {
+                        20 => self.softint |= bits,
+                        21 => self.softint &= !bits,
+                        _ => self.softint = bits,
+                    }
+                }
+                0x30 if rd == 23 && (word & (1 << 13) != 0 || word & 0x1fe0 == 0) => {
+                    self.require_privilege("WR TICK_CMPR")?;
+                    self.tick_compare = self.read_reg(rs1) ^ b;
+                    self.check_tick_at_write();
                 }
                 0x32 => {
                     self.require_privilege("WRPR")?;
@@ -1075,12 +1115,7 @@ impl V9Cpu {
         miss: TlbMiss,
         fetch: Option<Translation>,
     ) -> Result<u16, String> {
-        if self.pstate & PSTATE_RED != 0 || self.tl >= MAX_TL - 1 {
-            return Err(format!(
-                "unsupported IIi MMU miss in RED_state or at TL {}",
-                self.tl
-            ));
-        }
+        self.check_normal_trap_level()?;
         if let Some(slot) = fetch.and_then(|hit| hit.slot) {
             // The fetch completed even though its operand translation missed.
             self.instruction_tlb.set_used(slot, true);
@@ -1091,6 +1126,28 @@ impl V9Cpu {
             (0x68u16, &mut self.data_tlb)
         };
         tlb.stage_tag((miss.address & !0x1fff) | u64::from(miss.context));
+        self.enter_normal_trap(tt, PSTATE_MG);
+        Ok(tt)
+    }
+
+    pub(crate) fn enter_interrupt(&mut self, level: u8) -> Result<(), String> {
+        self.check_normal_trap_level()?;
+        // IIi table 6-12 selects alternate globals for interrupt_level_n.
+        self.enter_normal_trap(0x40 + u16::from(level), PSTATE_AG);
+        Ok(())
+    }
+
+    fn check_normal_trap_level(&self) -> Result<(), String> {
+        if self.pstate & PSTATE_RED != 0 || self.tl >= MAX_TL - 1 {
+            return Err(format!(
+                "unsupported IIi trap entry in RED_state or at TL {}",
+                self.tl
+            ));
+        }
+        Ok(())
+    }
+
+    fn enter_normal_trap(&mut self, tt: u16, globals: u16) {
         let nested = self.tl != 0;
         self.traps[usize::from(self.tl)] = TrapFrame {
             tpc: self.pc,
@@ -1102,15 +1159,33 @@ impl V9Cpu {
                 | u64::from(self.cwp),
         };
         self.tl += 1;
-        // Keep MM and TLE, copy TLE to CLE, and select the MMU globals.
+        // Preserve MM and TLE, copy TLE to CLE, and switch global banks.
         self.pstate = (self.pstate & 0x1c0)
             | ((self.pstate & 0x100) << 1)
             | PSTATE_PRIV
             | PSTATE_PEF
-            | PSTATE_MG;
+            | globals;
         self.pc = self.tba | (u64::from(nested) << 14) | (u64::from(tt) << 5);
         self.npc = self.pc + 4;
-        Ok(tt)
+        self.advance_tick();
+    }
+
+    fn check_tick_at_write(&mut self) {
+        // An enabled comparator equals the 63-bit count only when INT_DIS is clear.
+        if self.tick_compare == self.tick & !TICK_NPT {
+            self.softint |= 1;
+        }
+    }
+
+    fn advance_tick(&mut self) {
+        if self.tick_compare & TICK_INT_DIS == 0 {
+            let distance = self.tick_compare.wrapping_sub(self.tick) & !TICK_NPT;
+            if (1..=TICK_CYCLES_PER_OUTCOME).contains(&distance) {
+                self.softint |= 1;
+            }
+        }
+        let count = self.tick.wrapping_add(TICK_CYCLES_PER_OUTCOME) & !TICK_NPT;
+        self.tick = (self.tick & TICK_NPT) | count;
     }
 
     fn require_privilege(&self, operation: &str) -> Result<(), String> {
@@ -1126,6 +1201,7 @@ impl V9Cpu {
             1 => self.traps[self.trap_index()?].tnpc,
             2 => self.traps[self.trap_index()?].tstate,
             3 => u64::from(self.traps[self.trap_index()?].tt),
+            4 => self.tick,
             5 => self.tba,
             6 => u64::from(self.pstate),
             7 => u64::from(self.tl),
@@ -1163,6 +1239,10 @@ impl V9Cpu {
                     _ => frame.tt = value as u16 & 0x1ff,
                 }
             }
+            4 => {
+                self.tick = value;
+                self.check_tick_at_write();
+            }
             5 => {
                 if !matches!((value as i64) >> 43, 0 | -1) {
                     return Err(format!("unsupported IIi TBA address {value:#x}"));
@@ -1170,8 +1250,8 @@ impl V9Cpu {
                 self.tba = value & !0x7fff;
             }
             6 => {
-                // Physical fetch, big-endian data, TSO, and interrupts disabled.
-                let supported = GLOBAL_SELECT | PSTATE_PRIV | PSTATE_PEF | PSTATE_RED;
+                // Big-endian data and TSO. IE admits implemented software interrupt levels.
+                let supported = GLOBAL_SELECT | PSTATE_IE | PSTATE_PRIV | PSTATE_PEF | PSTATE_RED;
                 if value & !u64::from(supported) != 0
                     || (value as u16 & GLOBAL_SELECT).count_ones() > 1
                 {
@@ -1698,6 +1778,7 @@ mod tests {
                 memory.load_words(0, &[0x8152_4000 | (u32::from(rd) << 25)]);
                 let mut expected = cpu.clone();
                 expected.write_reg(rd, u64::from(cwp));
+                expected.tick += 44;
                 expected.pc = 0x48;
                 expected.npc = 0x4c;
                 cpu.step(&mut memory).unwrap();
@@ -1708,6 +1789,7 @@ mod tests {
 
     fn verify_reset_pair(flash: &BootFlash, mut cpu: V9Cpu) -> V9Cpu {
         let mut expected = cpu.clone();
+        expected.tick += 88;
         expected.pc = 0xffff_ffff_f000_0028;
         expected.npc = 0xffff_ffff_f000_002c;
         expected.write_reg(2, cpu.lsu_control);
