@@ -1,5 +1,6 @@
 # Agent notes
 
+- [Ultra 5 cold-start keyboard UART](ultra5-keyboard-uart.md) — original UART writes and the APB timeout boundary.
 - [Ultra 5 E-cache and firmware banner](ultra5-ecache-banner.md) — size-probe readback, tag verification, QEMU comparison and the two post-banner paths.
 - [Ultra 5 DRAM controller setup](ultra5-auxio-mcu.md) — LED and MCU register evidence, QEMU comparison and first E-cache probe operands.
 - [Ultra 5 first serial text](ultra5-first-serial-text.md) — original OBP cold and soft-marker diagnostics, QEMU comparison and the next EBus write.

@@ -1,3 +1,4 @@
+use super::keyboard_uart::KeyboardUart;
 use super::serial::Serial;
 use super::{BootFlash, FlashFetch, ResetNvram, FLASH_BASE};
 use crate::v9::{V9Cpu, V9DataBus, PHYSICAL_ADDRESS_MASK};
@@ -7,6 +8,7 @@ const PCI_MEMORY: u64 = 0x01ff_0000_0000;
 const EBUS_BAR1: u32 = 0xf100_0000;
 const SIO_INDEX: u64 = 0x30_0398;
 const SIO_DATA: u64 = SIO_INDEX + 1;
+const KEYBOARD_UART: u64 = 0x30_83f8;
 const AUXIO_LED: u64 = PCI_MEMORY + EBUS_BAR1 as u64 + 0x72_6000;
 const MEM_CONTROL0: u64 = 0x01fe_0000_f010;
 const MEM_CONTROL1: u64 = 0x01fe_0000_f018;
@@ -31,6 +33,7 @@ pub struct Ultra5ResetBoard {
     mem_control0: u32,
     mem_control1: u32,
     super_io: SuperIoConfig,
+    keyboard: KeyboardUart,
     serial: Serial,
 }
 
@@ -48,6 +51,7 @@ impl Ultra5ResetBoard {
             mem_control0: 0x0f30,
             mem_control1: 0x004a_2950,
             super_io: SuperIoConfig::default(),
+            keyboard: KeyboardUart::default(),
             serial: Serial::default(),
         }
     }
@@ -106,9 +110,7 @@ impl Ultra5ResetBoard {
     }
 }
 
-// National Super I/O configuration protocol (§2.2). Only the boot-time
-// configuration latches are modeled. The keyboard/mouse UARTs are separate
-// from the Siemens A/B console ports.
+// National Super I/O configuration protocol (§2.2).
 #[derive(Default)]
 struct SuperIoConfig {
     accessed_index: bool,
@@ -118,6 +120,21 @@ struct SuperIoConfig {
 }
 
 impl SuperIoConfig {
+    fn keyboard_register(&self, offset: u64) -> Result<u8, String> {
+        // FER.1 enables UART1, FAR[3:2]=0 selects COM1, PTR.0/4 select
+        // software power-down/test mode. Board reset straps are unverified.
+        match self.registers {
+            [Some(enable), Some(address), Some(power), ..]
+                if enable & 2 != 0 && address & 0x0c == 0 && power & 0x11 == 0 =>
+            {
+                Ok((offset - KEYBOARD_UART) as u8)
+            }
+            _ => Err(format!(
+                "Ultra 5 keyboard UART unavailable at EBus offset {offset:#x}"
+            )),
+        }
+    }
+
     fn read_index(&mut self) -> u8 {
         self.pending = None;
         if std::mem::replace(&mut self.accessed_index, true) {
@@ -234,6 +251,9 @@ impl V9DataBus for Ultra5ResetBoard {
                 self.super_io.pending = None;
                 Ok(value)
             }
+            Some(off) if (KEYBOARD_UART..KEYBOARD_UART + 8).contains(&off) => {
+                self.keyboard.read(self.super_io.keyboard_register(off)?)
+            }
             Some(off @ 0x40_0000..=0x40_007f) => self.serial.read((off - 0x40_0000) as u8),
             _ => Err(format!("unmapped Ultra 5 physical byte read at {pa:#x}")),
         }
@@ -247,6 +267,10 @@ impl V9DataBus for Ultra5ResetBoard {
         match Self::ebus_offset(pa) {
             Some(SIO_INDEX) => self.super_io.select(value)?,
             Some(SIO_DATA) => self.super_io.write_data(value),
+            Some(off) if (KEYBOARD_UART..KEYBOARD_UART + 8).contains(&off) => {
+                self.keyboard
+                    .write(self.super_io.keyboard_register(off)?, value)?;
+            }
             Some(off @ 0x40_0000..=0x40_007f) => {
                 self.serial.write((off - 0x40_0000) as u8, value)?
             }
@@ -296,6 +320,121 @@ mod tests {
             BootFlash::new(vec![0; FLASH_SIZE]).unwrap(),
             ResetNvram::new(vec![0; RESET_NVRAM_SIZE]).unwrap(),
         )
+    }
+
+    #[test]
+    fn keyboard_uart_decodes_only_enabled_com1_and_preserves_divisor_when_disabled() {
+        let mut board = fixture();
+        let port = 0x01ff_f130_83f8;
+        let index = 0x01ff_f130_0398;
+        let configure = |board: &mut Ultra5ResetBoard, reg, value| {
+            board.write_bypass_byte(index, reg).unwrap();
+            board.write_bypass_byte(index + 1, value).unwrap();
+            board.write_bypass_byte(index + 1, value).unwrap();
+        };
+        assert!(board.read_bypass_byte(port + 5).is_err());
+        configure(&mut board, 0, 0x0f);
+        configure(&mut board, 1, 0xb0);
+        configure(&mut board, 2, 0x80);
+        board.write_bypass_byte(port + 3, 0x83).unwrap();
+        board.write_bypass_byte(port, 0x5a).unwrap();
+        board.write_bypass_byte(port + 1, 0xa5).unwrap();
+        assert!(board.write_bypass_word(port, 0).is_err());
+        assert!(board.read_bypass_byte(port + 8).is_err());
+        assert!(board.read_bypass_byte(0x01ff_f130_62fd).is_err()); // distinct mouse UART
+        for (register, invalid, valid) in [
+            (0, 0x0d, 0x0f),
+            (1, 0xb4, 0xb0),
+            (2, 0x81, 0x80),
+            (2, 0x90, 0x80),
+        ] {
+            configure(&mut board, register, invalid);
+            assert!(board.write_bypass_byte(port, 0).is_err());
+            assert!(board.read_bypass_byte(port + 5).is_err());
+            configure(&mut board, register, valid);
+            assert_eq!(board.read_bypass_byte(port).unwrap(), 0x5a);
+            assert_eq!(board.read_bypass_byte(port + 1).unwrap(), 0xa5);
+        }
+        board.write_bypass_byte(port + 3, 3).unwrap();
+        assert_eq!(board.read_bypass_byte(port + 1).unwrap(), 0); // IER, not DLM
+        assert_eq!(board.read_bypass_byte(port + 5).unwrap(), 0x60);
+        assert_eq!(board.read_bypass_byte(port + 2).unwrap(), 1);
+        board.write_bypass_byte(port + 2, 7).unwrap();
+        assert_eq!(board.read_bypass_byte(port + 2).unwrap(), 0xc1);
+        assert!(board.write_bypass_byte(port + 1, 1).is_err()); // IRQ delivery unsupported
+        assert!(board.write_bypass_byte(port + 4, 0x10).is_err()); // loopback
+        assert!(board.write_bypass_byte(port, 1).is_err()); // THR, not DLL
+        assert_eq!(board.take_serial_output(), [vec![], vec![]]);
+    }
+
+    #[test]
+    #[ignore = "requires the locally reconstructed OBP 3.31.0 flash"]
+    fn original_obp_programs_the_headless_keyboard_uart_before_starting_its_timeout() {
+        let flash = BootFlash::new(
+            std::fs::read(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/local/firmware/ultra5/ultra5-obp331-post310-1mb.bin"
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let uart = 0x01ff_f130_83f8;
+        for diagnostics in [false, true] {
+            let mut seed = vec![0; RESET_NVRAM_SIZE];
+            seed[1] = u8::from(diagnostics);
+            let mut board = Ultra5ResetBoard::new(flash.clone(), ResetNvram::new(seed).unwrap());
+            let reset = crate::ultra5::PowerOnReset::ultra_sparc_ii();
+            let base = reset.pc - 0x20;
+            let mut cpu = V9Cpu::from(reset);
+            let mut writes = Vec::new();
+            for _ in 0..180_000 {
+                let offset = cpu.pc() - base;
+                if offset == 0x630 {
+                    break;
+                }
+                if matches!(
+                    offset,
+                    0x554 | 0x560 | 0x56c | 0x578 | 0x584 | 0x590 | 0x59c | 0x5a8 | 0x5b4 | 0x5c0
+                ) {
+                    writes.push((cpu.read_reg(11) - uart, cpu.read_reg(12)));
+                }
+                board.step(&mut cpu).unwrap();
+            }
+            assert_eq!((cpu.pc(), cpu.npc()), (base + 0x630, base + 0x634));
+            assert_eq!(
+                (cpu.read_reg(8), cpu.read_reg(9), cpu.read_reg(11)),
+                (uart, 0x01fe_0100_08b0, 0x03f9_41f8)
+            );
+            assert_eq!(
+                writes,
+                [
+                    (1, 0),
+                    (4, 0),
+                    (2, 0),
+                    (2, 6),
+                    (2, 1),
+                    (3, 0x83),
+                    (0, 0x60),
+                    (1, 0),
+                    (3, 3),
+                    (4, 0)
+                ]
+            );
+            assert_eq!(board.read_bypass_byte(uart + 3).unwrap(), 3);
+            assert_eq!(board.read_bypass_byte(uart + 4).unwrap(), 0);
+            assert_eq!(board.read_bypass_byte(uart + 5).unwrap(), 0x60);
+            assert_eq!(board.read_bypass_byte(uart + 2).unwrap(), 0xc1);
+            board.write_bypass_byte(uart + 3, 0x83).unwrap();
+            assert_eq!(board.read_bypass_byte(uart).unwrap(), 96);
+            assert_eq!(board.read_bypass_byte(uart + 1).unwrap(), 0);
+            let [ttya, ttyb] = board.take_serial_output();
+            assert!(ttyb.is_empty());
+            if diagnostics {
+                assert!(ttya.ends_with(b"\r\nProbing keyboard "));
+            } else {
+                assert!(ttya.is_empty());
+            }
+        }
     }
 
     #[test]

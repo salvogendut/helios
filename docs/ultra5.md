@@ -1,8 +1,9 @@
 # Ultra 5/10 firmware reset instructions
 
 The headless Ultra 5/10 fixture runs original OBP 3.31.0 far enough to
-transmit its version banner on serial A and clear the external-cache tags. An interactive
-OpenBoot prompt remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
+transmit its version banner on serial A, clear the external-cache tags and
+configure the cold-start keyboard UART. An interactive OpenBoot prompt
+remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
 
 ## Run the first serial diagnostic
 
@@ -48,8 +49,7 @@ observed EBus setup writes. It assumes the documented Super I/O index-port
 strap at `0x398`. The installed board's strap has not been independently
 verified. The fixture implements the one-shot identification byte and
 double-write configuration protocol. PCI enumeration, BAR relocation,
-EBus wait-state timing and peripheral functions behind the Super I/O
-configuration registers remain open. [PCIO reset mapping, tables 36–37](https://www.artisantg.com/info/force_cpci_520_series_manual.pdf) · [National Super I/O, §§2.2–2.4](https://ardent-tool.com/datasheets/NS_PC87332VLJ.pdf)
+EBus wait-state timing and the mouse UART remain open. [PCIO reset mapping, tables 36–37](https://www.artisantg.com/info/force_cpci_520_series_manual.pdf) · [National Super I/O, §§2.2–2.4](https://ardent-tool.com/datasheets/NS_PC87332VLJ.pdf)
 
 ## Front-panel LED and DRAM controller setup
 
@@ -104,12 +104,29 @@ capacity reported by hardware. The manual defines the in-range index bits.
 
 | Diagnostic run | Serial A after the banner | Next access |
 | --- | --- | --- |
-| Cold, 173,441 instructions | `Probing keyboard` | PC `0xffff_ffff_f000_0554` writes zero to the Super I/O keyboard UART at PA `0x01ff_f130_83f9`. |
+| Cold, 173,486 instructions | `Probing keyboard` | After configuring the keyboard UART, PC `0xffff_ffff_f000_0630` attempts a little-endian xword store to the APB tick register. |
 | Soft marker, 174,083 instructions | `Clearing E$ Tags  Done`, then `Clearing I/D TLBs` | PC `0xffff_ffff_f000_0780` writes zero to D-MMU Tag Access through ASI `0x58`, offset `0x30`. |
 
 These limits stop immediately before the respective accesses. With NVRAM
 byte 1 clear, both paths reach the same respective PCs and serial A stays
 silent.
+
+## Cold-start keyboard probe
+
+The board device tree assigns the keyboard to EBus offset `0x3083f8`.
+On a cold start OBP enables Super I/O UART1 at COM1, disables interrupts,
+enables the FIFOs and sets the divisor to 96. It restores LCR to `3`
+(eight data bits, one stop bit, no parity). The fixture models this polled
+setup with an unplugged keyboard. Keyboard data transfer, IRQ delivery
+and baud timing remain open. [Hardware device tree](https://rob.com/sun/sun4u-ss5/) · [National Super I/O, §§2.5 and 6](https://ardent-tool.com/datasheets/NS_PC87332VLJ.pdf)
+
+OBP starts its first receive timeout by writing zero to the APB tick
+register at physical `0x01fe_0100_08b0` (ASI `0x1d`, PCI 00:01.0,
+configuration offset `0xb0`). The cold fixture stops at that instruction.
+The following ROM words poll the UART's data-ready bit and compare the tick
+count with `0x03f941f8`. The diagnostic serial stream ends at
+`Probing keyboard ` pending support for the little-endian xword access
+and the bridge clock. [Linux SPARC APB register definitions](https://github.com/torvalds/linux/blob/v6.12/arch/sparc/include/asm/apb.h)
 
 ## Reset and flash mapping
 
@@ -355,7 +372,7 @@ remain open. The window counters, PIL and TBA start at zero for
 repeatability where hardware reset values are unspecified.
 [IIi software interrupts, table 11-9](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=163) · [IIi window registers, §14.2.1](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223) · [IIi PSTATE and global banks, tables 14-12/13](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=235)
 
-With the reconstructed image installed, run the fourteen local-ROM checks together.
+With the reconstructed image installed, run the fifteen local-ROM checks together.
 
 ```sh
 cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts --test ultra5_reset_setup --test ultra5_first_serial_access --test ultra5_ecache -- --ignored --nocapture

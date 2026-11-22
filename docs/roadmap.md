@@ -73,9 +73,11 @@ E-cache and transmits its build identification when NVRAM byte 1 is nonzero.
 | First firmware text | Serial A emits `Hardware Power ON` on the cold path and `Software Power ON` on the matching-marker path. Each ends in CR/LF. With the diagnostic byte clear, these writes to the transmit FIFO are skipped. |
 | DRAM controller setup | All four marker/diagnostic combinations turn on the front-panel LED, program both MCU registers, complete both polling delays and reach external-cache sizing. |
 | External-cache initialization and build identification | All four runs detect 2 MiB, select ELIM 3 and clear 32,768 tag entries. Both diagnostic-enabled runs print the original firmware build string. |
+| Cold-start keyboard UART setup | OBP programs divisor 96, enables the FIFO, selects 8N1 and reaches the APB tick register used for the first receive timeout. |
 | Interactive OpenBoot console | Open. Acceptance is a serial `ok` prompt that takes `1 2 + .`, replies `3` and prompts again. |
 
-The cold path next needs the keyboard UART at EBus offset `0x3083f8`.
+The cold path next needs little-endian xword access to the APB tick register
+and a clock that can drive the keyboard receive timeout.
 The soft-marker path begins the D-MMU and I-MMU tag and TLB clear. Follow
 those paths to memory discovery. Interactive serial input and a prompt
 that accepts a Forth command are still pending.
