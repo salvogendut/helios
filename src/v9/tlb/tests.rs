@@ -144,3 +144,62 @@ fn obp_clears_every_seeded_instruction_and_data_entry_then_probes_memory() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires the locally reconstructed OBP 3.31.0 flash"]
+fn original_obp_installs_distinct_flash_and_workspace_translations_before_enabling_mmus() {
+    let flash = BootFlash::new(
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/local/firmware/ultra5/ultra5-obp331-post310-1mb.bin"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut seed = vec![0; RESET_NVRAM_SIZE];
+    seed[16..24].copy_from_slice(b"soft-rst");
+    let mut board = Ultra5ResetBoard::new(flash.clone(), ResetNvram::new(seed).unwrap());
+    let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
+    for _ in 0..600_000 {
+        if cpu.pc() == 0x01ff_f000_1f90 {
+            break;
+        }
+        board.step(&mut cpu).unwrap();
+    }
+    assert_eq!((cpu.pc(), cpu.npc()), (0x01ff_f000_1f90, 0x01ff_f000_1f94));
+    assert_eq!(
+        (cpu.primary_context, cpu.secondary_context, cpu.lsu_control),
+        (0, 0, 0)
+    );
+    // OBP 0x83c..0x94c derives the page bases from the selected rank's end
+    // (0x40000000) and maps the flash separately. Sizes are IIi TTE encodings.
+    let flash_page = 0x01ff_f000_0000;
+    let itlb = [
+        (0xf000_0000, 0x3ff8_0000, 2, 0x64),
+        (0, 0x3ff0_0000, 2, 0x24),
+        (flash_page, flash_page, 2, 0x04),
+    ];
+    let dtlb = [
+        (0xffff_ffff_ffff_c000, 0x3ff6_e000, 0, 0x76),
+        (0xfffe_0000, 0x3ff7_0000, 1, 0x36),
+        (flash_page, flash_page, 2, 0x0e),
+        (0, 0x3ff0_0000, 2, 0x36),
+        (0xf000_0000, 0x3ff8_0000, 2, 0x36),
+    ];
+    for (tlb, expected) in [
+        (&cpu.instruction_tlb, itlb.as_slice()),
+        (&cpu.data_tlb, dtlb.as_slice()),
+    ] {
+        for (index, &(tag, physical, size, flags)) in expected.iter().enumerate() {
+            let data = tlb.read_data(index);
+            assert_eq!(tlb.read_tag(index), tag);
+            assert_eq!((data >> 63, (data >> 61) & 3), (1, size));
+            assert_eq!(data & 0x0000_01ff_ffff_e000, physical);
+            assert_eq!(data & 0x7f, flags);
+        }
+        assert!(tlb.entries[expected.len()..]
+            .iter()
+            .all(|entry| entry.data >> 63 == 0));
+    }
+    assert_eq!(flash.read_word(flash_page + 0x1f94).unwrap(), 0x8143_e040); // membar #Sync
+}

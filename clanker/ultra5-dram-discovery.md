@@ -23,7 +23,13 @@ routine. It zeros the xwords at both ends and the middle of the last
 
 All four runs stop on word `0xd0f008a0` with low-alias PC/nPC
 `0x01fff0001f90` / `0x01fff0001f94`. The LSU store requests IM/DM
-enable. Inspect the entries installed between the workspace clear and
-this store, including their tag, page size, physical page and context,
-before advancing a translated fetch. The complete serial transcripts
-and validation logs are in `local/ultra5-dram-probe-2026-11-22/`.
+enable. A second original-ROM fixture checks the three I-TLB and five
+D-TLB entries installed by the routine at `0x83c`, including size,
+base, tag, context, low attributes and all remaining invalid slots.
+The two I-TLB page tags ending in `f0000000` must remain distinct when
+implementing translated instruction fetch. [Verified page map](../docs/ultra5.md#mappings-at-mmu-enable)
+
+Validation passed 903 standard test executions, all 19 explicit local-ROM
+checks, formatting, offline all-target Clippy with warnings denied, and
+all four demos. The serial transcripts and validation logs are in
+`local/ultra5-dram-probe-2026-11-22/`.

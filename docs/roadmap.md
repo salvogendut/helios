@@ -77,8 +77,8 @@ reset paths reach the store that enables the instruction and data MMUs.
 | Physical DRAM discovery | OBP detects the two 256 MiB DIMMs in pair 2, selects 11-bit columns, reports the upper 256 MiB rank at `0x30000000` and clears the top 1 MiB. |
 | Interactive OpenBoot console | Open. Acceptance is a serial `ok` prompt that takes `1 2 + .`, replies `3` and prompts again. |
 
-The next milestone is the MMU transition at flash offset `0x1f90`.
-Verify the firmware-installed mappings and the first translated fetch
-before allowing OBP to execute with translation enabled. Interactive
+The next milestone is the first translated fetch after the LSU store
+at flash offset `0x1f90`. OBP's three instruction mappings and five data
+mappings have been verified at that boundary. Interactive
 serial input and a prompt that accepts a Forth command are still pending.
-[Reproduce the current checkpoint](ultra5.md#physical-dram-discovery)
+[Reproduce the current checkpoint](ultra5.md#physical-dram-discovery) · [Firmware-installed mappings](ultra5.md#mappings-at-mmu-enable)

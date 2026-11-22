@@ -186,6 +186,26 @@ the same PC with no serial bytes. The next word is `stxa %o0,[%g0] 0x45`
 at PC `0x01ff_f000_1f90`, where `%o0 = 0xc` requests instruction and data
 translation. The fixture stops before retiring this store.
 
+## Mappings at MMU enable
+
+The original-ROM check inspects every TLB slot immediately before the
+LSU store. OBP has installed three instruction entries and five data
+entries, all in context zero. The remaining slots are invalid. The
+firmware built the following mappings at flash offsets `0x83c–0x94c`.
+
+| Virtual page base | Physical page base | Page size | I-TLB slot | D-TLB slot |
+| --- | --- | ---: | ---: | ---: |
+| `0x01fff0000000` | `0x01fff0000000` (flash) | 512 KiB | 2 | 2 |
+| `0xf0000000` | `0x3ff80000` (RAM) | 512 KiB | 0 | 4 |
+| `0x00000000` | `0x3ff00000` (RAM) | 512 KiB | 1 | 3 |
+| `0xffffffffffffc000` | `0x3ff6e000` (RAM) | 8 KiB | — | 0 |
+| `0xfffe0000` | `0x3ff70000` (RAM) | 64 KiB | — | 1 |
+
+The first fetch after the store should use I-TLB slot 2 to read
+`membar #Sync` at physical `0x01fff0001f94`. The slot 0 mapping is a
+separate RAM destination with the same low 32 virtual-address bits.
+Translated execution remains the next checkpoint. [Sun IIi User’s Manual, chapter 15](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
 ## Reset and flash mapping
 
 The UltraSPARC-IIi enters RED_state at the default virtual reset vector plus `0x20`. PSTATE.AM is clear, so PC and nPC retain all 64 bits. The instruction-side physical read uses PA[40:0]. The board has 1 MiB of flash divided equally between OBP and POST/OBDiag. [UltraSPARC IIi User’s Manual, §17.3.2 and tables 17-3/17-5](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=303) · [Sun Ultra 5 Service Manual, §C.1.6.3](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf#page=224)
@@ -430,7 +450,7 @@ remain open. The window counters, PIL and TBA start at zero for
 repeatability where hardware reset values are unspecified.
 [IIi software interrupts, table 11-9](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=163) · [IIi window registers, §14.2.1](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223) · [IIi PSTATE and global banks, tables 14-12/13](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=235)
 
-With the reconstructed image installed, run the eighteen local-ROM checks together.
+With the reconstructed image installed, run the nineteen local-ROM checks together.
 
 ```sh
 cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts --test ultra5_reset_setup --test ultra5_first_serial_access --test ultra5_ecache --test ultra5_keyboard_timeout -- --ignored --nocapture
