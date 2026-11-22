@@ -549,6 +549,7 @@ fn original_obp_expands_the_image_and_executes_its_entry_in_ram() {
     verify_obp_simba_setup(&mut board, &mut cpu);
     verify_obp_iommu_setup(&mut board, &mut cpu);
     verify_obp_tick_interrupt(&mut board, &mut cpu);
+    verify_obp_clock_calibration(&mut board, &mut cpu);
     let [a, b] = board.take_serial_output();
     assert!(a.ends_with(
         b"Decompressing into Memory Done\r\nSize = 0000.0000.0006.eba0\r\nttya initialized\r\n"
@@ -859,6 +860,53 @@ fn verify_obp_tick_interrupt(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
     }
     panic!(
         "OBP did not return from its calibration interrupt, PC={:#x}",
+        cpu.pc()
+    );
+}
+
+fn verify_obp_clock_calibration(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
+    use crate::ultra5::BoardStep;
+    assert_eq!(cpu.pc(), 0xf005_64b4);
+    let ccr = cpu.ccr();
+    assert_eq!(board.step_mapped(cpu).unwrap().instruction, 0xa66d_0013);
+    assert_eq!((cpu.read_reg(19), cpu.ccr()), (0x01b0_45ab, ccr));
+    let (mut interrupts, mut misses, mut bar_reads) = (0, 0, 0);
+    for _ in 0..335_000 {
+        let va = cpu.read_reg(4);
+        if (cpu.pc(), va) == (0xf004_2f6c, 0xfffb_c814)
+            && cpu
+                .translate(va, 4, Access::Read)
+                .is_ok_and(|m| m.pa == 0x01fe_0101_0814 && !m.cacheable)
+        {
+            assert_eq!((interrupts, misses), (2, 1));
+            assert_eq!(board.step_mapped(cpu).unwrap().instruction, 0xc801_2000);
+            assert_eq!(cpu.read_reg(4), 0xf1); // bytes 00 00 00 f1 at the CPU port
+            bar_reads += 1;
+            continue;
+        }
+        if (cpu.pc(), va) == (0xf004_2ff4, 0xfffb_a804)
+            && cpu
+                .translate(va, 2, Access::Write)
+                .is_ok_and(|m| m.pa == 0x01fe_0101_0804 && !m.cacheable)
+        {
+            let pa = cpu.instruction_address().unwrap().pa;
+            assert_eq!(
+                board.read_cacheable_xword(pa & !7).unwrap() as u32,
+                0xe031_2000
+            );
+            assert_eq!((cpu.npc(), cpu.read_reg(16)), (0xf004_2ff8, 0x4601));
+            assert_eq!((bar_reads, interrupts, misses), (1, 4, 2));
+            return;
+        }
+        match board.step_outcome(cpu).unwrap() {
+            BoardStep::Retired(_) => {}
+            BoardStep::InterruptTaken { level: 14, .. } => interrupts += 1,
+            BoardStep::TrapTaken { tt: 0x68, .. } => misses += 1,
+            event => panic!("unexpected outcome after UDIVX: {event:?}"),
+        }
+    }
+    panic!(
+        "OBP did not reach the PCIO command write, PC={:#x}",
         cpu.pc()
     );
 }

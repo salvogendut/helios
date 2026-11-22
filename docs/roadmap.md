@@ -84,7 +84,8 @@ Cold and soft-reset runs reach the same entry with diagnostics enabled or disabl
 | Simba bridge configuration | The guest programs both bridge functions and routes the onboard flash and EBus through bus B. All four reset/diagnostic combinations reach the first IOMMU control read. |
 | IOMMU initialization | OBP clears the 16 I/O translations, sets the translation table base and enables the IOMMU on cold and soft boots. |
 | CPU timer | OBP programs TICK and TICK_CMPR, takes a level-14 interrupt in its calibration loop, and returns through RETRY. |
+| Clock calibration and onboard EBus | OBP executes its 64-bit unsigned divide, reads PCIO BAR1 and reaches the PCI command write. |
 | Interactive OpenBoot console | Open. Acceptance is a serial `ok` prompt that takes `1 2 + .`, replies `3` and prompts again. |
 
-The next observed instruction is the unsigned 64-bit divide at PC `0xf00564b4`.
-[Reproduce the current checkpoint](ultra5.md#cpu-timer-and-clock-calibration)
+The next device operation is a write of PCI command `0x0146` to the onboard
+PCIO EBus function. [Reproduce the current checkpoint](ultra5.md#onboard-ebus-configuration)

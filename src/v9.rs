@@ -65,6 +65,7 @@ struct TrapFrame {
 
 #[derive(Debug)]
 pub(crate) enum CpuFault {
+    DivisionByZero,
     Interrupt(u8),
     TlbMiss(TlbMiss),
     Stop(String),
@@ -93,6 +94,7 @@ impl From<CpuFault> for String {
     fn from(fault: CpuFault) -> Self {
         match fault {
             CpuFault::Stop(message) => message,
+            CpuFault::DivisionByZero => "V9 division_by_zero (TT=0x28)".into(),
             CpuFault::Interrupt(level) => format!("IIi interrupt pending at level {level}"),
             CpuFault::TlbMiss(miss) => format!(
                 "IIi TLB miss for {:?} VA={:#x} context={:#x}",
@@ -636,6 +638,14 @@ impl V9Cpu {
                 0x04 => self.write_reg(rd, self.read_reg(rs1).wrapping_sub(b)),
                 0x05 => self.write_reg(rd, self.read_reg(rs1) & !b),
                 0x09 => self.write_reg(rd, self.read_reg(rs1).wrapping_mul(b)), // MULX
+                0x0d if word & (1 << 13) != 0 || word & 0x1fe0 == 0 => {
+                    // V9 A.37: UDIVX uses unsigned 64-bit operands and preserves CCR.
+                    let quotient = self
+                        .read_reg(rs1)
+                        .checked_div(b)
+                        .ok_or(CpuFault::DivisionByZero)?;
+                    self.write_reg(rd, quotient);
+                }
                 0x11 | 0x12 => {
                     let a = self.read_reg(rs1);
                     let result = if op3 == 0x11 { a & b } else { a | b };
@@ -1115,11 +1125,7 @@ impl V9Cpu {
         miss: TlbMiss,
         fetch: Option<Translation>,
     ) -> Result<u16, String> {
-        self.check_normal_trap_level()?;
-        if let Some(slot) = fetch.and_then(|hit| hit.slot) {
-            // The fetch completed even though its operand translation missed.
-            self.instruction_tlb.set_used(slot, true);
-        }
+        self.prepare_normal_trap(fetch)?;
         let (tt, tlb) = if miss.access == Access::Fetch {
             (0x64u16, &mut self.instruction_tlb)
         } else {
@@ -1131,18 +1137,31 @@ impl V9Cpu {
     }
 
     pub(crate) fn enter_interrupt(&mut self, level: u8) -> Result<(), String> {
-        self.check_normal_trap_level()?;
+        self.prepare_normal_trap(None)?;
         // IIi table 6-12 selects alternate globals for interrupt_level_n.
         self.enter_normal_trap(0x40 + u16::from(level), PSTATE_AG);
         Ok(())
     }
 
-    fn check_normal_trap_level(&self) -> Result<(), String> {
+    pub(crate) fn enter_division_by_zero(
+        &mut self,
+        fetch: Option<Translation>,
+    ) -> Result<(), String> {
+        self.prepare_normal_trap(fetch)?;
+        self.enter_normal_trap(0x28, PSTATE_AG);
+        Ok(())
+    }
+
+    fn prepare_normal_trap(&mut self, fetch: Option<Translation>) -> Result<(), String> {
         if self.pstate & PSTATE_RED != 0 || self.tl >= MAX_TL - 1 {
             return Err(format!(
                 "unsupported IIi trap entry in RED_state or at TL {}",
                 self.tl
             ));
+        }
+        if let Some(slot) = fetch.and_then(|hit| hit.slot) {
+            // The instruction fetch completed even though its execution trapped.
+            self.instruction_tlb.set_used(slot, true);
         }
         Ok(())
     }
@@ -1401,6 +1420,52 @@ impl V9Cpu {
 mod tests {
     use super::*;
     use crate::ultra5::{BootFlash, FLASH_SIZE};
+
+    #[test]
+    fn udivx_preserves_ccr_and_handles_full_width_aliases_and_immediates() {
+        for (word, dividend, divisor, rd, quotient) in [
+            (0x8468_4002, u64::MAX, 2, 2, 0x7fff_ffff_ffff_ffff), // rd == rs2
+            (0x8268_4002, 0x1_0000_0003, 0x1_0000_0000, 1, 1),    // rd == rs1
+            (0x8468_4002, 3, u64::MAX, 2, 0),
+            (0x8668_7ffe, u64::MAX, 0, 3, 1), // sign-extended -2 as an unsigned divisor
+            (0x8668_6003, 0, 0, 3, 0),
+            (0x8068_4002, u64::MAX, 1, 0, 0), // discard the result
+        ] {
+            let mut cpu = V9Cpu::new(0);
+            cpu.write_reg(1, dividend);
+            cpu.write_reg(2, divisor);
+            cpu.ccr = 0xa5;
+            let mut memory = V9Memory::new(4);
+            memory.load_words(0, &[word]);
+            let mut expected = cpu.clone();
+            expected.write_reg(rd, quotient);
+            expected.pc = 4;
+            expected.npc = 8;
+            expected.tick += 44;
+            cpu.step(&mut memory).unwrap();
+            assert_eq!(cpu, expected);
+        }
+    }
+
+    #[test]
+    fn udivx_rejected_or_zero_divisor_never_retires_on_the_flat_api() {
+        for word in [0x8468_4002, 0x8668_6000, 0x8068_6000, 0x8468_4022] {
+            let mut cpu = V9Cpu::new(0);
+            cpu.write_reg(1, u64::MAX);
+            cpu.write_reg(3, 123);
+            cpu.ccr = 0x5a;
+            let mut memory = V9Memory::new(4);
+            memory.load_words(0, &[word]);
+            let before = cpu.clone();
+            let error = cpu.step(&mut memory).unwrap_err();
+            assert!(if word == 0x8468_4022 {
+                error.contains("unsupported")
+            } else {
+                error.contains("division_by_zero")
+            });
+            assert_eq!(cpu, before);
+        }
+    }
 
     #[test]
     fn physical_alternate_halfwords_use_asi_endian_and_zero_extend() {

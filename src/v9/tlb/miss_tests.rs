@@ -19,6 +19,55 @@ fn board() -> Ultra5ResetBoard {
 }
 
 #[test]
+fn udivx_zero_divisor_in_delay_slot_enters_tt28_without_writeback() {
+    let mut board = board();
+    let mut cpu = V9Cpu::new(0x2024);
+    cpu.npc = 0x5040;
+    cpu.tba = 0x8000;
+    cpu.ccr = 0x5a;
+    cpu.cwp = 3;
+    cpu.write_reg(19, 7);
+    cpu.lsu_control = LSU_IM;
+    cpu.instruction_tlb.stage_tag(0x2000);
+    cpu.instruction_tlb.write_data(1, VALID | RAM | 0x20, true);
+    board
+        .write_cacheable_xword(RAM + 0x20, 0x0100_0000_a66c_e000)
+        .unwrap(); // udivx %l3,0,%l3
+    let before = cpu.clone();
+    assert!(board
+        .step_mapped(&mut cpu)
+        .unwrap_err()
+        .contains("division_by_zero"));
+    assert_eq!(cpu, before);
+    cpu.tl = 4;
+    let full_stack = cpu.clone();
+    assert!(board.step_outcome(&mut cpu).is_err());
+    assert_eq!(cpu, full_stack);
+    cpu.tl = 0;
+    assert_eq!(
+        board.step_outcome(&mut cpu).unwrap(),
+        BoardStep::TrapTaken {
+            fault_pc: 0x2024,
+            tt: 0x28,
+            vector: 0x8500
+        }
+    );
+    let frame = cpu.traps[0];
+    assert_eq!(
+        (frame.tpc, frame.tnpc, frame.tt, frame.tstate),
+        (0x2024, 0x5040, 0x28, (0x5a << 32) | 3)
+    );
+    assert_eq!(cpu.pstate, PSTATE_PRIV | PSTATE_PEF | crate::v9::PSTATE_AG);
+    assert_eq!((cpu.read_reg(19), cpu.tick), (7, before.tick + 44));
+    assert_ne!(cpu.instruction_tlb.read_data(1) & USED, 0);
+    cpu.execute_fetched(0x81f0_0000, &mut UnmappedData).unwrap(); // done skips the divide
+    assert_eq!(
+        (cpu.pc, cpu.npc, cpu.pstate, cpu.ccr, cpu.cwp),
+        (0x5040, 0x5044, 0, 0x5a, 3)
+    );
+}
+
+#[test]
 fn delay_slot_store_miss_enters_mmu_globals_refills_and_retries_once() {
     let mut board = board();
     let mut cpu = V9Cpu::new(0x2020);

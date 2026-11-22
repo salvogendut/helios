@@ -123,3 +123,15 @@ rewrote the trap return PCs to leave its spin loop. Serial output matched the
 IOMMU checkpoint byte for byte. The transcripts, traced timer registers and
 validation logs are in `local/ultra5-tick-2026-11-22/`.
 [Reproduction](../docs/ultra5.md#cpu-timer-and-clock-calibration)
+
+## Clock calibration and PCIO command boundary
+
+After UDIVX and the mapped BAR1 read, OBP reaches its first unsupported
+PCIO command write. All four seeds stop at PC/nPC
+`0xf0042ff4/0xf0042ff8` with eight MMU misses and five timer interrupts.
+Cold diagnostic on/off retired 54,406,979/54,396,496 instructions. Soft
+diagnostic on/off retired 23,855,887/23,845,780. Per-seed transcripts and
+stop records are in `local/ultra5-calibration-2026-11-22/`. For the next
+step, distinguish the PCIO function's PCI command bits from the IIi host
+bridge and Simba command registers already implemented.
+[Reproduction](../docs/ultra5.md#onboard-ebus-configuration)

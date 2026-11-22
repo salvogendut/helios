@@ -8,7 +8,8 @@ and execute the 453,536-byte firmware image expanded in RAM. The expanded
 firmware initializes serial A and prints `ttya initialized` in diagnostic mode.
 It then configures the PCI host and both Simba secondary buses, handles a
 sixth data-TLB miss and initializes the IOMMU. Both paths take a level-14
-CPU timer interrupt and return to the firmware’s clock-calibration routine.
+CPU timer interrupt, finish the calibration calculation and read the onboard
+EBus base address.
 An interactive OpenBoot prompt remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
 
 ## Run the first serial diagnostic
@@ -394,6 +395,28 @@ to leave its wait loop. With diagnostics enabled, outcome limits of
 `54078149` (cold) and `23527057` (soft) stop immediately before
 `udivx %l4,%l3,%l3` at `0xf00564b4`. Each run has six synchronous
 MMU misses and one interrupt. Serial A still ends with `ttya initialized`.
+
+UDIVX writes the unsigned 64-bit quotient. The calibration operands are
+`0x42c979200000 / 0x278d75`, yielding `0x01b045ab`. A zero divisor
+enters the guest’s division-by-zero vector (TT `0x28`) on a board step;
+the retirement-only APIs return the error at the original PC/nPC.
+[SPARC V9, Appendix A.37](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf) · [IIi trap selection, table 6-12](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
+## Onboard EBus configuration
+
+OBP reads PCIO BAR1 at PA `0x01fe01010814` on bus 1, device 1,
+function 0. The register exposes the reset base `0xf1000000` in PCI
+little-endian byte order. Simba’s secondary bus number determines which
+configuration address reaches the register.
+[PCIO BARs, table 36](https://www.artisantg.com/info/force_cpci_520_series_manual.pdf)
+
+With diagnostics enabled, run the serial example for **54,406,992 outcomes**
+on cold reset or **23,855,900 outcomes** on soft reset. Both stop at PC
+`0xf0042ff4`, immediately before a halfword store to PA `0x01fe01010804`.
+Bytes `46 01` specify PCI command `0x0146`. The PCIO command register
+is the next unimplemented access. Each run takes eight synchronous MMU
+misses and five timer interrupts. The last diagnostic line is
+`ttya initialized`.
 
 ## Reset and flash mapping
 

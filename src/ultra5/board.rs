@@ -102,7 +102,7 @@ impl Ultra5ResetBoard {
         Ok(self.step_at(cpu, mapping)?)
     }
 
-    /// Run one retirement, fast MMU miss or eligible software interrupt.
+    /// Run one retirement, supported synchronous trap or eligible software interrupt.
     /// The retirement-only step_mapped API stops before trap or interrupt entry.
     pub fn step_outcome(&mut self, cpu: &mut V9Cpu) -> Result<BoardStep, String> {
         let fault_pc = cpu.pc();
@@ -112,28 +112,36 @@ impl Ultra5ResetBoard {
             Ok(fetch) => self.step_at(cpu, fetch),
             Err(fault) => Err(fault),
         };
-        match result {
-            Ok(step) => Ok(BoardStep::Retired(step)),
+        let event = match result {
+            Ok(step) => return Ok(BoardStep::Retired(step)),
+            Err(CpuFault::DivisionByZero) => {
+                cpu.enter_division_by_zero(fetch)?;
+                BoardStep::TrapTaken {
+                    fault_pc,
+                    tt: 0x28,
+                    vector: cpu.pc(),
+                }
+            }
             Err(CpuFault::TlbMiss(miss)) => {
                 let tt = cpu.enter_mmu_miss(miss, fetch)?;
-                self.elapsed_ns = self.elapsed_ns.saturating_add(crate::machine::STEP_NS);
-                Ok(BoardStep::TrapTaken {
+                BoardStep::TrapTaken {
                     fault_pc,
                     tt,
                     vector: cpu.pc(),
-                })
+                }
             }
             Err(CpuFault::Interrupt(level)) => {
                 cpu.enter_interrupt(level)?;
-                self.elapsed_ns = self.elapsed_ns.saturating_add(crate::machine::STEP_NS);
-                Ok(BoardStep::InterruptTaken {
+                BoardStep::InterruptTaken {
                     pc: fault_pc,
                     level,
                     vector: cpu.pc(),
-                })
+                }
             }
-            Err(CpuFault::Stop(message)) => Err(message),
-        }
+            Err(CpuFault::Stop(message)) => return Err(message),
+        };
+        self.elapsed_ns = self.elapsed_ns.saturating_add(crate::machine::STEP_NS);
+        Ok(event)
     }
 
     fn step_at(
@@ -216,7 +224,21 @@ impl Ultra5ResetBoard {
     }
 
     fn read_config<const N: usize>(&self, pa: u64) -> Option<[u8; N]> {
-        self.pbm.header.read(pa).or_else(|| self.apb.read(pa))
+        self.pbm
+            .header
+            .read(pa)
+            .or_else(|| self.apb.read(pa))
+            .or_else(|| {
+                let offset = pa.checked_sub(PCI_CONFIG)?;
+                if !matches!(N, 1 | 2 | 4)
+                    || offset % N as u64 != 0
+                    || !self.pcio_bar1_at(offset & !3)
+                {
+                    return None;
+                }
+                let lane = (offset & 3) as usize;
+                EBUS_BAR1.to_le_bytes()[lane..lane + N].try_into().ok()
+            })
     }
 
     fn write_config<const N: usize>(&mut self, pa: u64, bytes: [u8; N]) -> bool {
@@ -362,10 +384,13 @@ impl V9DataBus for Ultra5ResetBoard {
             // PCIO bit 0 is in the first byte on the little-endian EBus interface.
             return Ok(u32::from(self.front_panel_led).swap_bytes());
         }
-        let i = self.nvram.sram_index(pa, 4)?;
-        Ok(u32::from_be_bytes(
-            self.nvram.image[i..i + 4].try_into().unwrap(),
-        ))
+        if matches!(Self::ebus_offset(pa), Some(0..=0x0f_ffff)) {
+            let i = self.nvram.sram_index(pa, 4)?;
+            return Ok(u32::from_be_bytes(
+                self.nvram.image[i..i + 4].try_into().unwrap(),
+            ));
+        }
+        Err(format!("unmapped Ultra 5 physical word read at {pa:#x}"))
     }
     fn write_bypass_word(&mut self, pa: u64, value: u32) -> Result<(), String> {
         self.check_pci_memory(pa)?;
@@ -1022,6 +1047,7 @@ mod tests {
         let bar = PCI_CONFIG + 0x10814;
         let write_bar = |b: &mut Ultra5ResetBoard| b.write_bypass_le_word(bar, EBUS_BAR1);
         assert!(write_bar(&mut board).is_err());
+        assert!(board.read_bypass_word(bar).is_err());
         for (offset, value) in [
             (0x40, 0),
             (0x818, 0),
@@ -1034,15 +1060,32 @@ mod tests {
             board.write_bypass_byte(PCI_CONFIG + offset, value).unwrap();
             assert_eq!(board.read_bypass_byte(PCI_CONFIG + offset).unwrap(), value);
         }
-        write_bar(&mut board).unwrap(); // host bus-number registers are bookkeeping
+        // The host bus-number registers are bookkeeping.
+        write_bar(&mut board).unwrap();
+        // PCI byte order is 00 00 00 f1. These accessors return CPU big-endian values.
+        assert_eq!(board.read_bypass_word(bar).unwrap(), 0xf1);
+        assert_eq!(board.read_bypass_half(bar + 2).unwrap(), 0xf1);
+        for (i, expected) in [0, 0, 0, 0xf1].into_iter().enumerate() {
+            assert_eq!(board.read_bypass_byte(bar + i as u64).unwrap(), expected);
+        }
+        assert!(board.read_bypass_word(bar + 1).is_err());
+        assert!(board.read_bypass_xword(bar & !7).is_err());
+        assert!(board.read_bypass_word(bar + 4).is_err());
         board.write_bypass_byte(PCI_CONFIG + 0x41, 0xff).unwrap();
         write_bar(&mut board).unwrap();
         assert!(board
             .write_bypass_le_word(PCI_CONFIG + 0x20814, EBUS_BAR1)
             .is_err());
         assert!(board.write_bypass_le_word(bar, 0xe100_0000).is_err());
+        assert_eq!(board.read_bypass_word(bar).unwrap(), 0xf1);
+        board.write_bypass_byte(PCI_CONFIG + 0x819, 3).unwrap();
+        board.write_bypass_byte(PCI_CONFIG + 0x919, 2).unwrap();
+        board.write_bypass_byte(PCI_CONFIG + 0x91a, 2).unwrap();
+        assert!(board.read_bypass_word(bar).is_err());
+        assert_eq!(board.read_bypass_word(bar + 0x10000).unwrap(), 0xf1);
         board.write_bypass_byte(PCI_CONFIG + 0x91a, 0).unwrap();
         assert!(write_bar(&mut board).is_err());
+        assert!(board.read_bypass_word(bar + 0x10000).is_err());
         let base = PCI_MEMORY + u64::from(EBUS_BAR1);
         for (i, value) in [0x1122_3344, 0x5566_7700, 0x0102_0304]
             .into_iter()
