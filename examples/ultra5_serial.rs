@@ -8,12 +8,22 @@ use std::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
-    let interactive = args.last().is_some_and(|arg| arg == "--interactive");
-    let [rom, nvram, steps] = &args[..args.len() - usize::from(interactive)] else {
-        return Err(
-            "usage: ultra5_serial <1-MiB-flash> <8-KiB-nvram> <step-limit> [--interactive]".into(),
-        );
+    let usage = "usage: ultra5_serial <1-MiB-flash> <8-KiB-nvram> <step-limit> [--interactive] [--cdrom <image>]";
+    let [rom, nvram, steps, options @ ..] = args.as_slice() else {
+        return Err(usage.into());
     };
+    let mut interactive = false;
+    let mut cdrom = None;
+    let mut options = options.iter();
+    while let Some(option) = options.next() {
+        if option == "--interactive" && !interactive {
+            interactive = true;
+        } else if option == "--cdrom" && cdrom.is_none() {
+            cdrom = Some(options.next().ok_or(usage)?);
+        } else {
+            return Err(usage.into());
+        }
+    }
     let budget: u64 = steps.to_str().ok_or("invalid step limit")?.parse()?;
     if budget == 0 {
         return Err("step limit must be positive".into());
@@ -22,6 +32,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         BootFlash::new(fs::read(rom)?)?,
         ResetNvram::new(fs::read(nvram)?)?,
     );
+    if let Some(path) = cdrom {
+        board.attach_cdrom(path)?;
+    }
     let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
     let mut stdout = io::stdout().lock();
     let (tx, rx) = std::sync::mpsc::sync_channel(32);

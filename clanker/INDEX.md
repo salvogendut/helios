@@ -1,5 +1,7 @@
 # Agent notes
 
+- [Ultra 5 ATAPI CD-ROM and Solaris 7 boot](ultra5-atapi-cdrom.md) — original OpenBoot device identification, complete sector comparison and the reproducible LDSB stop.
+
 - [Ultra 5 MMU refill and PCI setup](ultra5-mmu-refill.md) — original OBP trap handling, PCI and IOMMU setup, CPU timer calibration, PCIO configuration, RTC polling, error acknowledgements, cache-backed DRAM refresh, PCI enumeration, the normal banner and the verified interactive serial monitor.
 
 - [Ultra 5 firmware decompression](ultra5-decompression.md) — independent expanded-image comparison, both primary cache tag clears and the original ROM’s `ttya initialized` output.

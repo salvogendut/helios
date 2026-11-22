@@ -52,9 +52,9 @@ impl PciFunction {
         u32::from_le_bytes(self.header[at..at + 4].try_into().unwrap()) & self.bar_masks[index]
     }
 
-    pub(super) fn absent_ata_port(&self, addr: u32) -> bool {
+    pub(super) fn ata_port(&self, addr: u32) -> Option<(usize, u8)> {
         if self.header[4] & 1 == 0 {
-            return false;
+            return None;
         }
         for channel in 0..2 {
             if channel == 1 && self.header[0x51] & 8 == 0 {
@@ -71,11 +71,14 @@ impl PciFunction {
             } else {
                 (0x170, 0x376)
             };
-            if addr.checked_sub(cmd).is_some_and(|offset| offset < 8) || addr == ctrl {
-                return true;
+            if let Some(offset) = addr.checked_sub(cmd).filter(|&offset| offset < 8) {
+                return Some((channel, offset as u8));
+            }
+            if addr == ctrl {
+                return Some((channel, 8));
             }
         }
-        false
+        None
     }
 
     pub(super) fn memory_enabled(&self) -> bool {

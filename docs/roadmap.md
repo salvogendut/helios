@@ -90,6 +90,8 @@ Cold and soft-reset runs reach the same entry with diagnostics enabled or disabl
 | DRAM refresh and PCI identification | OBP restores Mem_Control0 through the primary caches, reads the onboard ATI device ID and identifies the Simba multifunction bridge. |
 | PCI enumeration and banner | The guest probes UPA and both Simba buses, identifies the onboard devices and prints the 440 MHz / 512 MB Ultra 5/10 banner. |
 | Interactive OpenBoot console | Verified by typing `1 2 + .` and receiving `3` and a second `ok`, both with autoboot disabled and after serial BREAK. |
+| Read-only ATAPI CD-ROM | OBP detects the secondary master and returns all 2,048 bytes of Solaris 7 ISO sector 16 through its device method. |
 
-The serial-console milestone is complete. Ultra 5 disk and network boot remain
-open. [Run the interactive example](ultra5.md#interactive-serial-console)
+The next CPU instruction needed by the Solaris 7 CD boot is LDSB. Two runs
+reached PC `0x116524` before any Solaris loader text appeared. Disk and
+network boot remain open. [Run the interactive example](ultra5.md#interactive-serial-console)

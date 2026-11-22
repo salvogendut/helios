@@ -5,6 +5,14 @@ emulators for implementation details, device behavior and practical firmware
 requirements. When they disagree, retain the disagreement and build a focused
 test rather than assuming either emulator defines the hardware.
 
+## Ultra 5 optical drive
+
+- The original Ultra 5/10 OBP 3.31 `devalias cdrom` and `probe-ide` commands
+  identify unit 2 as the secondary master. QEMU 9.2.0’s IDE core documents the
+  packet-device signature and the word layout of IDENTIFY PACKET DEVICE.
+  Its ATAPI transport shows the command, data and completion phases and
+  host byte-count limit. [IDE core](https://github.com/qemu/qemu/blob/v9.2.0/hw/ide/core.c) · [ATAPI transport](https://github.com/qemu/qemu/blob/v9.2.0/hw/ide/atapi.c)
+
 ## Architecture and project model
 
 - [MAME chdman manual](https://docs.mamedev.org/tools/chdman.html) and

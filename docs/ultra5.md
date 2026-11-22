@@ -52,18 +52,54 @@ cargo test --release --locked --offline --test ultra5_first_serial_access \
 ```
 
 The firmware enumerates EBus, Ethernet, Mach64 and CMD646 IDE on Simba B and
-reports empty slots on Simba A. PCI configuration and aperture sizing are
-implemented for these functions. Ethernet support covers the MIF probe,
-Mach64 covers firmware register and video-memory accesses, and IDE models
-an empty task file. The ROM creates disk and CD-ROM device nodes even with
-no drives installed. Graphics scanout, disk transfers and network boot remain
-open.
+reports empty slots on Simba A. Ethernet supports the MIF probe. Mach64
+supports firmware register and video-memory accesses.
 
 The example batches iterations of a resident SPARC delay loop while preserving
 the counter, PC/nPC, tick, device time and interrupt boundary. Its step limit
 includes these retirements. SAB channel A exposes received bytes through the
 receive FIFO, polls interrupt status for short packets and recognizes BREAK.
 The example paces host input for the 9600-baud console.
+
+## Attach a Solaris installation CD
+
+Append `--cdrom` and the path to a raw ISO to the serial-console command.
+The example opens the image read-only. The board attaches it as the CMD646
+secondary master, OpenBoot unit 2. The other three IDE positions are empty.
+
+```sh
+cargo run --release --locked --offline --example ultra5_serial -- \
+  local/firmware/ultra5/ultra5-obp331-post310-1mb.bin \
+  local/ultra5-serial-console-2026-11-22/console.nvram 1000000000000 \
+  --interactive --cdrom "/var/home/salvogendut/Downloads/Solaris Media/SOL_7_1199_SPARC.iso"
+```
+
+At the serial prompt, `devalias cdrom` shows
+`/pci@1f,0/pci@1,1/ide@3/cdrom@2,0:f`. Run `probe-ide` to see
+`Removable ATAPI Model: HELIOS ATAPI CD-ROM` under device 2. The driver
+uses polled packet I/O. ATA hard disks, bus-master DMA and IDE interrupt
+delivery are still open.
+
+To check a known sector in OpenBoot, enter the following lines at `ok` with
+the Solaris 7 11/99 SPARC disc attached. The commands use hex numbers.
+The block size is `800`, the read returns `1`, and the bytes at `cd-buf`
+start with `01 43 44 30 30 31 01` (the ISO 9660 volume descriptor).
+
+```forth
+hex
+" cdrom" open-dev constant cd-ih
+" block-size" cd-ih $call-method .
+800 alloc-mem constant cd-buf
+cd-buf 10 1 " read-blocks" cd-ih $call-method .
+cd-buf 10 dump
+cd-ih close-dev
+```
+
+With the handle closed, `boot cdrom` opens slice `:f`. Two runs stop at
+PC `0x116524`, nPC `0x116528`, on V9 memory opcode `0x09` (LDSB).
+The Solaris disc's SPARC V9 `sun4u/ufsboot` executable places
+`ldsb [%g4], %o4` at that address. The serial transcript ends at
+OpenBoot's `Boot device:` line, before a Solaris banner.
 
 ## Run the first serial diagnostic
 

@@ -10,6 +10,9 @@
 
 use crate::v9::{UnmappedData, V9Cpu, V9DataBus, PHYSICAL_ADDRESS_MASK};
 
+mod atapi;
+#[cfg(test)]
+mod atapi_tests;
 mod board;
 mod dram;
 mod hme;

@@ -94,21 +94,7 @@ impl ScsiBus {
                 "SCSI ID must be unused and in 0..=6",
             ));
         }
-        let image = Media::open(path, kind, writable)?;
-        let size = image.info().logical_bytes;
-        self.targets[usize::from(id)] = Some(ScsiTarget {
-            image,
-            kind,
-            writable,
-            image_bytes: size,
-            block_size: kind.block_size(),
-            sense: [0; 3],
-            unit_attention: false,
-            started: true,
-            removal_prevented: false,
-            reads: 0,
-            writes: 0,
-        });
+        self.targets[usize::from(id)] = Some(ScsiTarget::open(path, kind, writable)?);
         Ok(())
     }
 
@@ -136,15 +122,41 @@ impl ScsiBus {
         let target = self.targets[usize::from(id)]
             .as_mut()
             .expect("selected SCSI target");
-        match cdb[0] {
-            0x15 | 0x55 => target.mode_select(cdb, data),
-            0x0a | 0x2a => target.write_blocks(cdb, data),
-            _ => target.check(5, 0x20),
-        }
+        target.complete_data_out(cdb, data)
     }
 }
 
 impl ScsiTarget {
+    pub(crate) fn open(path: &Path, kind: MediaKind, writable: bool) -> io::Result<Self> {
+        let image = Media::open(path, kind, writable)?;
+        let size = image.info().logical_bytes;
+        Ok(Self {
+            image,
+            kind,
+            writable,
+            image_bytes: size,
+            block_size: kind.block_size(),
+            sense: [0; 3],
+            unit_attention: false,
+            started: true,
+            removal_prevented: false,
+            reads: 0,
+            writes: 0,
+        })
+    }
+
+    pub(crate) fn sense_key(&self) -> u8 {
+        self.sense[0]
+    }
+
+    pub(crate) fn complete_data_out(&mut self, cdb: &[u8], data: &[u8]) -> Response {
+        match cdb[0] {
+            0x15 | 0x55 => self.mode_select(cdb, data),
+            0x0a | 0x2a => self.write_blocks(cdb, data),
+            _ => self.check(5, 0x20),
+        }
+    }
+
     pub fn kind(&self) -> MediaKind {
         self.kind
     }
@@ -166,7 +178,7 @@ impl ScsiTarget {
         (self.reads, self.writes)
     }
 
-    fn check(&mut self, key: u8, asc: u8) -> Response {
+    pub(crate) fn check(&mut self, key: u8, asc: u8) -> Response {
         self.sense = [key, asc, 0];
         Response {
             status: 2,
@@ -174,7 +186,7 @@ impl ScsiTarget {
         }
     }
 
-    fn execute(&mut self, lun: u8, cdb: &[u8]) -> Response {
+    pub(crate) fn execute(&mut self, lun: u8, cdb: &[u8]) -> Response {
         if lun != 0 && !matches!(cdb[0], 0x03 | 0x12) {
             return self.check(5, 0x25); // Logical unit not supported.
         }

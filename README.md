@@ -31,8 +31,8 @@ serial A monitor. OBP identifies the 440 MHz UltraSPARC-IIi and 512 MiB of
 RAM, enumerates the onboard PCI devices and prints its normal banner. With
 `auto-boot?` disabled it enters the monitor directly. A serial BREAK after
 the banner also works with factory defaults. In both cases, typing
-`1 2 + .` returns `3` and another `ok`. The headless example is the current
-entry point. Ultra 5 OS boot and Heliacal integration remain open.
+`1 2 + .` returns `3` and another `ok`. The headless example also attaches a read-only ATAPI CD-ROM.
+OpenBoot reads the Solaris 7 11/99 volume descriptor on this drive. Ultra 5 OS boot and Heliacal integration remain open.
 [Run the Ultra 5 serial console](docs/ultra5.md#interactive-serial-console)
 
 **SPARCstation 20** and **Axil 320** profiles boot their original firmware to

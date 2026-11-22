@@ -48,6 +48,7 @@ pub struct Ultra5ResetBoard {
     apb: Simba,
     pci_functions: [PciFunction; 4],
     ebus_setup: [u32; 3],
+    cdrom: Option<super::atapi::Cdrom>,
     hme: super::hme::Mif,
     display: super::mach64::Mach64,
     floppy_aux: u32,
@@ -77,6 +78,7 @@ impl Ultra5ResetBoard {
             apb: Default::default(),
             pci_functions: PciFunction::onboard(),
             ebus_setup: [0; 3],
+            cdrom: None,
             hme: Default::default(),
             display: Default::default(),
             floppy_aux: 0,
@@ -310,11 +312,26 @@ impl Ultra5ResetBoard {
             .filter(|&off| off < size)
     }
 
-    fn empty_ata(&self, pa: u64) -> bool {
-        let Some(a) = pa.checked_sub(0x01fe_0200_0000).filter(|a| *a < 0x1000000) else {
-            return false;
-        };
-        self.apb.forwards_onboard_io(a as u32) && self.pci_functions[3].absent_ata_port(a as u32)
+    /// Attach a read-only image at the secondary IDE master (OpenBoot unit 2).
+    pub fn attach_cdrom(&mut self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+        if self.cdrom.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "CD-ROM already attached",
+            ));
+        }
+        self.cdrom = Some(super::atapi::Cdrom::open(path.as_ref())?);
+        Ok(())
+    }
+
+    fn ata_port(&self, pa: u64) -> Option<(usize, u8)> {
+        let a = pa
+            .checked_sub(0x01fe_0200_0000)
+            .filter(|a| *a < 0x1000000)? as u32;
+        if !self.apb.forwards_onboard_io(a) {
+            return None;
+        }
+        self.pci_functions[3].ata_port(a)
     }
 
     fn read_config<const N: usize>(&self, pa: u64) -> Option<[u8; N]> {
@@ -430,6 +447,11 @@ impl V9DataBus for Ultra5ResetBoard {
     }
 
     fn read_bypass_half(&mut self, pa: u64) -> Result<u16, String> {
+        if self.ata_port(pa) == Some((1, 0)) {
+            if let Some(drive) = self.cdrom.as_mut() {
+                return drive.read_data().map(u16::from_be_bytes);
+            }
+        }
         if let Some(off) = self.onboard_mem_offset(2, pa, 0x1000000) {
             return self.display.read(off).map(u16::from_be_bytes);
         }
@@ -452,6 +474,11 @@ impl V9DataBus for Ultra5ResetBoard {
         ))
     }
     fn write_bypass_half(&mut self, pa: u64, value: u16) -> Result<(), String> {
+        if self.ata_port(pa) == Some((1, 0)) {
+            if let Some(drive) = self.cdrom.as_mut() {
+                return drive.write_data(value.to_be_bytes());
+            }
+        }
         if let Some(off) = self.onboard_mem_offset(2, pa, 0x1000000) {
             return self.display.write(off, value.to_be_bytes());
         }
@@ -628,7 +655,12 @@ impl V9DataBus for Ultra5ResetBoard {
     }
 
     fn read_bypass_byte(&mut self, pa: u64) -> Result<u8, String> {
-        if self.empty_ata(pa) {
+        if let Some((channel, reg)) = self.ata_port(pa) {
+            if channel == 1 {
+                if let Some(drive) = self.cdrom.as_ref() {
+                    return drive.read(reg);
+                }
+            }
             return Ok(0xff);
         }
         if let Some(off) = self.onboard_mem_offset(2, pa, 0x1000000) {
@@ -677,7 +709,12 @@ impl V9DataBus for Ultra5ResetBoard {
     }
 
     fn write_bypass_byte(&mut self, pa: u64, value: u8) -> Result<(), String> {
-        if self.empty_ata(pa) {
+        if let Some((channel, reg)) = self.ata_port(pa) {
+            if channel == 1 {
+                if let Some(drive) = self.cdrom.as_mut() {
+                    return drive.write(reg, value);
+                }
+            }
             return Ok(());
         }
         if let Some(off) = self.onboard_mem_offset(2, pa, 0x1000000) {
