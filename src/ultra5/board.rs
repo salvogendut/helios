@@ -1,3 +1,4 @@
+use super::dram::Dram;
 use super::keyboard_uart::KeyboardUart;
 use super::serial::Serial;
 use super::{BootFlash, FlashFetch, ResetNvram, FLASH_BASE};
@@ -26,6 +27,7 @@ struct BusNumbers {
 pub struct Ultra5ResetBoard {
     flash: BootFlash,
     nvram: ResetNvram,
+    dram: Dram,
     host_primary: u8,
     host_subordinate: u8,
     apb: [BusNumbers; 2],
@@ -45,6 +47,7 @@ impl Ultra5ResetBoard {
         Self {
             flash,
             nvram,
+            dram: Dram::default(),
             host_primary: 0,
             host_subordinate: 0,
             apb: Default::default(),
@@ -196,6 +199,12 @@ impl SuperIoConfig {
 }
 
 impl V9DataBus for Ultra5ResetBoard {
+    fn read_cacheable_xword(&mut self, pa: u64) -> Result<u64, String> {
+        self.dram.read(pa, self.mem_control0)
+    }
+    fn write_cacheable_xword(&mut self, pa: u64, value: u64) -> Result<(), String> {
+        self.dram.write(pa, self.mem_control0, value)
+    }
     fn load_byte(&mut self, va: u64) -> Result<u8, String> {
         if !matches!((va as i64) >> 43, 0 | -1) {
             return Err(format!("out-of-range Ultra 5 LDUB at {va:#x}"));
@@ -369,6 +378,104 @@ mod tests {
             BootFlash::new(vec![0; FLASH_SIZE]).unwrap(),
             ResetNvram::new(vec![0; RESET_NVRAM_SIZE]).unwrap(),
         )
+    }
+
+    #[test]
+    fn cacheable_xwords_use_dram_and_leave_io_registers_alone() {
+        let mut board = fixture();
+        let ram = 0x1000_0000;
+        board.write_cacheable_xword(ram, 0x1234).unwrap();
+        assert!(board.write_bypass_xword(ram, 17).is_err());
+        assert!(board.read_bypass_xword(ram).is_err());
+        for invalid in [ram + 4, MEM_CONTROL0, FLASH_BASE] {
+            assert!(board.write_cacheable_xword(invalid, 0xffff).is_err());
+            assert!(board.read_cacheable_xword(invalid).is_err());
+        }
+        assert_eq!(board.read_bypass_xword(MEM_CONTROL0).unwrap(), 0xf30);
+        assert_eq!(board.read_cacheable_xword(ram).unwrap(), 0x1234);
+    }
+
+    #[test]
+    #[ignore = "requires the locally reconstructed OBP 3.31.0 flash"]
+    fn original_obp_sizes_the_dimm_pair_restores_patterns_and_clears_its_workspace() {
+        let image = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/local/firmware/ultra5/ultra5-obp331-post310-1mb.bin"
+        ))
+        .unwrap();
+        let mut nvram = vec![0; RESET_NVRAM_SIZE];
+        nvram[1] = 1;
+        nvram[0x10..0x18].copy_from_slice(b"soft-rst");
+        let mut board = Ultra5ResetBoard::new(
+            BootFlash::new(image).unwrap(),
+            ResetNvram::new(nvram).unwrap(),
+        );
+        let mut cpu = V9Cpu::from(crate::ultra5::PowerOnReset::ultra_sparc_ii());
+        let mut sentinels = Vec::new();
+        for rank in [0x1000_0000, 0x3000_0000] {
+            for lane in [0, 8, 16] {
+                for offset in [0, 8 << 20, 16 << 20, 32 << 20, 64 << 20] {
+                    let pa = rank + lane + offset;
+                    let value = 0xfeed_abcd_0000_0000 | pa;
+                    board.dram.write(pa, 0, value).unwrap();
+                    sentinels.push((pa, 0, value));
+                }
+                let pa = rank + lane + 0x4000;
+                board.dram.write(pa, 0x1000, !pa).unwrap();
+                sentinels.push((pa, 0x1000, !pa));
+            }
+        }
+        // Size and location follow from the two 256 MiB DIMMs on the
+        // reference board. OBP puts its workspace at the end of the upper rank.
+        let scratch = 0x3ff0_0000;
+        let mut seen = [false; 3];
+        for _ in 0..650_000 {
+            match cpu.pc() & 0xf_ffff {
+                0x126c => {
+                    assert_eq!((cpu.read_reg(8), cpu.read_reg(9)), (0x1a0, 1));
+                    for &(pa, mode, value) in &sentinels {
+                        assert_eq!(board.dram.read(pa, mode).unwrap(), value, "at {pa:#x}");
+                    }
+                    seen[0] = true;
+                }
+                0x1444 => {
+                    assert_eq!(
+                        (cpu.read_reg(8), cpu.read_reg(9)),
+                        (0x3000_0000, 0x1000_0000)
+                    );
+                    assert_ne!(board.mem_control0 & 0x1000, 0);
+                    for addr in [scratch - 8, scratch, scratch + 0x80000, 0x3fff_fff8] {
+                        board.write_cacheable_xword(addr, !addr).unwrap();
+                    }
+                    seen[1] = true;
+                }
+                0x1460 => {
+                    assert_eq!(
+                        board.read_cacheable_xword(scratch - 8).unwrap(),
+                        !(scratch - 8)
+                    );
+                    for addr in [scratch, scratch + 0x80000, 0x3fff_fff8] {
+                        assert_eq!(board.read_cacheable_xword(addr).unwrap(), 0);
+                    }
+                    seen[2] = true;
+                }
+                0x1f90 => break,
+                _ => {}
+            }
+            board.step(&mut cpu).unwrap();
+        }
+        assert_eq!(seen, [true; 3]);
+        assert_eq!(cpu.pc(), 0x01ff_f000_1f90);
+        assert_eq!(cpu.read_reg(8), 0xc);
+        let before = cpu.clone();
+        assert!(board
+            .step(&mut cpu)
+            .unwrap_err()
+            .contains("unsupported LSU control write 0xc"));
+        assert_eq!(cpu, before);
+        let [ttya, ttyb] = board.take_serial_output();
+        assert!(ttya.ends_with(b"Probing Memory Done\r\nMEM BASE = 0000.0000.3000.0000\r\nMEM SIZE = 0000.0000.1000.0000\r\n11-Column Mode Enabled \r\nMMUs "));
+        assert!(ttyb.is_empty());
     }
 
     #[test]

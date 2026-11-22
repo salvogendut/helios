@@ -29,9 +29,10 @@ below. See the
 On the experimental **Ultra 5**, original OpenBoot 3.31.0 detects the
 module's 2 MiB external cache, prints its firmware version on serial A and
 clears the cache tags. Cold boot finishes the unplugged keyboard probe. Both
-reset paths clear the instruction and data TLBs and print `Probing Memory`
-with diagnostics enabled. An interactive Ultra 5 prompt is still in development.
-[Run the headless serial example](docs/ultra5.md#instruction-and-data-tlb-initialization)
+reset paths discover the installed 512 MiB DIMM pair, clear a 1 MiB workspace
+and reach MMU enable. With diagnostics enabled, serial A prints the selected
+boot region and column mode. An interactive Ultra 5 prompt is still in development.
+[Reproduce the firmware memory probe](docs/ultra5.md#physical-dram-discovery)
 
 **SPARCstation 20** and **Axil 320** profiles boot their original firmware to
 the serial `ok` prompt with either one CPU or two 75 MHz SuperSPARC-II modules.

@@ -20,6 +20,7 @@ const PSTATE_MG: u16 = 1 << 10;
 const PSTATE_IG: u16 = 1 << 11;
 const GLOBAL_SELECT: u16 = PSTATE_AG | PSTATE_MG | PSTATE_IG;
 pub(crate) const PHYSICAL_ADDRESS_MASK: u64 = (1 << 41) - 1;
+const ASI_PHYS_USE_EC: u8 = 0x14;
 const ASI_PHYS_BYPASS_EC_WITH_EBIT: u8 = 0x15;
 const ASI_PHYS_BYPASS_EC_WITH_EBIT_LE: u8 = 0x1d;
 const ASI_DMMU: u8 = 0x58;
@@ -83,6 +84,16 @@ pub struct V9Memory {
 /// Data accesses are independent of the instruction source. A reset-time
 /// peripheral may implement physical bypass reads without mapping virtual RAM.
 pub(crate) trait V9DataBus {
+    fn read_cacheable_xword(&mut self, pa: u64) -> Result<u64, String> {
+        Err(format!(
+            "unmapped V9 cacheable physical xword read at {pa:#x}"
+        ))
+    }
+    fn write_cacheable_xword(&mut self, pa: u64, _value: u64) -> Result<(), String> {
+        Err(format!(
+            "unmapped V9 cacheable physical xword write at {pa:#x}"
+        ))
+    }
     fn load_byte(&mut self, va: u64) -> Result<u8, String> {
         Err(format!("unmapped V9 LDUB at {va:#x}"))
     }
@@ -125,6 +136,12 @@ pub(crate) struct UnmappedData;
 impl V9DataBus for UnmappedData {}
 
 impl V9DataBus for V9Memory {
+    fn read_cacheable_xword(&mut self, pa: u64) -> Result<u64, String> {
+        self.try_read_u64(pa)
+    }
+    fn write_cacheable_xword(&mut self, pa: u64, value: u64) -> Result<(), String> {
+        self.try_write_u64(pa, value)
+    }
     fn load_byte(&mut self, va: u64) -> Result<u8, String> {
         Ok(self.bytes[self.checked_range(va, 1, 1)?])
     }
@@ -395,6 +412,7 @@ impl V9Cpu {
                 0x03 => self.write_reg(rd, self.read_reg(rs1) ^ b),
                 0x04 => self.write_reg(rd, self.read_reg(rs1).wrapping_sub(b)),
                 0x05 => self.write_reg(rd, self.read_reg(rs1) & !b),
+                0x09 => self.write_reg(rd, self.read_reg(rs1).wrapping_mul(b)), // MULX
                 0x11 => {
                     let result = self.read_reg(rs1) & b;
                     let low = result as u32;
@@ -546,6 +564,17 @@ impl V9Cpu {
                     }
                     let address = self.read_reg(rs1).wrapping_add(b);
                     match (asi, op3) {
+                        (ASI_PHYS_USE_EC, 0x1b) => {
+                            let value =
+                                memory.read_cacheable_xword(Self::bypass_address(address, 8)?)?;
+                            self.write_reg(rd, value);
+                        }
+                        (ASI_PHYS_USE_EC, 0x1e) => {
+                            memory.write_cacheable_xword(
+                                Self::bypass_address(address, 8)?,
+                                self.read_reg(rd),
+                            )?;
+                        }
                         (ASI_PHYS_BYPASS_EC_WITH_EBIT | ASI_PHYS_BYPASS_EC_WITH_EBIT_LE, 0x10) => {
                             let value =
                                 memory.read_bypass_word(Self::bypass_address(address, 4)?)?;
@@ -900,6 +929,48 @@ impl V9Cpu {
 mod tests {
     use super::*;
     use crate::ultra5::{BootFlash, FLASH_SIZE};
+
+    #[test]
+    fn mulx_uses_full_width_operands_and_preserves_ccr() {
+        let mut cpu = V9Cpu::new(0);
+        cpu.ccr = 0xa5;
+        cpu.write_reg(1, 0x8000_0000_0000_0003);
+        cpu.write_reg(2, 0x1_0000_0002);
+        cpu.execute_fetched(0x8248_4002, &mut UnmappedData).unwrap(); // mulx %g1,%g2,%g1
+        assert_eq!(cpu.read_reg(1), 0x3_0000_0006);
+        cpu.execute_fetched(0x8448_7fff, &mut UnmappedData).unwrap(); // mulx %g1,-1,%g2
+        assert_eq!(cpu.read_reg(2), 0xffff_fffc_ffff_fffa);
+        assert_eq!((cpu.pc(), cpu.npc(), cpu.ccr()), (8, 12, 0xa5));
+    }
+
+    #[test]
+    fn physical_cacheable_xwords_require_privilege_alignment_and_a_complete_word() {
+        let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
+        let mut mem = V9Memory::new(20);
+        const STORE: u32 = 0xc4f0_4280; // stxa %g2,[%g1] ASI 0x14
+        const LOAD: u32 = 0xc6d8_4280; // ldxa [%g1] ASI 0x14,%g3
+        cpu.write_reg(1, 8);
+        cpu.write_reg(2, 0xfedc_ba98_7654_3210);
+        cpu.execute_fetched(STORE, &mut mem).unwrap();
+        assert_eq!(
+            (mem.read_word(8), mem.read_word(12)),
+            (0xfedc_ba98, 0x7654_3210)
+        );
+        cpu.execute_fetched(LOAD, &mut mem).unwrap();
+        assert_eq!(cpu.read_reg(3), cpu.read_reg(2));
+        cpu.write_reg(2, 0);
+        for (address, pstate) in [(12, PSTATE_PRIV), (16, PSTATE_PRIV), (8, 0)] {
+            cpu.pstate = pstate;
+            cpu.write_reg(1, address);
+            let before = cpu.clone();
+            let data = mem.clone();
+            for word in [LOAD, STORE] {
+                assert!(cpu.execute_fetched(word, &mut mem).is_err());
+                assert_eq!(cpu, before);
+                assert_eq!(mem, data);
+            }
+        }
+    }
 
     #[test]
     fn window_operations_read_before_rotation_and_return_slot_runs_in_caller() {

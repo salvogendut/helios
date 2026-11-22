@@ -115,6 +115,10 @@ test rather than assuming either emulator defines the hardware.
   64-bit register. Section 15.10 and table 15-18 give the 41-bit physical
   address and side-effect attribute for the ASI `0x15` bypass read.
   See the [Ultra 5 fixture](ultra5.md).
+- The IIi manual gives the rank and pair selects, Mem_Control0 column mode
+  and the PA14 column test. The physical Ultra 5 POST transcript records the
+  two 256 MiB modules in pair 2. QEMU's generic sun4u machine maps contiguous
+  RAM at address zero. [IIi manual, chapter 7 and Appendix A.10](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf) · [Ultra 5 console](https://rob.com/sun/sun4u-ss5/) · [Pinned QEMU sun4u RAM initialization](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/sparc64/sun4u.c#L612)
 - The IIi manual’s table 15-12 and §15.9.3 place primary and secondary
   contexts at ASI `0x58`, offsets `8` and `0x10`, and distinguish data
   synchronization from instruction-fetch synchronization. V9 §5.1.8 and

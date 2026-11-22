@@ -3,7 +3,7 @@
 The headless Ultra 5/10 fixture runs original OBP 3.31.0 far enough to
 transmit its version banner on serial A, clear the external-cache tags and
 complete the cold-start probe with the keyboard disconnected. Both boot paths
-clear the instruction and data TLBs and reach the first physical DRAM probe.
+clear the instruction and data TLBs, complete DRAM discovery and reach MMU enable.
 An interactive OpenBoot prompt remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
 
 ## Run the first serial diagnostic
@@ -71,8 +71,9 @@ performs these operations in order.
 | Mem_Control0 | `0x01fe_0000_f010` | `0x8000_053d` | Read the LED word another 1,000 times, then return |
 
 The MCU registers implement reset values and masked readback. Writing the
-refresh-enable bit records the configuration. DRAM storage, refresh timing and ECC
-error generation are still open. [Sun IIi User’s Manual, tables 18-3 and 18-7](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf) · [Ultra 5/10 hardware console and device tree](https://rob.com/sun/sun4u-ss5/)
+refresh-enable bit records the configuration. The column-mode bit changes how
+the MCU addresses installed DRAM. Refresh timing and ECC error generation
+remain open. [Sun IIi User’s Manual, tables 18-3 and 18-7](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf) · [Ultra 5/10 hardware console and device tree](https://rob.com/sun/sun4u-ss5/)
 
 After returning, OBP disables E-cache error reporting, clears the sticky
 fault flags and calls its external-cache size probe. Its first diagnostic
@@ -149,12 +150,41 @@ support readback. The original-ROM check starts with 128 populated entries
 and verifies every tag and data word after the loop. Address translation,
 automatic replacement and demap are still open. [Sun UltraSPARC-IIi User’s Manual, §§15.2 and 15.9.8–9](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
 
-To see the latest diagnostic on a cold start, use the serial example with a
+To stop at the first DRAM read on a cold start, use the serial example with a
 budget of `30726251`. Serial A ends with `Probing Memory `. At this point OBP
 has prepared complementary 64-bit test patterns and is about to save the
 first xword at PA zero. The following two loads use offsets of 8 and 16 MiB.
-The board still needs ASI `0x14` access to physical DRAM before OBP can
-measure installed memory.
+
+## Physical DRAM discovery
+
+The reference Ultra 5 has an empty pair 0 and two dual-rank 256 MiB DIMMs
+in pair 2. Its hardware console reports 512 MiB. With 11-bit columns the
+two physical ranges are `0x10000000–0x1fffffff` and `0x30000000–0x3fffffff`.
+PA29 selects the rank. OBP first probes in 10-bit mode, then toggles
+Mem_Control0 bit 12 and compares locations that differ in PA14 to establish
+the column geometry. ASI `0x14` handles aligned cacheable physical xwords.
+The sparse backing keeps the same cells across both modes. Empty sockets
+return zero and discard writes. The zero read value is a fixture assumption.
+[Ultra 5 hardware memory probe](https://rob.com/sun/sun4u-ss5/) · [Sun IIi User’s Manual, §§6.2.1, 7.2–3, 18.2 and Appendix A.10](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
+Use the serial example with a diagnostic cold seed and a limit of
+`31138089`, or `586997` with the diagnostic soft-reset seed. Serial A ends with
+
+```text
+Probing Memory Done
+MEM BASE = 0000.0000.3000.0000
+MEM SIZE = 0000.0000.1000.0000
+11-Column Mode Enabled
+MMUs
+```
+
+`MEM SIZE` is the 256 MiB region OBP selected for early boot. The ROM
+returns descriptor `0x1a0` for the installed pair, restores its test words,
+then clears the uppermost 1 MiB of the selected region. The original-ROM
+regression checks those operations with nonzero data. Both quiet runs reach
+the same PC with no serial bytes. The next word is `stxa %o0,[%g0] 0x45`
+at PC `0x01ff_f000_1f90`, where `%o0 = 0xc` requests instruction and data
+translation. The fixture stops before retiring this store.
 
 ## Reset and flash mapping
 
@@ -400,7 +430,7 @@ remain open. The window counters, PIL and TBA start at zero for
 repeatability where hardware reset values are unspecified.
 [IIi software interrupts, table 11-9](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=163) · [IIi window registers, §14.2.1](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223) · [IIi PSTATE and global banks, tables 14-12/13](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=235)
 
-With the reconstructed image installed, run the seventeen local-ROM checks together.
+With the reconstructed image installed, run the eighteen local-ROM checks together.
 
 ```sh
 cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts --test ultra5_reset_setup --test ultra5_first_serial_access --test ultra5_ecache --test ultra5_keyboard_timeout -- --ignored --nocapture

@@ -63,8 +63,8 @@ machines should become explicit profiles; SPARC V9 is a separate CPU milestone.
 
 ## Ultra 5 serial console
 
-**Original OBP 3.31.0 reaches memory probing on 22 November 2026.** Both
-reset paths print `Probing Memory` on serial A when diagnostics are enabled.
+**Original OBP 3.31.0 completes memory probing on 22 November 2026.** Both
+reset paths reach the store that enables the instruction and data MMUs.
 
 | Milestone | Evidence |
 | --- | --- |
@@ -74,10 +74,11 @@ reset paths print `Probing Memory` on serial A when diagnostics are enabled.
 | External-cache initialization and build identification | All four runs detect 2 MiB, select ELIM 3 and clear 32,768 tag entries. Both diagnostic-enabled runs print the original firmware build string. |
 | Cold-start keyboard probe | The unplugged keyboard probe completes three timed waits and one reset-byte transmission. With diagnostics enabled, serial A prints `Probing keyboard Done`. |
 | Instruction and data TLB clear | On both paths the firmware clears all 64 slots in each bank, returns to its caller and reaches the ASI `0x14` read at physical address zero. |
+| Physical DRAM discovery | OBP detects the two 256 MiB DIMMs in pair 2, selects 11-bit columns, reports the upper 256 MiB rank at `0x30000000` and clears the top 1 MiB. |
 | Interactive OpenBoot console | Open. Acceptance is a serial `ok` prompt that takes `1 2 + .`, replies `3` and prompts again. |
 
-The next milestone is physical DRAM access through ASI `0x14`, including
-the bank decoding needed for OBP's read, pattern, alias and restore
-sequence. Interactive serial input and a prompt that accepts a Forth
-command are still pending.
-[Reproduce the current checkpoint](ultra5.md#instruction-and-data-tlb-initialization)
+The next milestone is the MMU transition at flash offset `0x1f90`.
+Verify the firmware-installed mappings and the first translated fetch
+before allowing OBP to execute with translation enabled. Interactive
+serial input and a prompt that accepts a Forth command are still pending.
+[Reproduce the current checkpoint](ultra5.md#physical-dram-discovery)
