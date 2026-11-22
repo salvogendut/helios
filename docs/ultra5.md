@@ -1,7 +1,7 @@
 # Ultra 5/10 firmware reset instructions
 
 The headless Ultra 5/10 fixture runs original OBP 3.31.0 far enough to
-transmit the first reset diagnostic on serial port A. An interactive
+transmit its version banner on serial A and clear the external-cache tags. An interactive
 OpenBoot prompt remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
 
 ## Run the first serial diagnostic
@@ -76,9 +76,40 @@ error generation are still open. [Sun IIi User’s Manual, tables 18-3 and 18-7]
 After returning, OBP disables E-cache error reporting, clears the sticky
 fault flags and calls its external-cache size probe. Its first diagnostic
 store is `stxa %g0,[%o1] 0x76` at `0xffff_ffff_f000_0714`, with
-`%o1 = 1 << 39`. To reproduce the cold diagnostic run up to this instruction,
-use the serial example above with a limit of `7169`. A larger budget reports
-the unsupported ASI at that PC. [E-cache registers and diagnostic addressing, §§16.6 and A.9](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+`%o1 = 1 << 39`.
+
+## E-cache sizing and the firmware version banner
+
+Run the [serial example](#run-the-first-serial-diagnostic) with the same
+cold NVRAM seed and a limit of `9008` to see the complete version string.
+With the `soft-rst` marker, the last character appears at instruction `8977`.
+
+```text
+@(#) Sun Ultra 5/10 UPA/PCI 3.31 Version 0 created 2001/07/25 20:36
+```
+
+The mask-9.1 CPU module in the reference machine has a 2 MiB direct-mapped
+E-cache with 64-byte lines. Its POST transcript and OpenBoot device tree
+both report the capacity. The headless fixture models diagnostic data
+and tag SRAM for that module. Normal cache fills, writeback and cache
+timing remain open. [Ultra 5 hardware transcript and device tree](https://rob.com/sun/sun4u-ss5/)
+
+OBP writes the data array through ASI `0x76`, reads cell zero through ASI
+`0x7e` and gets `0x0020_0000`. It programs UPA_CONFIG.ELIM to 3, then
+clears all 32,768 tags through the tag staging register and indexed stores.
+The data word at offset 2 MiB aliases cell zero in the model. This specific
+out-of-range access is inferred from the ROM's sizing algorithm and the
+capacity reported by hardware. The manual defines the in-range index bits.
+[Sun IIi User’s Manual, §18.5 and Appendix A.9](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
+| Diagnostic run | Serial A after the banner | Next access |
+| --- | --- | --- |
+| Cold, 173,441 instructions | `Probing keyboard` | PC `0xffff_ffff_f000_0554` writes zero to the Super I/O keyboard UART at PA `0x01ff_f130_83f9`. |
+| Soft marker, 174,083 instructions | `Clearing E$ Tags  Done`, then `Clearing I/D TLBs` | PC `0xffff_ffff_f000_0780` writes zero to D-MMU Tag Access through ASI `0x58`, offset `0x30`. |
+
+These limits stop immediately before the respective accesses. With NVRAM
+byte 1 clear, both paths reach the same respective PCs and serial A stays
+silent.
 
 ## Reset and flash mapping
 
@@ -324,8 +355,8 @@ remain open. The window counters, PIL and TBA start at zero for
 repeatability where hardware reset values are unspecified.
 [IIi software interrupts, table 11-9](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=163) · [IIi window registers, §14.2.1](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223) · [IIi PSTATE and global banks, tables 14-12/13](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=235)
 
-With the reconstructed image installed, run the thirteen local-ROM checks together.
+With the reconstructed image installed, run the fourteen local-ROM checks together.
 
 ```sh
-cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts --test ultra5_reset_setup --test ultra5_first_serial_access -- --ignored --nocapture
+cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts --test ultra5_reset_setup --test ultra5_first_serial_access --test ultra5_ecache -- --ignored --nocapture
 ```

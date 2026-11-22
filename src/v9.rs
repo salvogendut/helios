@@ -3,6 +3,8 @@
 //! the V9 fixture and is not wired into workstation machine construction.
 
 use crate::ultra5::PowerOnReset;
+mod ecache;
+use ecache::Ecache;
 
 const WINDOW_COUNT: u8 = 8;
 const WINDOW_MASK: u8 = WINDOW_COUNT - 1;
@@ -21,6 +23,10 @@ const ASI_PHYS_BYPASS_EC_WITH_EBIT_LE: u8 = 0x1d;
 const ASI_DMMU: u8 = 0x58;
 const ASI_ESTATE_ERROR_EN: u8 = 0x4b;
 const ASI_AFSR: u8 = 0x4c;
+const ASI_UPA_CONFIG: u8 = 0x4a;
+const ASI_ECACHE_TAG_DATA: u8 = 0x4e;
+const ASI_ECACHE_WRITE: u8 = 0x76;
+const ASI_ECACHE_READ: u8 = 0x7e;
 const MAX_TL: u8 = 5;
 // TI UltraSPARC-IIi mask 9.1, as reported by original Ultra 5/10 hardware.
 const VERSION: u64 = 0x0017_0012_9100_0000 | ((MAX_TL as u64) << 8) | WINDOW_MASK as u64;
@@ -57,6 +63,7 @@ pub struct V9Cpu {
     lsu_control: u64,
     estate_error_enable: u8,
     async_fault_status: u64,
+    ecache: Ecache,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -265,6 +272,7 @@ impl V9Cpu {
             lsu_control: 0,
             estate_error_enable: 0,
             async_fault_status: 0,
+            ecache: Ecache::default(),
         }
     }
 
@@ -571,6 +579,26 @@ impl V9Cpu {
                             )?;
                         }
                         (0x45, 0x1b | 0x1e) => self.access_lsu_control(op3, address, rd)?,
+                        (ASI_UPA_CONFIG, 0x1b) if address == 0 => {
+                            self.write_reg(rd, self.ecache.upa_config());
+                        }
+                        (ASI_UPA_CONFIG, 0x1e) if address == 0 => {
+                            self.ecache.set_upa_config(self.read_reg(rd))?;
+                        }
+                        (ASI_ECACHE_TAG_DATA, 0x1b) if address == 0 => {
+                            self.write_reg(rd, self.ecache.tag_data());
+                        }
+                        (ASI_ECACHE_TAG_DATA, 0x1e) if address == 0 => {
+                            self.ecache.set_tag_data(self.read_reg(rd));
+                        }
+                        (ASI_ECACHE_WRITE, 0x1e) => {
+                            self.ecache.write(address, self.read_reg(rd))?;
+                        }
+                        (ASI_ECACHE_READ, 0x1b) => {
+                            if let Some(value) = self.ecache.read(address)? {
+                                self.write_reg(rd, value);
+                            }
+                        }
                         (ASI_ESTATE_ERROR_EN | ASI_AFSR, 0x1b | 0x1e) if address == 0 => {
                             if op3 == 0x1b {
                                 let value = if asi == ASI_ESTATE_ERROR_EN {

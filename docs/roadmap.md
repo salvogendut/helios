@@ -63,21 +63,20 @@ machines should become explicit profiles; SPARC V9 is a separate CPU milestone.
 
 ## Ultra 5 serial console
 
-**First diagnostic text on serial A verified on 22 November 2026.** On the
-headless board fixture, original OBP 3.31.0 initializes the Siemens serial
-controller and prints its power-on diagnostic when NVRAM byte 1 is nonzero.
+**Firmware version banner on serial A verified on 22 November 2026.** On the
+headless board fixture, original OBP 3.31.0 identifies the module's 2 MiB
+E-cache and transmits its build identification when NVRAM byte 1 is nonzero.
 
 | Milestone | Evidence |
 | --- | --- |
 | First serial register access | At virtual PC `0xffff_ffff_f000_033c`, the guest stores one byte, `0xc3`, at physical `0x01ff_f140_002c` (channel A CCR0). Both tested reset-marker paths reach this write. |
 | First firmware text | Serial A emits `Hardware Power ON` on the cold path and `Software Power ON` on the matching-marker path. Each ends in CR/LF. With the diagnostic byte clear, these writes to the transmit FIFO are skipped. |
 | DRAM controller setup | All four marker/diagnostic combinations turn on the front-panel LED, program both MCU registers, complete both polling delays and reach external-cache sizing. |
+| External-cache initialization and build identification | All four runs detect 2 MiB, select ELIM 3 and clear 32,768 tag entries. Both diagnostic-enabled runs print the original firmware build string. |
 | Interactive OpenBoot console | Open. Acceptance is a serial `ok` prompt that takes `1 2 + .`, replies `3` and prompts again. |
 
-The next access is an E-cache diagnostic store through ASI `0x76` at PC
-`0xffff_ffff_f000_0714`. The firmware probes for SRAM aliasing before it
-prints its version banner. Verify the cache-size readback against the selected
-module, then follow the original ROM toward serial receive. The earlier estimate of one to several
-weeks for an interactive prompt remains provisional. Firmware progress beyond
-this diagnostic and the receive path are the main uncertainties.
-[Run the headless diagnostic](ultra5.md#run-the-first-serial-diagnostic)
+The cold path next needs the keyboard UART at EBus offset `0x3083f8`.
+The soft-marker path begins the D-MMU and I-MMU tag and TLB clear. Follow
+those paths to memory discovery. Interactive serial input and a prompt
+that accepts a Forth command are still pending.
+[Reproduce the current checkpoint](ultra5.md#e-cache-sizing-and-the-firmware-version-banner)
