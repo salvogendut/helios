@@ -79,7 +79,9 @@ Cold and soft-reset runs reach the same entry with diagnostics enabled or disabl
 | Decompression and entry | OBP expands 453,536 bytes at VA `0xf0000000` and executes the entry at VA `0xf0051f8c`. A local-ROM test compares every byte against an independent decoder. |
 | Serial initialization in the expanded image | The guest clears both on-chip cache tag banks and prints `ttya initialized` with diagnostics on. Both reset paths then enter `fprs!`. |
 | MMU trap handling | The guest handles four data-TLB misses, retries the faulting memory operations and reaches the PCI host bridge. |
+| PCI interrupt initialization | The guest handles a fifth data-TLB miss, programs PCI Control/Status and clears the PCI and onboard interrupt state and mappings. |
 | Interactive OpenBoot console | Open. Acceptance is a serial `ok` prompt that takes `1 2 + .`, replies `3` and prompts again. |
 
-The next access is the PCI Control/Status register at PA `0x01fe00002000`,
-with the store instruction at VA `0xf0009238`. [Reproduce the current checkpoint](ultra5.md#openboot-handles-its-first-mmu-misses)
+The next milestone is PCI target address decoding. OBP requests the
+`0xc0000000–0xdfffffff` region with a store to PA `0x01fe00002028`.
+[Reproduce the current checkpoint](ultra5.md#pci-interrupt-initialization)

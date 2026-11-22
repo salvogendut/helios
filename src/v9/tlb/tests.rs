@@ -554,6 +554,7 @@ fn original_obp_expands_the_image_and_executes_its_entry_in_ram() {
     );
     assert_eq!((cpu.pc(), cpu.fprs), (0xf002_3948, 4));
     verify_obp_mmu_refills(&mut board, &mut cpu);
+    verify_obp_pci_interrupt_init(&mut board, &mut cpu);
     let [a, b] = board.take_serial_output();
     assert!(a.ends_with(
         b"Decompressing into Memory Done\r\nSize = 0000.0000.0006.eba0\r\nttya initialized\r\n"
@@ -610,6 +611,64 @@ fn verify_obp_mmu_refills(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
         }
     }
     panic!("did not reach PCI control, PC={:#x}", cpu.pc());
+}
+
+fn verify_obp_pci_interrupt_init(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
+    const PBM: u64 = 0x01fe_0000_0000;
+    // Give the guest real state to clear in each register bank.
+    for (offset, value) in [
+        (0x0c38, 1 << 31),
+        (0x1058, 1 << 31),
+        (0x14f8, 3),
+        (0x1858, 1),
+    ] {
+        board.write_bypass_xword(PBM + offset, value).unwrap();
+    }
+    let zero_stores = [
+        0x1400..=0x14f8,
+        0x1800..=0x1880,
+        0xc00..=0xc38,
+        0x1000..=0x1080,
+    ]
+    .into_iter()
+    .flat_map(|range| range.step_by(8).map(|offset| (offset, 0)));
+    let mut expected = std::iter::once((0x2000, 0x14_0020_010f)).chain(zero_stores);
+    let mut misses = 0;
+    for _ in 0..10_000 {
+        // The Forth xword-store primitive. Inspect only successfully translated addresses.
+        let physical = (cpu.pc() == 0xf000_9238)
+            .then(|| cpu.translate(cpu.read_reg(4), 8, Access::Write).ok())
+            .flatten()
+            .filter(|target| (PBM..PBM + 0x10000).contains(&target.pa));
+        if let Some(target) = physical {
+            let offset = target.pa - PBM;
+            let value = cpu.read_reg(16);
+            assert!(!target.cacheable);
+            if offset == 0x2028 {
+                assert_eq!((value, expected.next(), misses), (0x40, None, 1));
+                assert_eq!(
+                    board.read_bypass_xword(PBM + 0x2000).unwrap(),
+                    0x10_0020_010f
+                );
+                assert_eq!(board.read_bypass_xword(PBM + 0x0c38).unwrap(), 0x7dc);
+                assert_eq!(board.read_bypass_xword(PBM + 0x1058).unwrap(), 0x7eb);
+                assert_eq!(board.read_bypass_xword(PBM + 0xa800).unwrap(), 0);
+                assert_eq!(board.read_bypass_xword(PBM + 0xa808).unwrap(), 0);
+                return;
+            }
+            assert_eq!(expected.next(), Some((offset, value)));
+            assert_eq!(board.step_mapped(cpu).unwrap().instruction, 0xe070_0004);
+        } else if let crate::ultra5::BoardStep::TrapTaken { tt, .. } =
+            board.step_outcome(cpu).unwrap()
+        {
+            assert_eq!(tt, 0x68);
+            misses += 1;
+        }
+    }
+    panic!(
+        "did not finish PCI interrupt initialization, PC={:#x}",
+        cpu.pc()
+    );
 }
 
 #[test]

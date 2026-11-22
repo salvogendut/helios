@@ -32,9 +32,9 @@ clears the cache tags. Cold boot finishes the unplugged keyboard probe. Both
 reset paths discover 512 MiB, enable the instruction and data MMUs, copy
 256 KiB from flash and run the relocated decompressor. It expands 453,536
 bytes and jumps into that image in RAM. With diagnostics enabled, the
-expanded firmware prints `ttya initialized` on serial A. The firmware handles
-four data-TLB misses and reaches PCI bus initialization. The interactive
-Ultra 5 prompt is still in development. [Reproduce the serial checkpoint](docs/ultra5.md#executing-the-expanded-firmware)
+expanded firmware prints `ttya initialized` on serial A. It handles five
+data-TLB misses and programs the PCI host bridge's interrupt registers.
+The interactive Ultra 5 prompt is still in development. [Reproduce the latest checkpoint](docs/ultra5.md#pci-interrupt-initialization)
 
 **SPARCstation 20** and **Axil 320** profiles boot their original firmware to
 the serial `ok` prompt with either one CPU or two 75 MHz SuperSPARC-II modules.

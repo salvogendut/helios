@@ -135,6 +135,11 @@ seven-bit trap number for Tcc. The original Ultra 5 firmware uses STW,
   §§15.4, 15.9.7–12 and 15.11.2 specify MMU globals, tag capture, refill
   selection and demap. IIi tables 19-1 and 19-2 identify the subsequent PCI
   register. [V9 manual](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf) · [IIi manual](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf) · [Pinned QEMU FPRS accessor](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/translate.c#L3008)
+- IIi tables 19-2 and 19-6 define PCI Control/Status and the PCI target
+  address range enables. Tables 19-28–39 give interrupt vectors, port
+  addresses, access widths, level states and diagnostic bit positions.
+  QEMU's Sabre also assigns four interrupt numbers per PCI slot and uses a
+  fixed interrupt group of 31. [IIi manual, chapter 19](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf) · [Pinned QEMU Sabre interrupt maps](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/pci-host/sabre.c#L412)
 - The IIi manual gives the rank and pair selects, Mem_Control0 column mode
   and the PA14 column test. The physical Ultra 5 POST transcript records the
   two 256 MiB modules in pair 2. QEMU's generic sun4u machine maps contiguous

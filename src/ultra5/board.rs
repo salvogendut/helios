@@ -1,5 +1,6 @@
 use super::dram::Dram;
 use super::keyboard_uart::KeyboardUart;
+use super::pbm::Pbm;
 use super::serial::Serial;
 use super::{BootFlash, FlashFetch, ResetNvram, FLASH_BASE};
 use crate::v9::{CpuFault, Translation, V9Cpu, V9DataBus};
@@ -42,6 +43,7 @@ pub struct Ultra5ResetBoard {
     flash: BootFlash,
     nvram: ResetNvram,
     dram: Dram,
+    pbm: Pbm,
     host_primary: u8,
     host_subordinate: u8,
     apb: [BusNumbers; 2],
@@ -62,6 +64,7 @@ impl Ultra5ResetBoard {
             flash,
             nvram,
             dram: Dram::default(),
+            pbm: Pbm::default(),
             host_primary: 0,
             host_subordinate: 0,
             apb: Default::default(),
@@ -303,6 +306,9 @@ impl V9DataBus for Ultra5ResetBoard {
             }
             _ => {}
         }
+        if let Some(offset) = Pbm::offset(pa) {
+            return self.pbm.write(offset, value);
+        }
         if matches!(Self::ebus_offset(pa), Some(0..=0x0f_ffff)) {
             let i = self.nvram.sram_index(pa, 8)?;
             self.nvram.image[i..i + 8].copy_from_slice(&value.to_be_bytes());
@@ -365,6 +371,9 @@ impl V9DataBus for Ultra5ResetBoard {
             // A freshly constructed board starts from SYS_RESET_L (IIi table 17-2).
             0x01fe_0000_f020 => return Ok(1 << 31),
             _ => {}
+        }
+        if let Some(offset) = Pbm::offset(pa) {
+            return self.pbm.read(offset);
         }
         if matches!(Self::ebus_offset(pa), Some(0..=0x0f_ffff)) {
             return self.nvram.read_bypass_xword(pa);
@@ -471,6 +480,21 @@ mod tests {
             BootFlash::new(vec![0; FLASH_SIZE]).unwrap(),
             ResetNvram::new(vec![0; RESET_NVRAM_SIZE]).unwrap(),
         )
+    }
+
+    #[test]
+    fn pci_control_accepts_only_the_aligned_uncached_xword() {
+        let mut board = fixture();
+        let control = 0x01fe_0000_2000;
+        board.write_bypass_xword(control, 0x14_0020_010f).unwrap();
+        assert!(board.write_cacheable_xword(control, 0).is_err());
+        assert!(board.write_bypass_xword(control + 4, 0).is_err());
+        assert!(board.write_bypass_xword(control + 0x10000, 0).is_err());
+        assert!(board.write_bypass_word(control, 0).is_err());
+        assert!(board.write_bypass_byte(control, 0).is_err());
+        assert!(board.read_bypass_word(control).is_err());
+        assert!(board.read_cacheable_xword(control).is_err());
+        assert_eq!(board.read_bypass_xword(control).unwrap(), 0x10_0020_010f);
     }
 
     #[test]

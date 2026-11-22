@@ -6,6 +6,7 @@ complete the cold-start probe with the keyboard disconnected. Both boot paths
 clear the instruction and data TLBs, complete DRAM discovery, enable translation
 and execute the 453,536-byte firmware image expanded in RAM. The expanded
 firmware initializes serial A and prints `ttya initialized` in diagnostic mode.
+It then handles five data-TLB misses and initializes the PCI interrupt registers.
 An interactive OpenBoot prompt remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
 
 ## Run the first serial diagnostic
@@ -294,6 +295,25 @@ Each run includes four trap entries. The example uses
 instruction from trap entry. The retirement-only `step_mapped` API retains
 its stop-on-miss behavior. The serial output still ends at `ttya initialized`
 with diagnostics enabled. Interactive input and an `ok` prompt remain open.
+
+## PCI interrupt initialization
+
+OBP programs PCI Control/Status. The local-ROM test reads back
+`0x000000100020010f` after the write. Bit 34 is the write-one-to-clear bus-error
+latch. The guest writes zero across 32 PCI and 17 onboard clear ports,
+then across eight PCI and 17 onboard interrupt mapping ports. The onboard
+sweeps include two reserved offsets each. The fixture accepts the observed
+zero writes to those offsets. Populated partial mapping registers keep their
+fixed interrupt vectors when disabled. Interrupt generation and delivery to
+the CPU remain open. [IIi User’s Manual, tables 19-2, 19-28–30 and 19-33–39](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
+All four cold/soft and diagnostic on/off runs reach the same next operation.
+At VA `0xf0009238`, OBP attempts to write `0x40` to the PCI Target Address
+Space register at PA `0x01fe00002028`, selecting the PCI target range
+`0xc0000000–0xdfffffff`. This access stops explicitly. Use an outcome limit
+of `53472759` for the diagnostic cold boot or `22921667` for the diagnostic
+soft boot to finish immediately before the store. Each count includes five
+guest fast data-MMU trap entries. [IIi PCI target address decoding, table 19-6](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
 
 ## Reset and flash mapping
 

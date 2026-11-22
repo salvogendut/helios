@@ -13,6 +13,7 @@ use crate::v9::{UnmappedData, V9Cpu, V9DataBus, PHYSICAL_ADDRESS_MASK};
 mod board;
 mod dram;
 mod keyboard_uart;
+mod pbm;
 mod serial;
 pub use board::{BoardInstruction, BoardStep, Ultra5ResetBoard};
 
