@@ -146,6 +146,17 @@ seven-bit trap number for Tcc. The original Ultra 5 firmware uses STW,
   five-bit latency timer. V9 Appendix A.27/A.54 defines unsigned halfword
   loads and halfword stores. IIi table 6-5 assigns physical ASIs 0x15/0x1d.
   [IIi register definitions](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf) · [SPARC V9 manual](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf)
+- The two Simba functions serve the slot and onboard buses. Themis table
+  1-6 gives register offsets and PCI byte order. Sun’s handbook gives the
+  primary command offset (0x04), status capability bits and error fields.
+  IIi §9.2.4 and §§19.3.1.11–12 specify the fixed primary bus 0 and the
+  two software bus-number registers. [IIi manual](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+  [Themis APB register table](https://www.artisantg.com/info/Themis_USPIIe_cPCI_Software_Manual.pdf) · [Sun System Handbook, Simba registers](https://dogemicrosystems.ca/pub/Sun/System_Handbook/Sun_syshbk_V3.4/collections/TECHNICALINSTRUCTIONSURE/1-71-1010580.1-1.html)
+- Sun Ultra 5 table C-13 and §C.3.2.2 place PCIO and boot flash on bus B.
+  Linux decodes the 2 MiB I/O and 512 MiB memory windows. QEMU's Simba
+  initialization describes the memory-enable boot strap. OBP 3.31.0 supplies
+  the specific maps and timing values exercised in Helios.
+  [Sun service manual](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf) · [Linux APB definitions](https://github.com/torvalds/linux/blob/v6.12/arch/sparc/include/asm/apb.h) · [Linux window sizing](https://github.com/torvalds/linux/blob/v6.12/arch/sparc/kernel/pci.c#L385) · [Pinned QEMU Simba](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/pci-bridge/simba.c)
 - The IIi manual gives the rank and pair selects, Mem_Control0 column mode
   and the PA14 column test. The physical Ultra 5 POST transcript records the
   two 256 MiB modules in pair 2. QEMU's generic sun4u machine maps contiguous

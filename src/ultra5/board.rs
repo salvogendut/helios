@@ -2,10 +2,11 @@ use super::dram::Dram;
 use super::keyboard_uart::KeyboardUart;
 use super::pbm::{Pbm, PCI_CONFIG};
 use super::serial::Serial;
+use super::simba::Simba;
 use super::{BootFlash, FlashFetch, ResetNvram, FLASH_BASE};
 use crate::v9::{CpuFault, Translation, V9Cpu, V9DataBus};
 
-const APB_TICK_OFFSET: u64 = 0x08b0; // primary bus, device 1 function 0
+const APB_TICK: u64 = PCI_CONFIG + 0x08b0; // primary bus, device 1 function 0
 const PCI_MEMORY: u64 = 0x01ff_0000_0000;
 const EBUS_BAR1: u32 = 0xf100_0000;
 const SIO_INDEX: u64 = 0x30_0398;
@@ -14,13 +15,6 @@ const KEYBOARD_UART: u64 = 0x30_83f8;
 const AUXIO_LED: u64 = PCI_MEMORY + EBUS_BAR1 as u64 + 0x72_6000;
 const MEM_CONTROL0: u64 = 0x01fe_0000_f010;
 const MEM_CONTROL1: u64 = 0x01fe_0000_f018;
-
-#[derive(Default)]
-struct BusNumbers {
-    primary: u8,
-    secondary: u8,
-    subordinate: u8,
-}
 
 /// A retired board instruction fetched from flash or installed DRAM.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,7 +39,7 @@ pub struct Ultra5ResetBoard {
     pbm: Pbm,
     host_primary: u8,
     host_subordinate: u8,
-    apb: [BusNumbers; 2],
+    apb: Simba,
     ebus_setup: [u32; 3],
     front_panel_led: bool,
     mem_control0: u32,
@@ -145,6 +139,7 @@ impl Ultra5ResetBoard {
                 word as u32
             }
         } else {
+            self.check_pci_memory(mapping.pa)?;
             self.flash.read_word(mapping.pa)?
         };
         cpu.retire_fetch(mapping, instruction, self)?;
@@ -153,10 +148,6 @@ impl Ultra5ResetBoard {
             physical_address: mapping.pa,
             instruction,
         })
-    }
-
-    fn is_tick(&self, pa: u64) -> bool {
-        pa == PCI_CONFIG + (u64::from(self.host_primary) << 16) + APB_TICK_OFFSET
     }
 
     fn pci_cycles(&self) -> u32 {
@@ -200,22 +191,32 @@ impl Ultra5ResetBoard {
             .filter(|&off| off < 0x80_0000)
     }
 
-    fn config_byte(&mut self, offset: u64) -> Result<&mut u8, String> {
-        if offset == 0x40 {
-            return Ok(&mut self.host_primary);
-        }
-        if offset == 0x41 {
-            return Ok(&mut self.host_subordinate);
-        }
-        match offset & 0xffff {
-            0x818..=0x81a | 0x918..=0x91a if offset >> 16 == u64::from(self.host_primary) => {
-                let bridge = &mut self.apb[((offset >> 8) & 1) as usize];
-                Ok(match offset & 0xff {
-                    0x18 => &mut bridge.primary,
-                    0x19 => &mut bridge.secondary,
-                    _ => &mut bridge.subordinate,
-                })
+    fn check_pci_memory(&self, pa: u64) -> Result<(), String> {
+        if let Some(address) = pa
+            .checked_sub(PCI_MEMORY)
+            .and_then(|p| u32::try_from(p).ok())
+        {
+            if !self.apb.forwards_onboard_memory(address) {
+                return Err(format!(
+                    "Ultra 5 Simba does not route PCI memory {address:#010x} to onboard bus B"
+                ));
             }
+        }
+        Ok(())
+    }
+
+    fn read_config<const N: usize>(&self, pa: u64) -> Option<[u8; N]> {
+        self.pbm.header.read(pa).or_else(|| self.apb.read(pa))
+    }
+
+    fn write_config<const N: usize>(&mut self, pa: u64, bytes: [u8; N]) -> bool {
+        self.pbm.header.write(pa, bytes) || self.apb.write(pa, bytes)
+    }
+
+    fn config_byte(&mut self, offset: u64) -> Result<&mut u8, String> {
+        match offset {
+            0x40 => Ok(&mut self.host_primary),
+            0x41 => Ok(&mut self.host_subordinate),
             _ => Err(format!(
                 "unmapped Ultra 5 PCI configuration byte {offset:#x}"
             )),
@@ -223,13 +224,9 @@ impl Ultra5ResetBoard {
     }
 
     fn pcio_bar1_at(&self, offset: u64) -> bool {
-        let bridge = &self.apb[1];
-        let bus = bridge.secondary;
-        bus > self.host_primary
-            && bridge.primary == self.host_primary
-            && bus <= self.host_subordinate
-            && bus <= bridge.subordinate
-            && offset == (u64::from(bus) << 16) + 0x814
+        self.apb
+            .onboard_config_bus()
+            .is_some_and(|bus| offset == (u64::from(bus) << 16) + 0x814)
     }
 }
 
@@ -290,7 +287,7 @@ impl SuperIoConfig {
 
 impl V9DataBus for Ultra5ResetBoard {
     fn read_bypass_half(&mut self, pa: u64) -> Result<u16, String> {
-        if let Some(bytes) = self.pbm.header.read(pa) {
+        if let Some(bytes) = self.read_config(pa) {
             return Ok(u16::from_be_bytes(bytes));
         }
         Err(format!(
@@ -298,7 +295,7 @@ impl V9DataBus for Ultra5ResetBoard {
         ))
     }
     fn write_bypass_half(&mut self, pa: u64, value: u16) -> Result<(), String> {
-        if self.pbm.header.write(pa, value.to_be_bytes()) {
+        if self.write_config(pa, value.to_be_bytes()) {
             return Ok(());
         }
         Err(format!(
@@ -312,10 +309,11 @@ impl V9DataBus for Ultra5ResetBoard {
         self.dram.write(pa, self.mem_control0, value)
     }
     fn write_bypass_xword(&mut self, pa: u64, value: u64) -> Result<(), String> {
-        if self.pbm.header.write(pa, value.to_be_bytes()) {
+        self.check_pci_memory(pa)?;
+        if self.write_config(pa, value.to_be_bytes()) {
             return Ok(());
         }
-        if self.is_tick(pa) {
+        if pa == APB_TICK {
             return self.clear_tick(value.swap_bytes());
         }
         match pa {
@@ -343,10 +341,11 @@ impl V9DataBus for Ultra5ResetBoard {
         ))
     }
     fn read_bypass_word(&mut self, pa: u64) -> Result<u32, String> {
-        if let Some(bytes) = self.pbm.header.read(pa) {
+        self.check_pci_memory(pa)?;
+        if let Some(bytes) = self.read_config(pa) {
             return Ok(u32::from_be_bytes(bytes));
         }
-        if self.is_tick(pa) {
+        if pa == APB_TICK {
             return Ok(self.tick().swap_bytes());
         }
         if pa == AUXIO_LED {
@@ -359,10 +358,11 @@ impl V9DataBus for Ultra5ResetBoard {
         ))
     }
     fn write_bypass_word(&mut self, pa: u64, value: u32) -> Result<(), String> {
-        if self.pbm.header.write(pa, value.to_be_bytes()) {
+        self.check_pci_memory(pa)?;
+        if self.write_config(pa, value.to_be_bytes()) {
             return Ok(());
         }
-        if self.is_tick(pa) {
+        if pa == APB_TICK {
             return self.clear_tick(u64::from(value.swap_bytes()));
         }
         if pa == AUXIO_LED {
@@ -379,7 +379,8 @@ impl V9DataBus for Ultra5ResetBoard {
         Ok(())
     }
     fn read_bypass_xword(&mut self, pa: u64) -> Result<u64, String> {
-        if let Some(bytes) = self.pbm.header.read(pa) {
+        self.check_pci_memory(pa)?;
+        if let Some(bytes) = self.read_config(pa) {
             return Ok(u64::from_be_bytes(bytes));
         }
         if let Some(offset) = pa
@@ -394,7 +395,7 @@ impl V9DataBus for Ultra5ResetBoard {
                 self.flash.image()[start..start + 8].try_into().unwrap(),
             ));
         }
-        if self.is_tick(pa) {
+        if pa == APB_TICK {
             // OBP reads the low PCI dword with a little-endian LDXA.
             return Ok(u64::from(self.tick()).swap_bytes());
         }
@@ -415,7 +416,8 @@ impl V9DataBus for Ultra5ResetBoard {
     }
 
     fn read_bypass_byte(&mut self, pa: u64) -> Result<u8, String> {
-        if let Some([byte]) = self.pbm.header.read(pa) {
+        self.check_pci_memory(pa)?;
+        if let Some([byte]) = self.read_config(pa) {
             return Ok(byte);
         }
         if let Some(offset) = pa.checked_sub(PCI_CONFIG).filter(|&off| off < 1 << 24) {
@@ -450,7 +452,8 @@ impl V9DataBus for Ultra5ResetBoard {
     }
 
     fn write_bypass_byte(&mut self, pa: u64, value: u8) -> Result<(), String> {
-        if self.pbm.header.write(pa, [value]) {
+        self.check_pci_memory(pa)?;
+        if self.write_config(pa, [value]) {
             return Ok(());
         }
         if let Some(offset) = pa.checked_sub(PCI_CONFIG).filter(|&off| off < 1 << 24) {
@@ -480,10 +483,11 @@ impl V9DataBus for Ultra5ResetBoard {
     }
 
     fn write_bypass_le_word(&mut self, pa: u64, value: u32) -> Result<(), String> {
-        if self.pbm.header.write(pa, value.to_le_bytes()) {
+        self.check_pci_memory(pa)?;
+        if self.write_config(pa, value.to_le_bytes()) {
             return Ok(());
         }
-        if self.is_tick(pa) {
+        if pa == APB_TICK {
             return self.clear_tick(u64::from(value));
         }
         if pa == AUXIO_LED {
@@ -682,8 +686,8 @@ mod tests {
         board.write_bypass_xword(tick, 0).unwrap();
         assert_eq!(board.tick(), 0);
         board.write_bypass_byte(PCI_CONFIG + 0x40, 2).unwrap();
-        assert!(board.read_bypass_word(tick).is_err());
-        assert_eq!(board.read_bypass_word(tick + 0x20000).unwrap(), 0);
+        assert_eq!(board.read_bypass_word(tick).unwrap(), 0);
+        assert!(board.read_bypass_word(tick + 0x20000).is_err());
         let reset = crate::ultra5::PowerOnReset::ultra_sparc_ii();
         let now = board.elapsed_ns;
         let mut cpu = V9Cpu::from(reset);
@@ -931,7 +935,53 @@ mod tests {
     }
 
     #[test]
-    fn bar_setup_needs_host_and_onboard_apb_routing() {
+    fn boot_flash_and_ebus_accesses_follow_onboard_memory_forwarding() {
+        let mut image = vec![0; FLASH_SIZE];
+        image[0x20..0x24].copy_from_slice(&0x0100_0000u32.to_be_bytes()); // nop
+        let mut board = Ultra5ResetBoard::new(
+            BootFlash::new(image).unwrap(),
+            ResetNvram::new(vec![0; RESET_NVRAM_SIZE]).unwrap(),
+        );
+        let mut cpu = V9Cpu::from(crate::ultra5::PowerOnReset::ultra_sparc_ii());
+        let sab_ccr0 = PCI_MEMORY + u64::from(EBUS_BAR1) + 0x40_002c;
+        board.write_bypass_le_word(AUXIO_LED, 1).unwrap();
+        for (offset, disabled, enabled) in [(0x904, 0, 2), (0x9df, 0x40, 0x80)] {
+            board
+                .write_bypass_byte(PCI_CONFIG + offset, disabled)
+                .unwrap();
+            let old_cpu = cpu.clone();
+            assert!(board.step(&mut cpu).unwrap_err().contains("onboard bus B"));
+            assert_eq!(cpu, old_cpu);
+            assert!(board.read_bypass_byte(FLASH_BASE + 0x20).is_err());
+            assert!(board.read_bypass_xword(FLASH_BASE + 0x20).is_err());
+            assert!(board.read_bypass_word(AUXIO_LED).is_err());
+            assert!(board.write_bypass_le_word(AUXIO_LED, 0).is_err());
+            assert!(board.write_bypass_word(AUXIO_LED, 0).is_err());
+            assert!(board.write_bypass_byte(sab_ccr0, 0xc3).is_err());
+            assert!(board
+                .write_bypass_xword(crate::ultra5::RESET_NVRAM_BASE, 1)
+                .is_err());
+            board
+                .write_bypass_byte(PCI_CONFIG + offset, enabled)
+                .unwrap();
+            assert_eq!(
+                board.read_bypass_word(AUXIO_LED).unwrap(),
+                1u32.swap_bytes()
+            );
+            assert_eq!(
+                board
+                    .read_bypass_xword(crate::ultra5::RESET_NVRAM_BASE)
+                    .unwrap(),
+                0
+            );
+        }
+        assert_eq!(board.step(&mut cpu).unwrap().instruction, 0x0100_0000);
+        board.write_bypass_byte(sab_ccr0, 0xc3).unwrap();
+        assert_eq!(board.serial_ccr0()[0], 0xc3);
+    }
+
+    #[test]
+    fn bar_setup_follows_onboard_apb_bus_numbers() {
         let mut board = fixture();
         let bar = PCI_CONFIG + 0x10814;
         let write_bar = |b: &mut Ultra5ResetBoard| b.write_bypass_le_word(bar, EBUS_BAR1);
@@ -948,7 +998,7 @@ mod tests {
             board.write_bypass_byte(PCI_CONFIG + offset, value).unwrap();
             assert_eq!(board.read_bypass_byte(PCI_CONFIG + offset).unwrap(), value);
         }
-        assert!(write_bar(&mut board).is_err());
+        write_bar(&mut board).unwrap(); // host bus-number registers are bookkeeping
         board.write_bypass_byte(PCI_CONFIG + 0x41, 0xff).unwrap();
         write_bar(&mut board).unwrap();
         assert!(board

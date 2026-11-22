@@ -70,3 +70,23 @@ command, separate from the CPU's PCI host command at `0x01fe01000004`.
 Diagnostic runs end in `ttya initialized\r\n` and quiet runs emit no bytes.
 Serial transcripts and stop records are under `local/ultra5-pci-target-2026-11-22/`.
 [Reproduction](../docs/ultra5.md#pci-host-bridge-configuration)
+
+## Downstream bridge setup and first IOMMU read
+
+All four seeds retire another 6,059 instructions. The ROM fixture checks
+both enable/disable sequences, bus numbers, address maps, control and timer
+readbacks. The next access is an LDX from VA `0xfffc4200` at PC
+`0xf0009018`, nPC `0xf000901c`, targeting PA `0x01fe00000200`. Start
+the IOMMU work with IIi §19.3.2.1 and this mapped read.
+
+| Seed | Retired before IOMMU control read | Trap entries |
+| --- | ---: | ---: |
+| Cold, diagnostics on | 53,548,346 | 5 |
+| Cold, diagnostics off | 53,537,863 | 5 |
+| Soft, diagnostics on | 22,997,254 | 5 |
+| Soft, diagnostics off | 22,987,147 | 5 |
+
+The per-seed serial transcripts match the preceding checkpoint byte for
+byte. Stop records and validation logs are in
+`local/ultra5-simba-2026-11-22/`.
+[Reproduction](../docs/ultra5.md#simba-bridge-configuration)

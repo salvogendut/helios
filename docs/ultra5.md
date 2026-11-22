@@ -6,8 +6,8 @@ complete the cold-start probe with the keyboard disconnected. Both boot paths
 clear the instruction and data TLBs, complete DRAM discovery, enable translation
 and execute the 453,536-byte firmware image expanded in RAM. The expanded
 firmware initializes serial A and prints `ttya initialized` in diagnostic mode.
-It then handles five data-TLB misses, configures the PCI host bridge and
-begins initializing the downstream Simba bridge.
+It then handles five data-TLB misses, configures the PCI host and both
+Simba secondary buses, and reaches the IIi IOMMU control register.
 An interactive OpenBoot prompt remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
 
 ## Run the first serial diagnostic
@@ -48,9 +48,9 @@ synchronously and exposes the transmitted bytes through
 `Ultra5ResetBoard::take_serial_output()`. Serial input, baud-rate timing
 and interrupt delivery remain open. [Siemens SAB 82532 register descriptions](https://media.digikey.com/pdf/Data%20Sheets/Infineon%20PDFS/SAB%2CSAF82532.pdf)
 
-The reset board models the host and APB bus numbers used to route the
-onboard PCIO configuration access, the reset BAR1 value, and the three
-observed EBus setup writes. It assumes the documented Super I/O index-port
+The IIi host retains its software bus numbers. Its primary PCI bus stays
+at bus 0. Simba’s bus numbers route downstream PCIO configuration cycles.
+The fixture supports the reset BAR1 value and three EBus setup writes. It assumes the documented Super I/O index-port
 strap at `0x398`. The installed board's strap has not been independently
 verified. The fixture implements the one-shot identification byte and
 double-write configuration protocol. PCI enumeration, BAR relocation,
@@ -328,13 +328,32 @@ PCI command register as `0x0146`. OBP then sets the host latency timer to
 aligned byte, halfword, word and doubleword accesses to its first 16 bytes.
 [IIi User’s Manual, §19.3.1](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
 
-Cold and soft boots next reach a halfword store of zero to physical
-`0x01fe01000804`, the primary command register on Simba function 0
-(bus 0, device 1). To reproduce the checkpoint, run the serial example
-with an outcome limit of `53542292` for cold diagnostics or `22991200`
-for soft diagnostics. One additional step reports the unsupported bridge
-write. Serial A still ends at `ttya initialized` with diagnostics enabled.
+## Simba bridge configuration
+
+Both original-ROM reset paths program Simba on primary PCI bus 0, device 1.
+OBP clears each function’s command, programs its address maps, acknowledges
+primary/secondary status and idle PIO/DMA errors, then writes command
+`0x0147`. The following values are read back after the final latency writes.
 [APB register map, table 1-6](https://www.artisantg.com/info/Themis_USPIIe_cPCI_Software_Manual.pdf)
+
+| Simba function | Secondary–subordinate buses | I/O map | Memory map | Secondary latency |
+| --- | --- | --- | --- | --- |
+| 0, PCI slots (A) | 2–255 | `0x3f` | `0x3f` | 40 clocks |
+| 1, onboard devices (B) | 1–1 | `0xc0` | `0x80` | 40 clocks |
+
+Each memory-map bit selects 512 MiB. The flash and the EBus aperture serving
+NVRAM, the LED and serial A fall in bus B’s top window. The fixture forwards
+these accesses while bus B alone selects the window and enables PCI memory.
+It assumes that window is open at reset so the CPU can fetch OBP. Other
+reset straps, timed retries, downstream I/O-port devices and asynchronous
+error generation remain unverified. [Sun Ultra 5 Service Manual, table C-13 and §C.3.2.2](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf) · [Linux SPARC PCI window decoding](https://github.com/torvalds/linux/blob/v6.12/arch/sparc/kernel/pci.c#L385)
+
+The next operation is an eight-byte read at VA `0xfffc4200`, mapped to the
+IIi IOMMU control register at PA `0x01fe00000200`. To stop immediately
+before the read at PC `0xf0009018`, run the serial example with an outcome
+limit of `53548351` for cold diagnostics or `22997259` for soft diagnostics.
+Each limit includes five guest trap entries. Diagnostics end with
+`ttya initialized`. [IIi User’s Manual, §19.3.2.1](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
 
 ## Reset and flash mapping
 

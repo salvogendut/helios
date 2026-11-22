@@ -546,6 +546,7 @@ fn original_obp_expands_the_image_and_executes_its_entry_in_ram() {
     verify_obp_mmu_refills(&mut board, &mut cpu);
     verify_obp_pci_interrupt_init(&mut board, &mut cpu);
     verify_obp_pci_host_setup(&mut board, &mut cpu);
+    verify_obp_simba_setup(&mut board, &mut cpu);
     let [a, b] = board.take_serial_output();
     assert!(a.ends_with(
         b"Decompressing into Memory Done\r\nSize = 0000.0000.0006.eba0\r\nttya initialized\r\n"
@@ -697,6 +698,53 @@ fn verify_obp_pci_host_setup(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
     assert_eq!(
         (cpu.asi, cpu.read_reg(16), cpu.read_reg(17)),
         (0x15, CONFIG + 0x804, 0)
+    );
+}
+
+fn verify_obp_simba_setup(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
+    const A: u64 = 0x01fe_0100_0800;
+    const B: u64 = A + 0x100;
+    // Prove the guest actually clears the retry registers on each bus.
+    for base in [A, B] {
+        for offset in [0xc0, 0xd8, 0xda, 0xdc] {
+            board.write_bypass_byte(base + offset, 0x55).unwrap();
+            assert_eq!(board.read_bypass_byte(base + offset).unwrap(), 0x55);
+        }
+    }
+    let mut commands = [(A, 0), (A, 0x0147), (B, 0), (B, 0x0147)].into_iter();
+    for _ in 0..10_000 {
+        let pa = cpu.read_reg(16);
+        if cpu.pc() == 0xf002_66a0 && (pa == A + 4 || pa == B + 4) {
+            let value = (cpu.read_reg(17) as u16).swap_bytes();
+            assert_eq!(commands.next(), Some((pa - 4, value)));
+            assert_eq!(board.step_mapped(cpu).unwrap().instruction, 0xe2b4_2000);
+            assert_eq!(board.read_bypass_half(pa).unwrap().swap_bytes(), value);
+        } else if cpu.pc() == 0xf000_9018 && cpu.read_reg(4) == 0xfffc_4200 {
+            assert_eq!(
+                cpu.translate(cpu.read_reg(4), 8, Access::Read).unwrap().pa,
+                0x01fe_0000_0200
+            );
+            assert_eq!(commands.next(), None);
+            for (base, buses, maps) in [(A, 0x0002_ff28, 0x3f3f), (B, 0x0001_0128, 0xc080)] {
+                assert_eq!(board.read_bypass_word(base + 0x18).unwrap(), buses);
+                assert_eq!(board.read_bypass_half(base + 0xde).unwrap(), maps);
+                assert_eq!(
+                    board.read_bypass_xword(base + 0xe0).unwrap().swap_bytes(),
+                    0x10f
+                );
+                assert_eq!(board.read_bypass_word(base + 0xd8).unwrap(), 0x0028_0050);
+                assert_eq!(board.read_bypass_byte(base + 0xdc).unwrap(), 0);
+                assert_eq!(board.read_bypass_byte(base + 0xc0).unwrap(), 0);
+            }
+            assert_eq!(board.read_bypass_byte(A + 0x0d).unwrap(), 0x50);
+            return;
+        } else {
+            board.step_mapped(cpu).unwrap();
+        }
+    }
+    panic!(
+        "OBP did not reach the IOMMU control read, PC={:#x}",
+        cpu.pc()
     );
 }
 
