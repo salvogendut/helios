@@ -2,8 +2,9 @@
 
 The headless Ultra 5/10 fixture runs original OBP 3.31.0 far enough to
 transmit its version banner on serial A, clear the external-cache tags and
-complete the cold-start probe with the keyboard disconnected. An interactive OpenBoot prompt
-remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
+complete the cold-start probe with the keyboard disconnected. Both boot paths
+clear the instruction and data TLBs and reach the first physical DRAM probe.
+An interactive OpenBoot prompt remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
 
 ## Run the first serial diagnostic
 
@@ -104,8 +105,8 @@ capacity reported by hardware. The manual defines the in-range index bits.
 
 | Diagnostic run | Serial A after the banner | Next access |
 | --- | --- | --- |
-| Cold, 30,725,175 instructions | `Probing keyboard Done`, `Clearing E$ Tags  Done`, then `Clearing I/D TLBs` | PC `0xffff_ffff_f000_0780` writes zero to D-MMU Tag Access through ASI `0x58`, offset `0x30`. |
-| Soft marker, 174,083 instructions | `Clearing E$ Tags  Done`, then `Clearing I/D TLBs` | PC `0xffff_ffff_f000_0780` writes zero to D-MMU Tag Access through ASI `0x58`, offset `0x30`. |
+| Cold, 30,726,251 instructions | `Probing keyboard Done`, `Clearing E$ Tags  Done`, `Clearing I/D TLBs Done`, then `Probing Memory` | PC `0xffff_ffff_f000_0fec` reads PA zero through ASI `0x14`. |
+| Soft marker, 175,159 instructions | `Clearing E$ Tags  Done`, `Clearing I/D TLBs Done`, then `Probing Memory` | Same physical DRAM read. |
 
 These limits stop immediately before the respective accesses. With NVRAM
 byte 1 clear, both paths reach the same respective PCs and serial A stays
@@ -137,6 +138,23 @@ OBP's aligned eight-byte access with the count in the low dword.
 The clock source and zero-clear behavior are inferred from the board frequency
 and the ROM loop. Nonzero writes and accesses via the second bridge function
 remain unverified. [Linux SPARC APB register definitions](https://github.com/torvalds/linux/blob/v6.12/arch/sparc/include/asm/apb.h) · [Themis APB register map, table 1-6](https://www.artisantg.com/info/Themis_USPIIe_cPCI_Software_Manual.pdf) · [Ultra 5 PCI clock and serial trace](https://rob.com/sun/sun4u-ss5/)
+
+## Instruction and data TLB initialization
+
+At flash offsets `0x780` and `0x788`, OBP clears the D-MMU and I-MMU Tag
+Access registers. It then writes zero through ASIs `0x5d` and `0x55` for
+each slot from 63 down to 0. Each directed store captures the matching
+staged tag along with the entry data. Separate indexed data and tag ports
+support readback. The original-ROM check starts with 128 populated entries
+and verifies every tag and data word after the loop. Address translation,
+automatic replacement and demap are still open. [Sun UltraSPARC-IIi User’s Manual, §§15.2 and 15.9.8–9](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
+To see the latest diagnostic on a cold start, use the serial example with a
+budget of `30726251`. Serial A ends with `Probing Memory `. At this point OBP
+has prepared complementary 64-bit test patterns and is about to save the
+first xword at PA zero. The following two loads use offsets of 8 and 16 MiB.
+The board still needs ASI `0x14` access to physical DRAM before OBP can
+measure installed memory.
 
 ## Reset and flash mapping
 
@@ -382,7 +400,7 @@ remain open. The window counters, PIL and TBA start at zero for
 repeatability where hardware reset values are unspecified.
 [IIi software interrupts, table 11-9](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=163) · [IIi window registers, §14.2.1](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223) · [IIi PSTATE and global banks, tables 14-12/13](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=235)
 
-With the reconstructed image installed, run the sixteen local-ROM checks together.
+With the reconstructed image installed, run the seventeen local-ROM checks together.
 
 ```sh
 cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts --test ultra5_reset_setup --test ultra5_first_serial_access --test ultra5_ecache --test ultra5_keyboard_timeout -- --ignored --nocapture

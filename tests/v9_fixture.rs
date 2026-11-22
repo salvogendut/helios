@@ -3,6 +3,20 @@ use helios::v9::{V9Cpu, V9Memory};
 const CODE: u64 = 0x400000;
 const DATA: u64 = 0x500000;
 
+#[test]
+fn xor_uses_full_width_registers_and_sign_extended_immediates_and_preserves_ccr() {
+    let mut cpu = V9Cpu::new(0);
+    let mut memory = V9Memory::new(16);
+    memory.load_words(0, &[0x8080_0000, 0x8218_4002, 0x8218_7fff, 0x8018_4002]);
+    cpu.write_reg(1, 0xaaaa_aaaa_5555_5555);
+    cpu.write_reg(2, 0xff00_ff00_00ff_00ff);
+    cpu.run(&mut memory, 2).unwrap(); // addcc %g0,%g0,%g0; xor %g1,%g2,%g1
+    assert_eq!((cpu.read_reg(1), cpu.ccr()), (0x55aa_55aa_55aa_55aa, 0x44));
+    cpu.run(&mut memory, 2).unwrap(); // xor %g1,-1,%g1; xor %g1,%g2,%g0
+    assert_eq!((cpu.read_reg(1), cpu.ccr()), (0xaa55_aa55_aa55_aa55, 0x44));
+    assert_eq!((cpu.pc(), cpu.npc(), cpu.read_reg(0)), (16, 20, 0));
+}
+
 const PROGRAM: [u32; 16] = [
     0x033f_ffff, // sethi %hi(0xffffffff), %g1
     0x8210_63ff, // or %g1, 0x3ff, %g1

@@ -63,9 +63,8 @@ machines should become explicit profiles; SPARC V9 is a separate CPU milestone.
 
 ## Ultra 5 serial console
 
-**Firmware version banner on serial A verified on 22 November 2026.** On the
-headless board fixture, original OBP 3.31.0 identifies the module's 2 MiB
-E-cache and transmits its build identification when NVRAM byte 1 is nonzero.
+**Original OBP 3.31.0 reaches memory probing on 22 November 2026.** Both
+reset paths print `Probing Memory` on serial A when diagnostics are enabled.
 
 | Milestone | Evidence |
 | --- | --- |
@@ -74,9 +73,11 @@ E-cache and transmits its build identification when NVRAM byte 1 is nonzero.
 | DRAM controller setup | All four marker/diagnostic combinations turn on the front-panel LED, program both MCU registers, complete both polling delays and reach external-cache sizing. |
 | External-cache initialization and build identification | All four runs detect 2 MiB, select ELIM 3 and clear 32,768 tag entries. Both diagnostic-enabled runs print the original firmware build string. |
 | Cold-start keyboard probe | The unplugged keyboard probe completes three timed waits and one reset-byte transmission. With diagnostics enabled, serial A prints `Probing keyboard Done`. |
+| Instruction and data TLB clear | On both paths the firmware clears all 64 slots in each bank, returns to its caller and reaches the ASI `0x14` read at physical address zero. |
 | Interactive OpenBoot console | Open. Acceptance is a serial `ok` prompt that takes `1 2 + .`, replies `3` and prompts again. |
 
-Cold and soft-marker boots now converge on the D-MMU and I-MMU tag and
-TLB clear. Follow this path to memory discovery. Interactive serial input and a prompt
-that accepts a Forth command are still pending.
-[Reproduce the current checkpoint](ultra5.md#e-cache-sizing-and-the-firmware-version-banner)
+The next milestone is physical DRAM access through ASI `0x14`, including
+the bank decoding needed for OBP's read, pattern, alias and restore
+sequence. Interactive serial input and a prompt that accepts a Forth
+command are still pending.
+[Reproduce the current checkpoint](ultra5.md#instruction-and-data-tlb-initialization)

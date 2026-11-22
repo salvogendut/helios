@@ -28,9 +28,10 @@ below. See the
 
 On the experimental **Ultra 5**, original OpenBoot 3.31.0 detects the
 module's 2 MiB external cache, prints its firmware version on serial A and
-clears the cache tags. Cold boot finishes the unplugged keyboard probe and
-prints `Probing keyboard Done`. An interactive Ultra 5 prompt is still in development.
-[Run the headless serial example](docs/ultra5.md#e-cache-sizing-and-the-firmware-version-banner)
+clears the cache tags. Cold boot finishes the unplugged keyboard probe. Both
+reset paths clear the instruction and data TLBs and print `Probing Memory`
+with diagnostics enabled. An interactive Ultra 5 prompt is still in development.
+[Run the headless serial example](docs/ultra5.md#instruction-and-data-tlb-initialization)
 
 **SPARCstation 20** and **Axil 320** profiles boot their original firmware to
 the serial `ok` prompt with either one CPU or two 75 MHz SuperSPARC-II modules.

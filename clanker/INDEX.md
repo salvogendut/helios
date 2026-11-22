@@ -1,5 +1,6 @@
 # Agent notes
 
+- [Ultra 5 TLB clear and memory probe entry](ultra5-tlb-init.md) — 128 seeded slot clears and the first DRAM access on both reset paths.
 - [Ultra 5 unplugged keyboard probe](ultra5-keyboard-timeout.md) — APB tick, polled transmit timing, three original-ROM timeouts and the shared cold/soft MMU boundary.
 - [Ultra 5 cold-start keyboard UART](ultra5-keyboard-uart.md) — original UART writes and the APB timeout boundary.
 - [Ultra 5 E-cache and firmware banner](ultra5-ecache-banner.md) — size-probe readback, tag verification, QEMU comparison and the two post-banner paths.

@@ -4,7 +4,9 @@
 
 use crate::ultra5::PowerOnReset;
 mod ecache;
+mod tlb;
 use ecache::Ecache;
+use tlb::Tlb;
 
 const WINDOW_COUNT: u8 = 8;
 const WINDOW_MASK: u8 = WINDOW_COUNT - 1;
@@ -21,6 +23,11 @@ pub(crate) const PHYSICAL_ADDRESS_MASK: u64 = (1 << 41) - 1;
 const ASI_PHYS_BYPASS_EC_WITH_EBIT: u8 = 0x15;
 const ASI_PHYS_BYPASS_EC_WITH_EBIT_LE: u8 = 0x1d;
 const ASI_DMMU: u8 = 0x58;
+const ASI_IMMU: u8 = 0x50;
+const ASI_ITLB_DATA_ACCESS: u8 = 0x55;
+const ASI_ITLB_TAG_READ: u8 = 0x56;
+const ASI_DTLB_DATA_ACCESS: u8 = 0x5d;
+const ASI_DTLB_TAG_READ: u8 = 0x5e;
 const ASI_ESTATE_ERROR_EN: u8 = 0x4b;
 const ASI_AFSR: u8 = 0x4c;
 const ASI_UPA_CONFIG: u8 = 0x4a;
@@ -49,6 +56,8 @@ pub struct V9Cpu {
     asi: u8,
     primary_context: u16,
     secondary_context: u16,
+    instruction_tlb: Tlb,
+    data_tlb: Tlb,
     pstate: u16,
     pil: u8,
     tba: u64,
@@ -258,6 +267,8 @@ impl V9Cpu {
             asi: 0,
             primary_context: 0,
             secondary_context: 0,
+            instruction_tlb: Tlb::default(),
+            data_tlb: Tlb::default(),
             pstate: 0,
             pil: 0,
             tba: 0,
@@ -381,6 +392,7 @@ impl V9Cpu {
                 0x02 => self.write_reg(rd, self.read_reg(rs1) | b),
                 0x00 => self.write_reg(rd, self.read_reg(rs1).wrapping_add(b)),
                 0x01 => self.write_reg(rd, self.read_reg(rs1) & b),
+                0x03 => self.write_reg(rd, self.read_reg(rs1) ^ b),
                 0x04 => self.write_reg(rd, self.read_reg(rs1).wrapping_sub(b)),
                 0x05 => self.write_reg(rd, self.read_reg(rs1) & !b),
                 0x11 => {
@@ -626,6 +638,43 @@ impl V9Cpu {
                             } else {
                                 // Table 16-3. Only the sticky flags are write-one-to-clear.
                                 self.async_fault_status &= !(self.read_reg(rd) & 0x0001_adf0_0000);
+                            }
+                        }
+                        (ASI_IMMU | ASI_DMMU, 0x1b | 0x1e) if address == 0x30 => {
+                            let source = self.read_reg(rd);
+                            let tlb = if asi == ASI_IMMU {
+                                &mut self.instruction_tlb
+                            } else {
+                                &mut self.data_tlb
+                            };
+                            if op3 == 0x1e {
+                                tlb.stage_tag(source);
+                            } else {
+                                let tag = tlb.tag_access();
+                                self.write_reg(rd, tag);
+                            }
+                        }
+                        (ASI_ITLB_DATA_ACCESS | ASI_DTLB_DATA_ACCESS, 0x1b | 0x1e)
+                        | (ASI_ITLB_TAG_READ | ASI_DTLB_TAG_READ, 0x1b) => {
+                            let index = Tlb::index(address)?;
+                            let source = self.read_reg(rd);
+                            let instruction =
+                                matches!(asi, ASI_ITLB_DATA_ACCESS | ASI_ITLB_TAG_READ);
+                            let tlb = if instruction {
+                                &mut self.instruction_tlb
+                            } else {
+                                &mut self.data_tlb
+                            };
+                            if op3 == 0x1e {
+                                tlb.write_data(index, source, instruction);
+                            } else {
+                                let value = if matches!(asi, ASI_ITLB_TAG_READ | ASI_DTLB_TAG_READ)
+                                {
+                                    tlb.read_tag(index)
+                                } else {
+                                    tlb.read_data(index)
+                                };
+                                self.write_reg(rd, value);
                             }
                         }
                         (ASI_DMMU, 0x1b | 0x1e) => self.access_mmu_context(op3, address, rd)?,
