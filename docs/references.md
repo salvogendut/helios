@@ -157,6 +157,11 @@ seven-bit trap number for Tcc. The original Ultra 5 firmware uses STW,
   initialization describes the memory-enable boot strap. OBP 3.31.0 supplies
   the specific maps and timing values exercised in Helios.
   [Sun service manual](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf) · [Linux APB definitions](https://github.com/torvalds/linux/blob/v6.12/arch/sparc/include/asm/apb.h) · [Linux window sizing](https://github.com/torvalds/linux/blob/v6.12/arch/sparc/kernel/pci.c#L385) · [Pinned QEMU Simba](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/pci-bridge/simba.c)
+- IIi tables 19-19 through 19-25 specify IOMMU control/error bits, the
+  8 KiB-aligned TSB base, page flushes and the two 16-entry diagnostic
+  banks. Chapter 10 specifies the stored tag and data fields. The pinned
+  QEMU Sabre attaches the IOMMU at offset 0x200 and leaves diagnostic
+  registers unimplemented. [Sun IIi manual](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf) · [Pinned QEMU Sabre](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/pci-host/sabre.c#L388)
 - The IIi manual gives the rank and pair selects, Mem_Control0 column mode
   and the PA14 column test. The physical Ultra 5 POST transcript records the
   two 256 MiB modules in pair 2. QEMU's generic sun4u machine maps contiguous

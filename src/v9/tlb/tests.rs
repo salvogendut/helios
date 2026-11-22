@@ -547,6 +547,7 @@ fn original_obp_expands_the_image_and_executes_its_entry_in_ram() {
     verify_obp_pci_interrupt_init(&mut board, &mut cpu);
     verify_obp_pci_host_setup(&mut board, &mut cpu);
     verify_obp_simba_setup(&mut board, &mut cpu);
+    verify_obp_iommu_setup(&mut board, &mut cpu);
     let [a, b] = board.take_serial_output();
     assert!(a.ends_with(
         b"Decompressing into Memory Done\r\nSize = 0000.0000.0006.eba0\r\nttya initialized\r\n"
@@ -746,6 +747,79 @@ fn verify_obp_simba_setup(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
         "OBP did not reach the IOMMU control read, PC={:#x}",
         cpu.pc()
     );
+}
+
+fn verify_obp_iommu_setup(board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu) {
+    use crate::ultra5::BoardStep;
+    const PBM: u64 = 0x01fe_0000_0000;
+    // Seed valid and distinct translations, then restore the reset control value.
+    board.write_bypass_xword(PBM + 0x200, 2).unwrap();
+    for i in 0..16 {
+        board
+            .write_bypass_xword(PBM + 0xa580 + 8 * i, 0x100 + i)
+            .unwrap();
+        board
+            .write_bypass_xword(PBM + 0xa600 + 8 * i, 0x5000_0000 + i)
+            .unwrap();
+        assert_eq!(
+            board.read_bypass_xword(PBM + 0xa580 + 8 * i).unwrap(),
+            0x100 + i
+        );
+        assert_eq!(
+            board.read_bypass_xword(PBM + 0xa600 + 8 * i).unwrap(),
+            0x5000_0000 + i
+        );
+    }
+    board.write_bypass_xword(PBM + 0x200, 0).unwrap();
+    let clear_entries = (0..16).flat_map(|i| [(0xa580 + 8 * i, 0), (0xa600 + 8 * i, 0)]);
+    let mut expected = [(0x200, 0), (0x200, 2)]
+        .into_iter()
+        .chain(clear_entries)
+        .chain([
+            (0x200, 0),
+            (0x200, 0x70000),
+            (0x208, 0x3ff5c000),
+            (0x200, 0x70001),
+        ]);
+    let mut misses = 0;
+    for _ in 0..150_000 {
+        let pc = cpu.pc();
+        if pc == 0xf002_35f0 {
+            assert_eq!(expected.next(), None);
+            assert_eq!(misses, 1);
+            assert_eq!((cpu.npc(), cpu.read_reg(4)), (pc + 4, 0));
+            let address = cpu.instruction_address().unwrap().pa;
+            assert_eq!(
+                board.read_cacheable_xword(address).unwrap() >> 32,
+                0x8991_2000
+            );
+            assert_eq!(board.read_bypass_xword(PBM + 0x208).unwrap(), 0x3ff5_c000);
+            assert_eq!(board.read_bypass_xword(PBM + 0x200).unwrap(), 0x70001);
+            return;
+        }
+        let setup = (pc == 0xf000_9238)
+            .then(|| cpu.translate(cpu.read_reg(4), 8, Access::Write).ok())
+            .flatten()
+            .and_then(|target| target.pa.checked_sub(PBM))
+            .filter(|offset| matches!(*offset, 0x200 | 0x208 | 0xa580..=0xa678));
+        if let Some(offset) = setup {
+            let value = cpu.read_reg(16);
+            assert_eq!(expected.next(), Some((offset, value)));
+            assert_eq!(board.step_mapped(cpu).unwrap().instruction, 0xe070_0004);
+            let readback = board.read_bypass_xword(PBM + offset).unwrap();
+            // A zero data write clears Valid and Cacheable. PA[40:34] then reads as ones.
+            assert_eq!(readback, if offset >= 0xa600 { 0x0fe0_0000 } else { value });
+        } else if let BoardStep::TrapTaken {
+            tt,
+            fault_pc,
+            vector,
+        } = board.step_outcome(cpu).unwrap()
+        {
+            assert_eq!((tt, fault_pc, vector), (0x68, 0xf000_9238, 0xf000_0d00));
+            misses += 1;
+        }
+    }
+    panic!("OBP did not reach the TICK write, PC={:#x}", cpu.pc());
 }
 
 #[test]

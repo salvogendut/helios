@@ -90,3 +90,24 @@ The per-seed serial transcripts match the preceding checkpoint byte for
 byte. Stop records and validation logs are in
 `local/ultra5-simba-2026-11-22/`.
 [Reproduction](../docs/ultra5.md#simba-bridge-configuration)
+
+## IOMMU setup and CPU TICK boundary
+
+Each seed retires another 134,007 instructions and takes one additional
+fast data miss. The guest reaches its Forth `tick!` primitive with
+instruction `0x89912000` (`wrpr %g4, 0, %tick`), `%g4=0`, PC/nPC
+`0xf00235f0/0xf00235f4`. IIi §14.1.8 defines TICK.NPT and the
+63-bit cycle counter. The existing APB tick is a separate PCI clock.
+
+| Seed | Retired before TICK write | Trap entries |
+| --- | ---: | ---: |
+| Cold, diagnostics on | 53,682,353 | 6 |
+| Cold, diagnostics off | 53,671,870 | 6 |
+| Soft, diagnostics on | 23,131,261 | 6 |
+| Soft, diagnostics off | 23,121,154 | 6 |
+
+The local-ROM regression checks every IOMMU store and readback, starting
+with 16 valid cacheable entries. The unmodified-ROM serial transcripts are
+byte-identical to the Simba checkpoint. Per-seed results and validation
+logs are in `local/ultra5-iommu-2026-11-22/`.
+[Reproduction](../docs/ultra5.md#iommu-initialization)

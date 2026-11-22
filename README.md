@@ -32,10 +32,10 @@ clears the cache tags. Cold boot finishes the unplugged keyboard probe. Both
 reset paths discover 512 MiB, enable the instruction and data MMUs, copy
 256 KiB from flash and run the relocated decompressor. It expands 453,536
 bytes and jumps into that image in RAM. With diagnostics enabled, the
-expanded firmware prints `ttya initialized` on serial A. It handles five
+expanded firmware prints `ttya initialized` on serial A. It handles six
 data-TLB misses, configures the PCI host and both Simba secondary buses,
-and reaches the first IOMMU control read. The interactive Ultra 5 prompt is
-still in development. [Reproduce the latest checkpoint](docs/ultra5.md#simba-bridge-configuration)
+initializes the IOMMU and reaches the first write to the CPU tick counter. The interactive Ultra 5 prompt is
+still in development. [Reproduce the latest checkpoint](docs/ultra5.md#iommu-initialization)
 
 **SPARCstation 20** and **Axil 320** profiles boot their original firmware to
 the serial `ok` prompt with either one CPU or two 75 MHz SuperSPARC-II modules.

@@ -1,5 +1,7 @@
 //! UltraSPARC-IIi PCI bus module. Sun IIi User's Manual, chapter 19.
 
+use super::iommu::Iommu;
+
 const BASE: u64 = 0x01fe_0000_0000;
 pub(super) const PCI_CONFIG: u64 = 0x01fe_0100_0000;
 const CONTROL_RW: u64 = (1 << 36) | (0x3f << 16) | (3 << 7) | 0xf;
@@ -8,6 +10,7 @@ const SERR: u64 = 1 << 34;
 #[derive(Default)]
 pub(super) struct Pbm {
     control: u64,
+    iommu: Iommu,
     // One bit for each 512 MiB region of the incoming 32-bit PCI address space.
     target_regions: u8,
     disable_retry_limit: bool,
@@ -76,6 +79,7 @@ impl Pbm {
             return Ok((valid << 31) | (0x1f << 6) | u64::from(ino));
         }
         match offset {
+            0x200..=0x217 | 0xa580..=0xa67f => self.iommu.read(offset),
             0x2000 => Ok(self.control),
             0x2020 => Ok(u64::from(self.disable_retry_limit) << 6),
             0x2028 => Ok(u64::from(self.target_regions)),
@@ -95,6 +99,7 @@ impl Pbm {
             return Ok(());
         }
         match offset {
+            0x200..=0x217 | 0xa580..=0xa67f => self.iommu.write(offset, value),
             0x2000 => {
                 self.control = (self.control & SERR & !value) | (value & CONTROL_RW);
                 Ok(())

@@ -6,8 +6,9 @@ complete the cold-start probe with the keyboard disconnected. Both boot paths
 clear the instruction and data TLBs, complete DRAM discovery, enable translation
 and execute the 453,536-byte firmware image expanded in RAM. The expanded
 firmware initializes serial A and prints `ttya initialized` in diagnostic mode.
-It then handles five data-TLB misses, configures the PCI host and both
-Simba secondary buses, and reaches the IIi IOMMU control register.
+It then configures the PCI host and both Simba secondary buses, handles a
+sixth data-TLB miss and initializes the IOMMU. Both paths reach the first
+privileged write to the CPU tick counter.
 An interactive OpenBoot prompt remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
 
 ## Run the first serial diagnostic
@@ -354,6 +355,28 @@ before the read at PC `0xf0009018`, run the serial example with an outcome
 limit of `53548351` for cold diagnostics or `22997259` for soft diagnostics.
 Each limit includes five guest trap entries. Diagnostics end with
 `ttya initialized`. [IIi User’s Manual, §19.3.2.1](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
+## IOMMU initialization
+
+OpenBoot disables I/O translation, enables diagnostic access, and writes
+zero to all 16 tag and data pairs. It leaves diagnostic mode, selects a
+128K-entry translation table with 8 KiB page indexing, programs the table
+base to physical `0x3ff5c000`, then enables translation. Control reads
+back as `0x00070001`. The local-ROM test seeds valid entries before the
+guest clears them. PCI bus-master DMA and hardware table walks remain open.
+[Sun IIi User’s Manual, §§10.2 and 19.3.2](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
+The board implements the control and base registers, the 16 pairs of
+diagnostic registers, and address-based invalidation for 8 KiB and 64 KiB
+entries. The diagnostic data port derives PA[40:34] from the cacheable bit.
+A cleared data entry therefore reads `0x0fe00000` with its valid bit clear.
+The register ports accept aligned, uncached eight-byte accesses.
+
+With diagnostics enabled, an outcome limit of `53682359` (cold) or
+`23131267` (soft) stops the serial example immediately before
+`wrpr %g4, 0, %tick` at PC `0xf00235f0`. The guest has handled six
+data-TLB misses and `%g4` holds zero. Running one more outcome reaches
+the unsupported TICK write. Serial A still ends with `ttya initialized`.
 
 ## Reset and flash mapping
 

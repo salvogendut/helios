@@ -570,6 +570,32 @@ mod tests {
     }
 
     #[test]
+    fn iommu_registers_accept_only_aligned_uncached_xwords() {
+        let mut board = fixture();
+        let control = 0x01fe_0000_0200;
+        board.write_bypass_xword(control, 2).unwrap();
+        for (pa, value) in [
+            (control, 2),
+            (control + 8, 0x1234_6000),
+            (0x01fe_0000_a5f8, 0x102),
+            (0x01fe_0000_a678, 0x5000_0001),
+        ] {
+            board.write_bypass_xword(pa, value).unwrap();
+            assert!(board.write_bypass_byte(pa, 0).is_err());
+            assert!(board.write_bypass_half(pa, 0).is_err());
+            assert!(board.write_bypass_word(pa, 0).is_err());
+            assert!(board.write_bypass_le_word(pa, 0).is_err());
+            assert!(board.write_bypass_xword(pa + 1, 0).is_err());
+            assert!(board.write_cacheable_xword(pa, 0).is_err());
+            assert!(board.read_bypass_byte(pa).is_err());
+            assert!(board.read_bypass_half(pa).is_err());
+            assert!(board.read_bypass_word(pa).is_err());
+            assert!(board.read_cacheable_xword(pa).is_err());
+            assert_eq!(board.read_bypass_xword(pa).unwrap(), value);
+        }
+    }
+
+    #[test]
     fn cacheable_xwords_use_dram_and_leave_io_registers_alone() {
         let mut board = fixture();
         let ram = 0x1000_0000;
