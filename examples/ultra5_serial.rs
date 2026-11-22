@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
     let mut stdout = io::stdout().lock();
     for retired in 0..budget {
-        board.step(&mut cpu).map_err(|error| {
+        board.step_mapped(&mut cpu).map_err(|error| {
             format!(
                 "retired={retired} PC={:#018x} nPC={:#018x}: {error}",
                 cpu.pc(),

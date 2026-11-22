@@ -1,5 +1,7 @@
 # Agent notes
 
+- [Ultra 5 MMU enable and relocated execution](ultra5-mmu-enable.md) — first translated fetch, full ROM-copy comparison and decompressor entry.
+
 - [Ultra 5 physical DRAM discovery](ultra5-dram-discovery.md) — original-ROM capacity descriptor, selected boot region, workspace clearing and MMU-enable boundary.
 
 - [Ultra 5 TLB clear and memory probe entry](ultra5-tlb-init.md) — 128 seeded slot clears and the first DRAM access on both reset paths.

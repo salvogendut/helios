@@ -115,6 +115,11 @@ test rather than assuming either emulator defines the hardware.
   64-bit register. Section 15.10 and table 15-18 give the 41-bit physical
   address and side-effect attribute for the ASI `0x15` bypass read.
   See the [Ultra 5 fixture](ultra5.md).
+- IIi §§14.4.4 and 15.2–15.7 specify D-side FLUSH checks, page sizes,
+  privilege and context selection, including I-side bypass in RED_state.
+  Section 15.11 describes the TLB Used bit. The pinned QEMU SPARC64
+  translator also matches the full virtual page, context or global bit,
+  and page size. [Sun IIi manual](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf) · [QEMU SPARC MMU, tag matching and instruction/data translation](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/mmu_helper.c#L506)
 - The IIi manual gives the rank and pair selects, Mem_Control0 column mode
   and the PA14 column test. The physical Ultra 5 POST transcript records the
   two 256 MiB modules in pair 2. QEMU's generic sun4u machine maps contiguous

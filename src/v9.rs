@@ -6,7 +6,8 @@ use crate::ultra5::PowerOnReset;
 mod ecache;
 mod tlb;
 use ecache::Ecache;
-use tlb::Tlb;
+pub(crate) use tlb::Translation;
+use tlb::{Access, Tlb};
 
 const WINDOW_COUNT: u8 = 8;
 const WINDOW_MASK: u8 = WINDOW_COUNT - 1;
@@ -19,6 +20,8 @@ const PSTATE_RED: u16 = 1 << 5;
 const PSTATE_MG: u16 = 1 << 10;
 const PSTATE_IG: u16 = 1 << 11;
 const GLOBAL_SELECT: u16 = PSTATE_AG | PSTATE_MG | PSTATE_IG;
+const LSU_IM: u64 = 4;
+const LSU_DM: u64 = 8;
 pub(crate) const PHYSICAL_ADDRESS_MASK: u64 = (1 << 41) - 1;
 const ASI_PHYS_USE_EC: u8 = 0x14;
 const ASI_PHYS_BYPASS_EC_WITH_EBIT: u8 = 0x15;
@@ -94,14 +97,9 @@ pub(crate) trait V9DataBus {
             "unmapped V9 cacheable physical xword write at {pa:#x}"
         ))
     }
-    fn load_byte(&mut self, va: u64) -> Result<u8, String> {
-        Err(format!("unmapped V9 LDUB at {va:#x}"))
-    }
-    fn load_xword(&mut self, _va: u64) -> Result<u64, String> {
-        Err("V9 LDX requires mapped data memory".into())
-    }
-    fn store_xword(&mut self, _va: u64, _value: u64) -> Result<(), String> {
-        Err("V9 STX requires mapped data memory".into())
+    fn read_cacheable_byte(&mut self, pa: u64) -> Result<u8, String> {
+        let word = self.read_cacheable_xword(pa & !7)?;
+        Ok((word >> ((7 - (pa & 7)) * 8)) as u8)
     }
     fn read_bypass_xword(&mut self, pa: u64) -> Result<u64, String> {
         Err(format!(
@@ -142,8 +140,8 @@ impl V9DataBus for V9Memory {
     fn write_cacheable_xword(&mut self, pa: u64, value: u64) -> Result<(), String> {
         self.try_write_u64(pa, value)
     }
-    fn load_byte(&mut self, va: u64) -> Result<u8, String> {
-        Ok(self.bytes[self.checked_range(va, 1, 1)?])
+    fn read_cacheable_byte(&mut self, pa: u64) -> Result<u8, String> {
+        self.read_bypass_byte(pa)
     }
     fn write_bypass_xword(&mut self, pa: u64, value: u64) -> Result<(), String> {
         self.try_write_u64(pa, value)
@@ -155,12 +153,6 @@ impl V9DataBus for V9Memory {
         let at = self.checked_range(pa, 4, 4)?;
         self.bytes[at..at + 4].copy_from_slice(&value.to_be_bytes());
         Ok(())
-    }
-    fn load_xword(&mut self, va: u64) -> Result<u64, String> {
-        self.try_read_u64(va)
-    }
-    fn store_xword(&mut self, va: u64, value: u64) -> Result<(), String> {
-        self.try_write_u64(va, value)
     }
     fn read_bypass_xword(&mut self, pa: u64) -> Result<u64, String> {
         self.try_read_u64(pa)
@@ -352,8 +344,68 @@ impl V9Cpu {
     }
 
     pub fn step(&mut self, memory: &mut V9Memory) -> Result<(), String> {
-        let word = memory.try_read_word(self.pc)?;
-        self.execute_fetched(word, memory)
+        let fetch = self.instruction_address()?;
+        let word = memory.try_read_word(fetch.pa)?;
+        self.retire_fetch(fetch, word, memory)
+    }
+
+    pub(crate) fn instruction_address(&self) -> Result<Translation, String> {
+        self.translate(self.pc, 4, Access::Fetch)
+    }
+
+    fn translate(&self, address: u64, width: u64, access: Access) -> Result<Translation, String> {
+        let va = if self.pstate & (1 << 3) != 0 {
+            address & 0xffff_ffff
+        } else {
+            address
+        };
+        let physical = Self::bypass_address(va, width)?;
+        let enabled = match access {
+            Access::Fetch => self.lsu_control & LSU_IM != 0 && self.pstate & PSTATE_RED == 0,
+            _ => self.lsu_control & LSU_DM != 0,
+        };
+        if !enabled {
+            if access == Access::Flush {
+                return Err(format!("IIi FLUSH on side-effect bypass at VA={va:#x}"));
+            }
+            return Ok(Translation {
+                pa: physical,
+                cacheable: false,
+                invert_endian: false,
+                slot: None,
+            });
+        }
+        let tlb = if access == Access::Fetch {
+            &self.instruction_tlb
+        } else {
+            &self.data_tlb
+        };
+        let context = if self.tl == 0 {
+            self.primary_context
+        } else {
+            0
+        };
+        tlb.lookup(va, context, self.pstate & PSTATE_PRIV != 0, access)
+    }
+
+    pub(crate) fn retire_fetch(
+        &mut self,
+        fetch: Translation,
+        word: u32,
+        memory: &mut dyn V9DataBus,
+    ) -> Result<(), String> {
+        // Make Used visible to the instruction itself. A directed write to
+        // its own I-TLB slot can then replace that bit in program order.
+        let previous = fetch
+            .slot
+            .map(|slot| (slot, self.instruction_tlb.set_used(slot, true)));
+        let result = self.execute_fetched(word, memory);
+        if result.is_err() {
+            if let Some((slot, used)) = previous {
+                self.instruction_tlb.set_used(slot, used);
+            }
+        }
+        result
     }
 
     pub(crate) fn execute_fetched(
@@ -499,6 +551,7 @@ impl V9Cpu {
                 }
                 0x28 if rs1 == 2 => self.write_reg(rd, u64::from(self.ccr)),
                 0x28 if rs1 == 3 && word & 0x3fff == 0 => self.write_reg(rd, u64::from(self.asi)),
+                0x28 if rs1 == 5 && word & 0x3fff == 0 => self.write_reg(rd, self.pc),
                 0x28 if rs1 == 22 && word & 0x3fff == 0 => {
                     self.require_privilege("RD SOFTINT")?;
                     self.write_reg(rd, u64::from(self.softint));
@@ -506,6 +559,15 @@ impl V9Cpu {
                 // MEMBAR #Sync: all earlier operations in this single-CPU
                 // fixture have already completed when an instruction retires.
                 0x28 if word == 0x8143_e040 => {}
+                0x3b if rd == 0 && (word & (1 << 13) != 0 || word & 0x1fe0 == 0) => {
+                    // IIi §14.4.4. FLUSH checks the D-side mapping, without
+                    // issuing a device read. Instruction stores are synchronous.
+                    let access =
+                        self.translate(self.read_reg(rs1).wrapping_add(b), 1, Access::Flush)?;
+                    if let Some(slot) = access.slot {
+                        self.data_tlb.set_used(slot, true);
+                    }
+                }
                 0x2a => {
                     self.require_privilege("RDPR")?;
                     // V9 A.43: rs1 selects the privileged register; bits 13:0 are reserved.
@@ -540,18 +602,46 @@ impl V9Cpu {
                 _ => return Err(format!("unsupported V9 op3 {op3:#x}")),
             },
             3 => match op3 {
-                0x01 => {
-                    let byte = memory.load_byte(self.read_reg(rs1).wrapping_add(b))?;
-                    self.write_reg(rd, u64::from(byte));
-                }
-                0x0e => {
-                    let address = self.read_reg(rs1).wrapping_add(b);
-                    memory.store_xword(address, self.read_reg(rd))?;
-                }
-                0x0b => {
-                    let address = self.read_reg(rs1).wrapping_add(b);
-                    let value = memory.load_xword(address)?;
-                    self.write_reg(rd, value);
+                0x01 | 0x0b | 0x0e => {
+                    let va = self.read_reg(rs1).wrapping_add(b);
+                    let width = if op3 == 0x01 { 1 } else { 8 };
+                    let kind = if op3 == 0x0e {
+                        Access::Write
+                    } else {
+                        Access::Read
+                    };
+                    let mapping = self.translate(va, width, kind)?;
+                    let little = mapping.invert_endian ^ (self.pstate & (1 << 9) != 0);
+                    match op3 {
+                        0x01 => {
+                            let byte = if mapping.cacheable {
+                                memory.read_cacheable_byte(mapping.pa)?
+                            } else {
+                                memory.read_bypass_byte(mapping.pa)?
+                            };
+                            self.write_reg(rd, u64::from(byte));
+                        }
+                        0x0b => {
+                            let word = if mapping.cacheable {
+                                memory.read_cacheable_xword(mapping.pa)?
+                            } else {
+                                memory.read_bypass_xword(mapping.pa)?
+                            };
+                            self.write_reg(rd, if little { word.swap_bytes() } else { word });
+                        }
+                        _ => {
+                            let word = self.read_reg(rd);
+                            let word = if little { word.swap_bytes() } else { word };
+                            if mapping.cacheable {
+                                memory.write_cacheable_xword(mapping.pa, word)?;
+                            } else {
+                                memory.write_bypass_xword(mapping.pa, word)?;
+                            }
+                        }
+                    }
+                    if let Some(slot) = mapping.slot {
+                        self.data_tlb.set_used(slot, true);
+                    }
                 }
                 0x10 | 0x11 | 0x14 | 0x15 | 0x1b | 0x1e => {
                     let asi = if word & (1 << 13) != 0 {
@@ -826,10 +916,9 @@ impl V9Cpu {
             self.write_reg(rd, self.lsu_control);
         } else {
             let value = self.read_reg(rd);
-            // IIi A.6.1: IC and DC occupy bits 0 and 1. The fixture
-            // supports their register readback and the OBP all-off write.
+            // IIi A.6. IC/DC are retained; IM/DM control independent TLBs.
             const CACHE_ENABLES: u64 = 0b11;
-            if value & !CACHE_ENABLES != 0 {
+            if value & !(CACHE_ENABLES | LSU_IM | LSU_DM) != 0 {
                 return Err(format!("unsupported LSU control write {value:#x}"));
             }
             self.lsu_control = value;

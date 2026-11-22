@@ -32,7 +32,7 @@ fn a_rejected_second_store_preserves_the_retired_first_instruction() {
         (0xc6f0_48a0, 1 << 41, 1), // no flash PA mask on ASI register addresses
         (0xc6f0_0880, 0, 1),       // wrong ASI
         (0xc6f0_28a0, 0, 1),       // %asi + simm13 form
-        (0xc6f0_08a0, 0, 0x5),     // requests I-MMU enable
+        (0xc6f0_08a0, 0, 0x10),    // unsupported parity-mask field
         (0xc6f0_08a0, 0, 1 << 63), // reserved high bit
     ] {
         // The first store gives LSU a nonzero value so premature clearing is observable.

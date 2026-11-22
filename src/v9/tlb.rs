@@ -1,7 +1,25 @@
-//! UltraSPARC-IIi directed I/D TLB accesses. Sun manual §§15.2, 15.9.8–9.
+//! UltraSPARC-IIi I/D TLB translation and directed accesses. Sun manual chapter 15.
 
 #[cfg(test)]
 mod tests;
+
+use super::PHYSICAL_ADDRESS_MASK;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Access {
+    Fetch,
+    Read,
+    Write,
+    Flush,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Translation {
+    pub(crate) pa: u64,
+    pub(crate) cacheable: bool,
+    pub(super) invert_endian: bool,
+    pub(super) slot: Option<usize>,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Entry {
@@ -25,6 +43,59 @@ impl Default for Tlb {
 }
 
 impl Tlb {
+    pub(super) fn lookup(
+        &self,
+        va: u64,
+        context: u16,
+        privileged: bool,
+        access: Access,
+    ) -> Result<Translation, String> {
+        let mut hit = None;
+        for (slot, entry) in self.entries.iter().enumerate() {
+            let data = entry.data;
+            if data >> 63 == 0 || (data & 1 == 0 && entry.tag & 0x1fff != u64::from(context)) {
+                continue;
+            }
+            let page_mask = (8192u64 << (3 * ((data >> 61) & 3))) - 1;
+            if (entry.tag ^ va) & !page_mask != 0 {
+                continue;
+            }
+            if hit.is_some() {
+                return Err(format!(
+                    "multiple IIi TLB matches for {access:?} VA={va:#x}"
+                ));
+            }
+            hit = Some((slot, data, page_mask));
+        }
+        let (slot, data, page_mask) = hit.ok_or_else(|| {
+            format!("IIi TLB miss for {access:?} VA={va:#x} context={context:#x}")
+        })?;
+        if !privileged && data & 4 != 0 {
+            return Err(format!("IIi privileged page for {access:?} VA={va:#x}"));
+        }
+        if access == Access::Write && data & 2 == 0 {
+            return Err(format!("IIi write protection at VA={va:#x}"));
+        }
+        if data & (1 << 60) != 0 || (access == Access::Flush && data & 8 != 0) {
+            return Err(format!(
+                "IIi prohibited {access:?} page attributes at VA={va:#x}"
+            ));
+        }
+        Ok(Translation {
+            pa: (data & PHYSICAL_ADDRESS_MASK & !page_mask) | (va & page_mask),
+            cacheable: data & 0x20 != 0,
+            invert_endian: data & (1 << 59) != 0,
+            slot: Some(slot),
+        })
+    }
+
+    pub(super) fn set_used(&mut self, slot: usize, used: bool) -> bool {
+        let data = &mut self.entries[slot].data;
+        let old = *data & (1 << 41) != 0;
+        *data = (*data & !(1 << 41)) | (u64::from(used) << 41);
+        old
+    }
+
     pub(super) fn tag_access(&self) -> u64 {
         self.tag_access
     }

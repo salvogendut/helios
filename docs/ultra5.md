@@ -3,7 +3,8 @@
 The headless Ultra 5/10 fixture runs original OBP 3.31.0 far enough to
 transmit its version banner on serial A, clear the external-cache tags and
 complete the cold-start probe with the keyboard disconnected. Both boot paths
-clear the instruction and data TLBs, complete DRAM discovery and reach MMU enable.
+clear the instruction and data TLBs, complete DRAM discovery, enable translation
+and execute the firmware copy from RAM through entry to the decompressor.
 An interactive OpenBoot prompt remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
 
 ## Run the first serial diagnostic
@@ -147,8 +148,9 @@ Access registers. It then writes zero through ASIs `0x5d` and `0x55` for
 each slot from 63 down to 0. Each directed store captures the matching
 staged tag along with the entry data. Separate indexed data and tag ports
 support readback. The original-ROM check starts with 128 populated entries
-and verifies every tag and data word after the loop. Address translation,
-automatic replacement and demap are still open. [Sun UltraSPARC-IIi User’s Manual, §§15.2 and 15.9.8–9](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+and verifies every tag and data word after the loop. OBP later loads mappings
+through these same ports. Automatic replacement and demap remain open.
+[Sun UltraSPARC-IIi User’s Manual, §§15.2 and 15.9.8–9](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
 
 To stop at the first DRAM read on a cold start, use the serial example with a
 budget of `30726251`. Serial A ends with `Probing Memory `. At this point OBP
@@ -184,7 +186,7 @@ then clears the uppermost 1 MiB of the selected region. The original-ROM
 regression checks those operations with nonzero data. Both quiet runs reach
 the same PC with no serial bytes. The next word is `stxa %o0,[%g0] 0x45`
 at PC `0x01ff_f000_1f90`, where `%o0 = 0xc` requests instruction and data
-translation. The fixture stops before retiring this store.
+translation. Both budgets above stop immediately before the store.
 
 ## Mappings at MMU enable
 
@@ -201,10 +203,42 @@ firmware built the following mappings at flash offsets `0x83c–0x94c`.
 | `0xffffffffffffc000` | `0x3ff6e000` (RAM) | 8 KiB | — | 0 |
 | `0xfffe0000` | `0x3ff70000` (RAM) | 64 KiB | — | 1 |
 
-The first fetch after the store should use I-TLB slot 2 to read
+The first fetch after the store uses I-TLB slot 2 to read
 `membar #Sync` at physical `0x01fff0001f94`. The slot 0 mapping is a
 separate RAM destination with the same low 32 virtual-address bits.
-Translated execution remains the next checkpoint. [Sun IIi User’s Manual, chapter 15](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+The following `flush [%g0]` checks the translation for VA zero in D-TLB
+slot 3. TLB misses and protection violations currently stop the fixture
+before retirement. Architectural MMU trap delivery, fault registers and
+cache timing remain open. [Sun IIi User’s Manual, §§14.4.4 and 15.2–15.7](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
+## Executing OpenBoot from RAM
+
+Run the serial example above with a limit of `31271761` for the cold
+diagnostic seed, or `720669` for the soft-reset diagnostic seed. These
+limits stop just before the decompressor's first word store. The last
+serial lines are
+
+```text
+MMUs ON
+Copy Done
+PC = 0000.01ff.f000.201c
+PC = 0000.0000.0000.2060
+Decompressing into Memory
+```
+
+OBP copies the first 256 KiB of flash in descending eight-byte transfers
+to physical RAM at `0x3ff00000`. Its jump and delay slot at flash offsets
+`0x2030` and `0x2034` transfer control to VA `0x2038` in I-TLB slot 1
+(PA `0x3ff02038`). The two printed PCs come from the guest's `rd %pc`
+before and after the jump. The ROM regression compares all 32,768 stored
+xwords with the source, checks both surrounding xwords, and changes an
+instruction in RAM on a probe CPU to verify the fetch source.
+
+`Ultra5ResetBoard::step_mapped` steps flash and DRAM, reporting the physical
+address and retired instruction. The existing `step` method serves callers
+that need a flash offset. The current stop is `st %i0,[%l0+0x26c]` at
+VA `0x26fc` (PA `0x3ff026fc`). It would write `0x00002a80` to VA
+`0x4f26c`. Completion of decompression and the serial prompt remain open.
 
 ## Reset and flash mapping
 
@@ -282,9 +316,9 @@ If the second instruction fails, the first is already retired and the CPU
 stays at the second instruction with its effects unapplied.
 
 The fixture models register storage for the instruction and data cache enables
-(IC and DC, bits 0 and 1). The all-off write clears the register. Writes that
-set other bits return an explicit unsupported-operation error. Cache timing,
-MMU enable, watchpoints and parity injection are outside this checkpoint.
+(IC and DC, bits 0 and 1) and independently controls translation with IM and
+DM (bits 2 and 3). The all-off write clears the register. Watchpoint and
+parity-injection writes return an explicit unsupported-operation error.
 [UltraSPARC IIi User’s Manual, Appendix A.6](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=413)
 
 Two QEMU 10.2.2 single steps on the same image reached low PC/nPC
@@ -422,8 +456,8 @@ The fixture initializes `%asi` and both context IDs to zero for reproducible
 tests. User code may write `%asi`, and an access to a restricted ASI requires
 privilege. Context stores with nonzero reserved bits stop explicitly.
 Sun specifies additional synchronization before a new context is guaranteed
-visible to instruction fetches. Translated fetches and TLB behavior remain
-open. [UltraSPARC IIi context synchronization rules](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=257)
+visible to instruction fetches. The single-CPU fixture applies context and
+MMU writes at instruction boundaries. [UltraSPARC IIi context synchronization rules](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=257)
 
 ## Initialize interrupt and register-window state
 
@@ -450,7 +484,7 @@ remain open. The window counters, PIL and TBA start at zero for
 repeatability where hardware reset values are unspecified.
 [IIi software interrupts, table 11-9](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=163) · [IIi window registers, §14.2.1](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223) · [IIi PSTATE and global banks, tables 14-12/13](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=235)
 
-With the reconstructed image installed, run the nineteen local-ROM checks together.
+With the reconstructed image installed, run the twenty local-ROM checks together.
 
 ```sh
 cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts --test ultra5_reset_setup --test ultra5_first_serial_access --test ultra5_ecache --test ultra5_keyboard_timeout -- --ignored --nocapture

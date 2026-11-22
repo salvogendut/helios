@@ -2,7 +2,7 @@ use super::dram::Dram;
 use super::keyboard_uart::KeyboardUart;
 use super::serial::Serial;
 use super::{BootFlash, FlashFetch, ResetNvram, FLASH_BASE};
-use crate::v9::{V9Cpu, V9DataBus, PHYSICAL_ADDRESS_MASK};
+use crate::v9::{Translation, V9Cpu, V9DataBus};
 
 const PCI_CONFIG: u64 = 0x01fe_0100_0000;
 const APB_TICK_OFFSET: u64 = 0x08b0; // primary bus, device 1 function 0
@@ -20,6 +20,13 @@ struct BusNumbers {
     primary: u8,
     secondary: u8,
     subordinate: u8,
+}
+
+/// A retired board instruction fetched from flash or installed DRAM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BoardInstruction {
+    pub physical_address: u64,
+    pub instruction: u32,
 }
 
 /// The Ultra 5 reset-time bus. Flash supplies both instructions and the
@@ -64,11 +71,54 @@ impl Ultra5ResetBoard {
         }
     }
 
+    /// Step within flash and report the ROM offset. Use `step_mapped` to
+    /// follow firmware as it relocates into RAM.
     pub fn step(&mut self, cpu: &mut V9Cpu) -> Result<FlashFetch, String> {
-        let fetch = self.flash.fetch_reset_word(cpu.pc(), cpu.npc())?;
-        cpu.execute_fetched(fetch.instruction, self)?;
+        let mapping = cpu.instruction_address()?;
+        if mapping.cacheable {
+            return Err(format!(
+                "Ultra 5 flash step reached DRAM at VA={:#x} PA={:#x}",
+                cpu.pc(),
+                mapping.pa
+            ));
+        }
+        let (pc, npc) = (cpu.pc(), cpu.npc());
+        let fetch = self.step_at(cpu, mapping)?;
+        Ok(FlashFetch {
+            pc,
+            npc,
+            physical_address: mapping.pa,
+            flash_offset: (mapping.pa - FLASH_BASE) as usize,
+            instruction: fetch.instruction,
+        })
+    }
+
+    pub fn step_mapped(&mut self, cpu: &mut V9Cpu) -> Result<BoardInstruction, String> {
+        let mapping = cpu.instruction_address()?;
+        self.step_at(cpu, mapping)
+    }
+
+    fn step_at(
+        &mut self,
+        cpu: &mut V9Cpu,
+        mapping: Translation,
+    ) -> Result<BoardInstruction, String> {
+        let instruction = if mapping.cacheable {
+            let word = self.dram.read(mapping.pa & !7, self.mem_control0)?;
+            if mapping.pa & 4 == 0 {
+                (word >> 32) as u32
+            } else {
+                word as u32
+            }
+        } else {
+            self.flash.read_word(mapping.pa)?
+        };
+        cpu.retire_fetch(mapping, instruction, self)?;
         self.elapsed_ns = self.elapsed_ns.saturating_add(crate::machine::STEP_NS);
-        Ok(fetch)
+        Ok(BoardInstruction {
+            physical_address: mapping.pa,
+            instruction,
+        })
     }
 
     fn is_tick(&self, pa: u64) -> bool {
@@ -205,12 +255,6 @@ impl V9DataBus for Ultra5ResetBoard {
     fn write_cacheable_xword(&mut self, pa: u64, value: u64) -> Result<(), String> {
         self.dram.write(pa, self.mem_control0, value)
     }
-    fn load_byte(&mut self, va: u64) -> Result<u8, String> {
-        if !matches!((va as i64) >> 43, 0 | -1) {
-            return Err(format!("out-of-range Ultra 5 LDUB at {va:#x}"));
-        }
-        self.read_bypass_byte(va & PHYSICAL_ADDRESS_MASK)
-    }
     fn write_bypass_xword(&mut self, pa: u64, value: u64) -> Result<(), String> {
         if self.is_tick(pa) {
             return self.clear_tick(value.swap_bytes());
@@ -262,6 +306,18 @@ impl V9DataBus for Ultra5ResetBoard {
         Ok(())
     }
     fn read_bypass_xword(&mut self, pa: u64) -> Result<u64, String> {
+        if let Some(offset) = pa
+            .checked_sub(FLASH_BASE)
+            .filter(|&o| o < self.flash.image().len() as u64)
+        {
+            if offset & 7 != 0 {
+                return Err(format!("misaligned Ultra 5 flash xword at {pa:#x}"));
+            }
+            let start = offset as usize;
+            return Ok(u64::from_be_bytes(
+                self.flash.image()[start..start + 8].try_into().unwrap(),
+            ));
+        }
         if self.is_tick(pa) {
             // OBP reads the low PCI dword with a little-endian LDXA.
             return Ok(u64::from(self.tick()).swap_bytes());
@@ -467,12 +523,8 @@ mod tests {
         assert_eq!(seen, [true; 3]);
         assert_eq!(cpu.pc(), 0x01ff_f000_1f90);
         assert_eq!(cpu.read_reg(8), 0xc);
-        let before = cpu.clone();
-        assert!(board
-            .step(&mut cpu)
-            .unwrap_err()
-            .contains("unsupported LSU control write 0xc"));
-        assert_eq!(cpu, before);
+        assert_eq!(board.step(&mut cpu).unwrap().instruction, 0xd0f0_08a0);
+        assert_eq!(cpu.pc(), 0x01ff_f000_1f94);
         let [ttya, ttyb] = board.take_serial_output();
         assert!(ttya.ends_with(b"Probing Memory Done\r\nMEM BASE = 0000.0000.3000.0000\r\nMEM SIZE = 0000.0000.1000.0000\r\n11-Column Mode Enabled \r\nMMUs "));
         assert!(ttyb.is_empty());

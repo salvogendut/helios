@@ -14,7 +14,7 @@ mod board;
 mod dram;
 mod keyboard_uart;
 mod serial;
-pub use board::Ultra5ResetBoard;
+pub use board::{BoardInstruction, Ultra5ResetBoard};
 
 pub const FLASH_BASE: u64 = 0x01ff_f000_0000;
 pub const FLASH_SIZE: usize = 1 << 20;
@@ -165,7 +165,7 @@ impl BootFlash {
 
     pub fn first_fetch(&self) -> Result<FirstFetch, String> {
         let reset = PowerOnReset::ultra_sparc_ii();
-        self.fetch_reset_word(reset.pc, reset.npc)
+        self.fetch_word(reset.pc, reset.npc, reset.pc & PHYSICAL_ADDRESS_MASK)
     }
 
     /// Retire just the word fetched at the default power-on vector.
@@ -221,13 +221,19 @@ impl BootFlash {
         cpu: &mut V9Cpu,
         data: &mut dyn V9DataBus,
     ) -> Result<FlashFetch, String> {
-        let fetch = self.fetch_reset_word(cpu.pc(), cpu.npc())?;
-        cpu.execute_fetched(fetch.instruction, data)?;
+        let mapping = cpu.instruction_address()?;
+        if mapping.cacheable {
+            return Err(format!(
+                "cacheable instruction fetch outside flash port at PA={:#x}",
+                mapping.pa
+            ));
+        }
+        let fetch = self.fetch_word(cpu.pc(), cpu.npc(), mapping.pa)?;
+        cpu.retire_fetch(mapping, fetch.instruction, data)?;
         Ok(fetch)
     }
 
-    fn fetch_reset_word(&self, pc: u64, npc: u64) -> Result<FlashFetch, String> {
-        let physical_address = pc & PHYSICAL_ADDRESS_MASK;
+    fn fetch_word(&self, pc: u64, npc: u64, physical_address: u64) -> Result<FlashFetch, String> {
         let instruction = self.read_word(physical_address)?;
         Ok(FlashFetch {
             pc,

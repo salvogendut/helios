@@ -63,8 +63,8 @@ machines should become explicit profiles; SPARC V9 is a separate CPU milestone.
 
 ## Ultra 5 serial console
 
-**Original OBP 3.31.0 completes memory probing on 22 November 2026.** Both
-reset paths reach the store that enables the instruction and data MMUs.
+**Original OBP 3.31.0 executes from RAM on 22 November 2026.** Both reset
+paths reach the first word store in the relocated decompressor.
 
 | Milestone | Evidence |
 | --- | --- |
@@ -75,10 +75,11 @@ reset paths reach the store that enables the instruction and data MMUs.
 | Cold-start keyboard probe | The unplugged keyboard probe completes three timed waits and one reset-byte transmission. With diagnostics enabled, serial A prints `Probing keyboard Done`. |
 | Instruction and data TLB clear | On both paths the firmware clears all 64 slots in each bank, returns to its caller and reaches the ASI `0x14` read at physical address zero. |
 | Physical DRAM discovery | OBP detects the two 256 MiB DIMMs in pair 2, selects 11-bit columns, reports the upper 256 MiB rank at `0x30000000` and clears the top 1 MiB. |
+| MMU enable and relocation | The original ROM copies 256 KiB to PA `0x3ff00000`, branches to VA `0x2038` backed by RAM and starts its decompressor. Both diagnostic runs print the flash and RAM PCs. |
 | Interactive OpenBoot console | Open. Acceptance is a serial `ok` prompt that takes `1 2 + .`, replies `3` and prompts again. |
 
-The next milestone is the first translated fetch after the LSU store
-at flash offset `0x1f90`. OBP's three instruction mappings and five data
-mappings have been verified at that boundary. Interactive
+The next milestone is the decompressor. Its first unsupported instruction at
+VA `0x26fc` stores a 32-bit word to VA `0x4f26c`. Verify the destination bytes,
+adjacent lanes and decompressed image as that path progresses. Interactive
 serial input and a prompt that accepts a Forth command are still pending.
-[Reproduce the current checkpoint](ultra5.md#physical-dram-discovery) · [Firmware-installed mappings](ultra5.md#mappings-at-mmu-enable)
+[Reproduce the current checkpoint](ultra5.md#executing-openboot-from-ram)

@@ -1,10 +1,137 @@
-use super::Entry;
+use super::{Access, Entry, Tlb};
 use crate::ultra5::{BootFlash, PowerOnReset, ResetNvram, Ultra5ResetBoard, RESET_NVRAM_SIZE};
-use crate::v9::{UnmappedData, V9Cpu};
+use crate::v9::{
+    UnmappedData, V9Cpu, V9DataBus, V9Memory, LSU_DM, LSU_IM, PSTATE_PRIV, PSTATE_RED,
+};
 
 // STXA %g2,[%g1] asi and LDXA [%g1] asi,%g3.
 const STORE: u32 = 0xc4f0_4000;
 const LOAD: u32 = 0xc6d8_4000;
+const VALID: u64 = 1 << 63;
+const USED: u64 = 1 << 41;
+
+#[test]
+fn lookup_respects_page_size_context_global_and_the_full_virtual_tag() {
+    for (size, bytes) in [8192u64, 65536, 524288, 4194304].into_iter().enumerate() {
+        let mut tlb = Tlb::default();
+        let va = 0x01ff_8000_0000;
+        let pa = 0x0102_4500_0000;
+        let offset = bytes - 8;
+        // Low PPN/VPN bits below each page boundary are retained in
+        // diagnostic readback but do not participate in translation.
+        tlb.stage_tag(va | (offset & !8191) | 7);
+        let tte = VALID | ((size as u64) << 61) | pa | (offset & !8191) | 0x24;
+        tlb.write_data(63, tte, true);
+        for i in [0, 8, offset] {
+            let hit = tlb.lookup(va + i, 7, true, Access::Fetch).unwrap();
+            assert_eq!((hit.slot, hit.pa, hit.cacheable), (Some(63), pa + i, true));
+        }
+        for addr in [va - 4, va + bytes, va & 0xffff_ffff] {
+            assert!(tlb.lookup(addr, 7, true, Access::Fetch).is_err());
+        }
+        assert!(tlb.lookup(va, 6, true, Access::Fetch).is_err());
+        assert!(tlb.lookup(va, 7, false, Access::Fetch).is_err());
+        tlb.write_data(63, tte | 1, true);
+        assert_eq!(tlb.lookup(va, 6, true, Access::Fetch).unwrap().pa, pa);
+        tlb.write_data(3, tte, true);
+        assert!(tlb
+            .lookup(va, 7, true, Access::Fetch)
+            .unwrap_err()
+            .contains("multiple"));
+        tlb.write_data(63, 0, true);
+        assert_eq!(
+            tlb.lookup(va, 7, true, Access::Fetch).unwrap().slot,
+            Some(3)
+        );
+    }
+}
+
+#[test]
+fn red_state_bypasses_only_i_mmu_and_tl_selects_the_implicit_context() {
+    let mut cpu = V9Cpu::new(0x4000);
+    cpu.lsu_control = LSU_IM | LSU_DM;
+    cpu.pstate = PSTATE_PRIV;
+    cpu.primary_context = 7;
+    for (i, t) in [&mut cpu.instruction_tlb, &mut cpu.data_tlb]
+        .into_iter()
+        .enumerate()
+    {
+        for (slot, ctx) in [0, 7].into_iter().enumerate() {
+            t.stage_tag(0x4000 | ctx);
+            t.write_data(slot, VALID | (1 + i as u64 * 2 + slot as u64) << 13, i == 0);
+        }
+    }
+    assert_eq!(cpu.instruction_address().unwrap().pa, 0x4000);
+    assert_eq!(cpu.translate(0x4000, 8, Access::Read).unwrap().pa, 0x8000);
+    cpu.tl = 1;
+    assert_eq!(cpu.instruction_address().unwrap().pa, 0x2000);
+    assert_eq!(cpu.translate(0x4000, 8, Access::Read).unwrap().pa, 0x6000);
+    cpu.pstate |= PSTATE_RED;
+    assert_eq!(cpu.instruction_address().unwrap().slot, None);
+    assert_eq!(cpu.translate(0x4000, 8, Access::Read).unwrap().pa, 0x6000);
+    cpu.pstate = PSTATE_PRIV;
+    cpu.lsu_control = LSU_IM;
+    assert_eq!(cpu.translate(0x4000, 8, Access::Read).unwrap().slot, None);
+    assert_eq!(cpu.instruction_address().unwrap().slot, Some(0));
+    assert!(cpu.translate(1 << 43, 4, Access::Fetch).is_err());
+}
+
+#[test]
+fn translated_data_checks_writes_endianness_and_flush_before_mutation() {
+    let mut cpu = V9Cpu::new(0);
+    let mut ram = V9Memory::new(24);
+    ram.write_u64(8, 0x0102_0304_0506_0708);
+    cpu.lsu_control = LSU_DM;
+    cpu.write_reg(1, 0x2008);
+    cpu.data_tlb.stage_tag(0x2000);
+    for (op, tte) in [
+        (0xc470_6000, VALID),             // STX to read-only page
+        (0xc458_6000, VALID | 4),         // user LDX to privileged page
+        (0xc458_6000, VALID | (1 << 60)), // NFO
+        (0x81d8_6000, VALID | 8),         // FLUSH with side effects
+        (0x81d8_6000, VALID | (1 << 60)),
+        (0xc458_6000, VALID | 0x2000), // legal translation, no backing
+    ] {
+        cpu.data_tlb.write_data(17, tte, false);
+        let before = (cpu.clone(), ram.clone());
+        assert!(cpu.execute_fetched(op, &mut ram).is_err());
+        assert_eq!((&cpu, &ram), (&before.0, &before.1));
+    }
+    cpu.data_tlb.write_data(17, VALID | (1 << 59) | 0x22, false);
+    cpu.execute_fetched(0xc458_6000, &mut ram).unwrap(); // ldx [%g1],%g2
+    assert_eq!(cpu.read_reg(2), 0x0807_0605_0403_0201);
+    assert_ne!(cpu.data_tlb.read_data(17) & USED, 0);
+    cpu.write_reg(2, 0xf0e1_d2c3_b4a5_9687);
+    cpu.execute_fetched(0xc470_6000, &mut ram).unwrap();
+    assert_eq!(ram.read_u64(8), 0x8796_a5b4_c3d2_e1f0);
+    cpu.execute_fetched(0xc408_6001, &mut ram).unwrap(); // ldub [%g1+1],%g2
+    assert_eq!(cpu.read_reg(2), 0x96);
+    cpu.data_tlb.write_data(17, VALID, false);
+    // A read-only translation suffices for FLUSH and no device read occurs.
+    cpu.execute_fetched(0x81d8_6000, &mut UnmappedData).unwrap();
+    assert_ne!(cpu.data_tlb.read_data(17) & USED, 0);
+}
+
+#[test]
+fn translated_fetch_updates_used_in_instruction_order_and_rolls_back_errors() {
+    let mut cpu = V9Cpu::new(0x2000);
+    let mut ram = V9Memory::new(16);
+    cpu.pstate = PSTATE_PRIV;
+    cpu.lsu_control = LSU_IM;
+    cpu.instruction_tlb.stage_tag(0x2000);
+    cpu.instruction_tlb.write_data(0, VALID, true);
+    let before = cpu.clone();
+    assert!(cpu.step(&mut ram).is_err()); // zero word is unsupported
+    assert_eq!(cpu, before);
+    ram.load_words(0, &[LOAD | (0x55 << 5), STORE | (0x55 << 5)]);
+    cpu.step(&mut ram).unwrap(); // read the entry used for this fetch
+    assert_eq!(cpu.read_reg(3), VALID | USED);
+    cpu.step(&mut ram).unwrap(); // replace own entry with zero
+    assert_eq!(cpu.instruction_tlb.read_data(0), 0);
+    let before = cpu.clone();
+    assert!(cpu.step(&mut ram).unwrap_err().contains("TLB miss"));
+    assert_eq!(cpu, before);
+}
 
 fn access(cpu: &mut V9Cpu, op: u32, asi: u32, address: u64, value: u64) -> u64 {
     cpu.write_reg(1, address);
@@ -145,9 +272,7 @@ fn obp_clears_every_seeded_instruction_and_data_entry_then_probes_memory() {
     }
 }
 
-#[test]
-#[ignore = "requires the locally reconstructed OBP 3.31.0 flash"]
-fn original_obp_installs_distinct_flash_and_workspace_translations_before_enabling_mmus() {
+fn boot_to_mmu_enable(diagnostics: bool) -> (BootFlash, Ultra5ResetBoard, V9Cpu) {
     let flash = BootFlash::new(
         std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -157,6 +282,7 @@ fn original_obp_installs_distinct_flash_and_workspace_translations_before_enabli
     )
     .unwrap();
     let mut seed = vec![0; RESET_NVRAM_SIZE];
+    seed[1] = u8::from(diagnostics);
     seed[16..24].copy_from_slice(b"soft-rst");
     let mut board = Ultra5ResetBoard::new(flash.clone(), ResetNvram::new(seed).unwrap());
     let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
@@ -167,6 +293,13 @@ fn original_obp_installs_distinct_flash_and_workspace_translations_before_enabli
         board.step(&mut cpu).unwrap();
     }
     assert_eq!((cpu.pc(), cpu.npc()), (0x01ff_f000_1f90, 0x01ff_f000_1f94));
+    (flash, board, cpu)
+}
+
+#[test]
+#[ignore = "requires the locally reconstructed OBP 3.31.0 flash"]
+fn original_obp_installs_distinct_flash_and_workspace_translations_before_enabling_mmus() {
+    let (flash, _, cpu) = boot_to_mmu_enable(false);
     assert_eq!(
         (cpu.primary_context, cpu.secondary_context, cpu.lsu_control),
         (0, 0, 0)
@@ -202,4 +335,92 @@ fn original_obp_installs_distinct_flash_and_workspace_translations_before_enabli
             .all(|entry| entry.data >> 63 == 0));
     }
     assert_eq!(flash.read_word(flash_page + 0x1f94).unwrap(), 0x8143_e040); // membar #Sync
+}
+
+#[test]
+#[ignore = "requires the locally reconstructed OBP 3.31.0 flash"]
+fn original_obp_enables_mmus_copies_flash_and_executes_from_dram() {
+    let (flash, mut board, mut cpu) = boot_to_mmu_enable(true);
+    board.step_mapped(&mut cpu).unwrap(); // enable both MMUs
+    assert_eq!(cpu.lsu_control, 0xc);
+    let mut missing = cpu.clone();
+    missing.instruction_tlb.write_data(2, 0, true);
+    let before = missing.clone();
+    assert!(board
+        .step_mapped(&mut missing)
+        .unwrap_err()
+        .contains("TLB miss"));
+    assert_eq!(missing, before);
+    let fetch = board.step_mapped(&mut cpu).unwrap();
+    assert_eq!(
+        (fetch.physical_address, fetch.instruction),
+        (0x01ff_f000_1f94, 0x8143_e040)
+    );
+    assert_ne!(cpu.instruction_tlb.read_data(2) & USED, 0);
+    board.step_mapped(&mut cpu).unwrap(); // FLUSH at VA 0 via the D-TLB
+    assert_ne!(cpu.data_tlb.read_data(3) & USED, 0);
+
+    let dest = 0x3ff0_0000;
+    board.write_cacheable_xword(dest - 8, 0x1234_5678).unwrap();
+    board
+        .write_cacheable_xword(dest + 0x40000, 0x9abc_def0)
+        .unwrap();
+    for _ in 0..140_000 {
+        if cpu.pc() == 0x2038 {
+            break;
+        }
+        board.step_mapped(&mut cpu).unwrap();
+    }
+    assert_eq!((cpu.pc(), cpu.npc()), (0x2038, 0x203c));
+    for (i, bytes) in flash.image()[..0x40000].chunks_exact(8).enumerate() {
+        assert_eq!(
+            board.read_cacheable_xword(dest + 8 * i as u64).unwrap(),
+            u64::from_be_bytes(bytes.try_into().unwrap()),
+            "copied xword {i:#x}"
+        );
+    }
+    assert_eq!(board.read_cacheable_xword(dest - 8).unwrap(), 0x1234_5678);
+    assert_eq!(
+        board.read_cacheable_xword(dest + 0x40000).unwrap(),
+        0x9abc_def0
+    );
+    let original = board.read_cacheable_xword(dest + 0x2038).unwrap();
+    // Distinguish a real fetch from copied storage from a ROM-offset alias.
+    let mut probe = cpu.clone();
+    let marker = 0x8a10_2007u32; // mov 7,%g5
+    board
+        .write_cacheable_xword(
+            dest + 0x2038,
+            u64::from(marker) << 32 | (original & 0xffff_ffff),
+        )
+        .unwrap();
+    let fetch = board.step_mapped(&mut probe).unwrap();
+    assert_eq!(
+        (fetch.physical_address, fetch.instruction, probe.read_reg(5)),
+        (dest + 0x2038, marker, 7)
+    );
+    board
+        .write_cacheable_xword(dest + 0x2038, original)
+        .unwrap();
+    for offset in [0x2038, 0x203c] {
+        let fetch = board.step_mapped(&mut cpu).unwrap();
+        assert_eq!(
+            (fetch.physical_address, fetch.instruction),
+            (dest + offset, 0x0100_0000)
+        );
+    }
+    assert_ne!(cpu.instruction_tlb.read_data(1) & USED, 0);
+    assert_eq!(cpu.instruction_tlb.read_data(0) & USED, 0);
+    for _ in 0..3_000 {
+        if cpu.pc() == 0x26fc {
+            break;
+        }
+        board.step_mapped(&mut cpu).unwrap();
+    }
+    assert_eq!((cpu.pc(), cpu.npc()), (0x26fc, 0x2700));
+    assert_eq!(cpu.read_reg(16) + 0x26c, 0x4f26c); // target of ST %i0,[%l0+0x26c]
+    assert_eq!(cpu.read_reg(24), 0x2a80);
+    let [a, b] = board.take_serial_output();
+    assert!(a.ends_with(b"MMUs ON\r\nCopy Done\r\nPC = 0000.01ff.f000.201c\r\nPC = 0000.0000.0000.2060\r\nDecompressing into Memory "));
+    assert!(b.is_empty());
 }
