@@ -51,9 +51,34 @@ double-write configuration protocol. PCI enumeration, BAR relocation,
 EBus wait-state timing and peripheral functions behind the Super I/O
 configuration registers remain open. [PCIO reset mapping, tables 36–37](https://www.artisantg.com/info/force_cpci_520_series_manual.pdf) · [National Super I/O, §§2.2–2.4](https://ardent-tool.com/datasheets/NS_PC87332VLJ.pdf)
 
-With a larger instruction budget, both paths reach the next unimplemented
-word store at virtual PC `0xffff_ffff_f000_18fc`, physical
-`0x01ff_f172_6000`, value `0xffff_ffff`.
+## Front-panel LED and DRAM controller setup
+
+At virtual PC `0xffff_ffff_f000_18fc` OBP writes all ones to physical
+`0x01ff_f172_6000`, turning on the front-panel LED. The LED is bit 0 of a
+little-endian 32-bit PCIO AUXIO register. Its on-state reads as `1` through
+ASI `0x1d` and `0x0100_0000` through the big-endian ASI `0x15`. The
+fixture starts with the LED off. [PCIO LED definition](https://github.com/torvalds/linux/blob/v6.12/arch/sparc/include/asm/auxio_64.h) · [SPARC64 EBus driver](https://github.com/torvalds/linux/blob/v6.12/arch/sparc/kernel/auxio_64.c)
+
+The fixture reports a TI UltraSPARC-IIi mask revision of 9.1, seen on an
+Ultra 5/10 with the same OBP revision. The guest reads `%ver` to choose the
+DRAM timing word. On both reset paths the routine at flash offset `0x1468`
+performs these operations in order.
+
+| Register | Physical address | Value written | Following guest operation |
+| --- | --- | --- | --- |
+| Mem_Control1 | `0x01fe_0000_f018` | `0x0c4a_ab14` | Read the LED word 1,000 times |
+| Mem_Control0 | `0x01fe_0000_f010` | `0x8000_053d` | Read the LED word another 1,000 times, then return |
+
+The MCU registers implement reset values and masked readback. Writing the
+refresh-enable bit records the configuration. DRAM storage, refresh timing and ECC
+error generation are still open. [Sun IIi User’s Manual, tables 18-3 and 18-7](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf) · [Ultra 5/10 hardware console and device tree](https://rob.com/sun/sun4u-ss5/)
+
+After returning, OBP disables E-cache error reporting, clears the sticky
+fault flags and calls its external-cache size probe. Its first diagnostic
+store is `stxa %g0,[%o1] 0x76` at `0xffff_ffff_f000_0714`, with
+`%o1 = 1 << 39`. To reproduce the cold diagnostic run up to this instruction,
+use the serial example above with a limit of `7169`. A larger budget reports
+the unsupported ASI at that PC. [E-cache registers and diagnostic addressing, §§16.6 and A.9](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
 
 ## Reset and flash mapping
 
@@ -299,7 +324,7 @@ remain open. The window counters, PIL and TBA start at zero for
 repeatability where hardware reset values are unspecified.
 [IIi software interrupts, table 11-9](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=163) · [IIi window registers, §14.2.1](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223) · [IIi PSTATE and global banks, tables 14-12/13](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=235)
 
-With the reconstructed image installed, run the twelve local-ROM checks together.
+With the reconstructed image installed, run the thirteen local-ROM checks together.
 
 ```sh
 cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts --test ultra5_reset_setup --test ultra5_first_serial_access -- --ignored --nocapture

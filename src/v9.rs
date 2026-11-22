@@ -19,7 +19,11 @@ pub(crate) const PHYSICAL_ADDRESS_MASK: u64 = (1 << 41) - 1;
 const ASI_PHYS_BYPASS_EC_WITH_EBIT: u8 = 0x15;
 const ASI_PHYS_BYPASS_EC_WITH_EBIT_LE: u8 = 0x1d;
 const ASI_DMMU: u8 = 0x58;
+const ASI_ESTATE_ERROR_EN: u8 = 0x4b;
+const ASI_AFSR: u8 = 0x4c;
 const MAX_TL: u8 = 5;
+// TI UltraSPARC-IIi mask 9.1, as reported by original Ultra 5/10 hardware.
+const VERSION: u64 = 0x0017_0012_9100_0000 | ((MAX_TL as u64) << 8) | WINDOW_MASK as u64;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct TrapFrame {
@@ -51,6 +55,8 @@ pub struct V9Cpu {
     otherwin: u8,
     wstate: u8,
     lsu_control: u64,
+    estate_error_enable: u8,
+    async_fault_status: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -257,6 +263,8 @@ impl V9Cpu {
             otherwin: 0,
             wstate: 0,
             lsu_control: 0,
+            estate_error_enable: 0,
+            async_fault_status: 0,
         }
     }
 
@@ -364,6 +372,7 @@ impl V9Cpu {
             2 => match op3 {
                 0x02 => self.write_reg(rd, self.read_reg(rs1) | b),
                 0x00 => self.write_reg(rd, self.read_reg(rs1).wrapping_add(b)),
+                0x01 => self.write_reg(rd, self.read_reg(rs1) & b),
                 0x04 => self.write_reg(rd, self.read_reg(rs1).wrapping_sub(b)),
                 0x05 => self.write_reg(rd, self.read_reg(rs1) & !b),
                 0x11 => {
@@ -385,6 +394,43 @@ impl V9Cpu {
                     }
                     self.write_reg(rd, self.pc);
                     next_npc = target;
+                }
+                0x39 | 0x3c | 0x3d => {
+                    // SAVE, RESTORE and RETURN read their operands in the old window.
+                    if (word & (1 << 13) == 0 && word & 0x1fe0 != 0) || (op3 == 0x39 && rd != 0) {
+                        return Err(format!("unsupported V9 window instruction {word:#x}"));
+                    }
+                    let sum = self.read_reg(rs1).wrapping_add(b);
+                    match op3 {
+                        0x3c => {
+                            if self.cansave == 0 {
+                                return Err("V9 window spill trap not implemented".into());
+                            }
+                            if self.cleanwin == self.canrestore {
+                                return Err("V9 clean window trap not implemented".into());
+                            }
+                            self.cwp = (self.cwp + 1) & WINDOW_MASK;
+                            self.cansave -= 1;
+                            self.canrestore = (self.canrestore + 1) & WINDOW_MASK;
+                        }
+                        _ => {
+                            if self.canrestore == 0 {
+                                return Err("V9 window fill trap not implemented".into());
+                            }
+                            if op3 == 0x39 {
+                                if sum & 3 != 0 || !matches!((sum as i64) >> 43, 0 | -1) {
+                                    return Err(format!("invalid V9 RETURN target {sum:#x}"));
+                                }
+                                next_npc = sum;
+                            }
+                            self.cwp = self.cwp.wrapping_sub(1) & WINDOW_MASK;
+                            self.canrestore -= 1;
+                            self.cansave = (self.cansave + 1) & WINDOW_MASK;
+                        }
+                    }
+                    if op3 != 0x39 {
+                        self.write_reg(rd, sum);
+                    }
                 }
                 0x10 => {
                     let a = self.read_reg(rs1);
@@ -480,9 +526,14 @@ impl V9Cpu {
                     }
                     let address = self.read_reg(rs1).wrapping_add(b);
                     match (asi, op3) {
-                        (ASI_PHYS_BYPASS_EC_WITH_EBIT, 0x10) => {
+                        (ASI_PHYS_BYPASS_EC_WITH_EBIT | ASI_PHYS_BYPASS_EC_WITH_EBIT_LE, 0x10) => {
                             let value =
                                 memory.read_bypass_word(Self::bypass_address(address, 4)?)?;
+                            let value = if asi == ASI_PHYS_BYPASS_EC_WITH_EBIT_LE {
+                                value.swap_bytes()
+                            } else {
+                                value
+                            };
                             self.write_reg(rd, u64::from(value));
                         }
                         (ASI_PHYS_BYPASS_EC_WITH_EBIT, 0x14) => {
@@ -520,6 +571,22 @@ impl V9Cpu {
                             )?;
                         }
                         (0x45, 0x1b | 0x1e) => self.access_lsu_control(op3, address, rd)?,
+                        (ASI_ESTATE_ERROR_EN | ASI_AFSR, 0x1b | 0x1e) if address == 0 => {
+                            if op3 == 0x1b {
+                                let value = if asi == ASI_ESTATE_ERROR_EN {
+                                    u64::from(self.estate_error_enable)
+                                } else {
+                                    self.async_fault_status
+                                };
+                                self.write_reg(rd, value);
+                            } else if asi == ASI_ESTATE_ERROR_EN {
+                                // IIi table 16-2. Bit 2 is reserved.
+                                self.estate_error_enable = self.read_reg(rd) as u8 & 0x1b;
+                            } else {
+                                // Table 16-3. Only the sticky flags are write-one-to-clear.
+                                self.async_fault_status &= !(self.read_reg(rd) & 0x0001_adf0_0000);
+                            }
+                        }
                         (ASI_DMMU, 0x1b | 0x1e) => self.access_mmu_context(op3, address, rd)?,
                         _ => {
                             return Err(format!("unsupported V9 alternate address space {asi:#x}"))
@@ -557,6 +624,7 @@ impl V9Cpu {
             12 => u64::from(self.cleanwin),
             13 => u64::from(self.otherwin),
             14 => u64::from(self.wstate),
+            31 => VERSION,
             _ => return Err(format!("unsupported V9 RDPR register {selector}")),
         })
     }
@@ -742,6 +810,113 @@ impl V9Cpu {
 mod tests {
     use super::*;
     use crate::ultra5::{BootFlash, FLASH_SIZE};
+
+    #[test]
+    fn window_operations_read_before_rotation_and_return_slot_runs_in_caller() {
+        let mut cpu = V9Cpu::new(0x100);
+        cpu.cwp = 7;
+        cpu.cansave = 6;
+        cpu.cleanwin = 7;
+        cpu.ccr = 0xa5;
+        cpu.write_reg(8, 0x1c);
+        cpu.write_reg(15, 0x80);
+        cpu.execute_fetched(0x91e2_2004, &mut UnmappedData).unwrap(); // save %o0,4,%o0
+        assert_eq!(
+            (cpu.cwp, cpu.cansave, cpu.canrestore, cpu.cleanwin),
+            (0, 5, 1, 7)
+        );
+        assert_eq!(
+            (cpu.read_reg(8), cpu.read_reg(24), cpu.read_reg(31)),
+            (0x20, 0x1c, 0x80)
+        );
+        let mut restore = cpu.clone();
+        restore
+            .execute_fetched(0x91ea_2008, &mut UnmappedData)
+            .unwrap(); // restore %o0,8,%o0
+        assert_eq!(
+            (
+                restore.cwp,
+                restore.cansave,
+                restore.canrestore,
+                restore.read_reg(8)
+            ),
+            (7, 6, 0, 0x28)
+        );
+        cpu.execute_fetched(0x81cf_e008, &mut UnmappedData).unwrap(); // return %i7+8
+        assert_eq!((cpu.cwp, cpu.pc, cpu.npc), (7, 0x108, 0x88));
+        cpu.execute_fetched(0x8202_2001, &mut UnmappedData).unwrap(); // add %o0,1,%g1
+        assert_eq!(
+            (cpu.pc, cpu.npc, cpu.read_reg(1), cpu.ccr),
+            (0x88, 0x8c, 0x1d, 0xa5)
+        );
+        assert_eq!((cpu.cansave, cpu.canrestore, cpu.cleanwin), (6, 0, 7));
+    }
+
+    #[test]
+    fn unsupported_window_traps_leave_the_faulting_instruction_intact() {
+        for (word, save, restore, clean, input, reason) in [
+            (0x81e0_2000, 0, 0, 0, 0, "spill"),
+            (0x81e0_2000, 5, 1, 1, 0, "clean"),
+            (0x81e8_2000, 6, 0, 7, 0, "fill"),
+            (0x81cf_e008, 6, 0, 7, 0, "fill"),
+            (0x81cf_e008, 5, 1, 7, 1, "target"),
+            (0x81cf_e008, 5, 1, 7, 1 << 44, "target"),
+        ] {
+            let mut cpu = V9Cpu::new(0x14);
+            cpu.cansave = save;
+            cpu.canrestore = restore;
+            cpu.cleanwin = clean;
+            cpu.write_reg(31, input);
+            let before = cpu.clone();
+            assert!(cpu
+                .execute_fetched(word, &mut UnmappedData)
+                .unwrap_err()
+                .contains(reason));
+            assert_eq!(cpu, before);
+        }
+    }
+
+    #[test]
+    fn revision_and_error_registers_obey_privilege_width_and_sticky_bits() {
+        let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
+        let ver = 0x8357_c000; // rdpr %ver,%g1
+        cpu.execute_fetched(ver, &mut UnmappedData).unwrap();
+        assert_eq!(cpu.read_reg(1), 0x0017_0012_9100_0507);
+        let store_en = 0xc2f0_0960;
+        let load_en = 0xc2d8_0960;
+        let store_afsr = 0xc2f0_0980;
+        let load_afsr = 0xc2d8_0980;
+        cpu.write_reg(1, u64::MAX);
+        cpu.execute_fetched(store_en, &mut UnmappedData).unwrap();
+        cpu.execute_fetched(load_en, &mut UnmappedData).unwrap();
+        assert_eq!(cpu.read_reg(1), 0x1b);
+        cpu.async_fault_status = (1 << 32) | (1 << 27) | (1 << 20);
+        cpu.write_reg(1, 1 << 27);
+        cpu.execute_fetched(store_afsr, &mut UnmappedData).unwrap();
+        for _ in 0..2 {
+            cpu.execute_fetched(load_afsr, &mut UnmappedData).unwrap();
+            assert_eq!(cpu.read_reg(1), (1 << 32) | (1 << 20));
+        }
+        cpu.write_reg(1, u64::MAX);
+        cpu.execute_fetched(store_afsr, &mut UnmappedData).unwrap();
+        assert_eq!(cpu.async_fault_status, 0);
+        assert_eq!(cpu.estate_error_enable, 0x1b);
+        cpu.write_reg(2, 8);
+        for invalid in [store_en | 2, load_afsr | 2, 0xc2a0_0980, 0xbf90_2000] {
+            let before = cpu.clone();
+            assert!(cpu.execute_fetched(invalid, &mut UnmappedData).is_err());
+            assert_eq!(cpu, before);
+        }
+        let mut user = V9Cpu::new(0);
+        for restricted in [ver, load_en, store_en, load_afsr, store_afsr] {
+            let before = user.clone();
+            assert!(user
+                .execute_fetched(restricted, &mut UnmappedData)
+                .unwrap_err()
+                .contains("privileged"));
+            assert_eq!(user, before);
+        }
+    }
 
     #[test]
     fn rdpr_reads_the_live_cwp_preserving_all_other_state() {

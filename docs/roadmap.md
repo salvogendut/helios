@@ -71,12 +71,13 @@ controller and prints its power-on diagnostic when NVRAM byte 1 is nonzero.
 | --- | --- |
 | First serial register access | At virtual PC `0xffff_ffff_f000_033c`, the guest stores one byte, `0xc3`, at physical `0x01ff_f140_002c` (channel A CCR0). Both tested reset-marker paths reach this write. |
 | First firmware text | Serial A emits `Hardware Power ON` on the cold path and `Software Power ON` on the matching-marker path. Each ends in CR/LF. With the diagnostic byte clear, these writes to the transmit FIFO are skipped. |
+| DRAM controller setup | All four marker/diagnostic combinations turn on the front-panel LED, program both MCU registers, complete both polling delays and reach external-cache sizing. |
 | Interactive OpenBoot console | Open. Acceptance is a serial `ok` prompt that takes `1 2 + .`, replies `3` and prompts again. |
 
-The next board access to model is the 32-bit store at PC
-`0xffff_ffff_f000_18fc`, physical address `0x01ff_f172_6000`. Follow the
-original ROM through that access and subsequent initialization, then verify
-serial receive from a host terminal. The earlier estimate of one to several
+The next access is an E-cache diagnostic store through ASI `0x76` at PC
+`0xffff_ffff_f000_0714`. The firmware probes for SRAM aliasing before it
+prints its version banner. Verify the cache-size readback against the selected
+module, then follow the original ROM toward serial receive. The earlier estimate of one to several
 weeks for an interactive prompt remains provisional. Firmware progress beyond
 this diagnostic and the receive path are the main uncertainties.
 [Run the headless diagnostic](ultra5.md#run-the-first-serial-diagnostic)

@@ -7,6 +7,9 @@ const PCI_MEMORY: u64 = 0x01ff_0000_0000;
 const EBUS_BAR1: u32 = 0xf100_0000;
 const SIO_INDEX: u64 = 0x30_0398;
 const SIO_DATA: u64 = SIO_INDEX + 1;
+const AUXIO_LED: u64 = PCI_MEMORY + EBUS_BAR1 as u64 + 0x72_6000;
+const MEM_CONTROL0: u64 = 0x01fe_0000_f010;
+const MEM_CONTROL1: u64 = 0x01fe_0000_f018;
 
 #[derive(Default)]
 struct BusNumbers {
@@ -24,6 +27,9 @@ pub struct Ultra5ResetBoard {
     host_subordinate: u8,
     apb: [BusNumbers; 2],
     ebus_setup: [u32; 3],
+    front_panel_led: bool,
+    mem_control0: u32,
+    mem_control1: u32,
     super_io: SuperIoConfig,
     serial: Serial,
 }
@@ -37,6 +43,10 @@ impl Ultra5ResetBoard {
             host_subordinate: 0,
             apb: Default::default(),
             ebus_setup: [0; 3],
+            front_panel_led: false,
+            // IIi tables 18-3 and 18-7: DIMM pairs, refresh interval and DRAM timings.
+            mem_control0: 0x0f30,
+            mem_control1: 0x004a_2950,
             super_io: SuperIoConfig::default(),
             serial: Serial::default(),
         }
@@ -146,17 +156,37 @@ impl V9DataBus for Ultra5ResetBoard {
         self.read_bypass_byte(va & PHYSICAL_ADDRESS_MASK)
     }
     fn write_bypass_xword(&mut self, pa: u64, value: u64) -> Result<(), String> {
+        match pa {
+            MEM_CONTROL0 => {
+                // SME1430 RefEnable, ECCEnable, board timing, geometry and refresh fields.
+                self.mem_control0 = value as u32 & 0x9e00_1fff;
+                return Ok(());
+            }
+            MEM_CONTROL1 => {
+                self.mem_control1 = value as u32;
+                return Ok(());
+            }
+            _ => {}
+        }
         let i = self.nvram.sram_index(pa, 8)?;
         self.nvram.image[i..i + 8].copy_from_slice(&value.to_be_bytes());
         Ok(())
     }
     fn read_bypass_word(&mut self, pa: u64) -> Result<u32, String> {
+        if pa == AUXIO_LED {
+            // PCIO bit 0 is in the first byte on the little-endian EBus interface.
+            return Ok(u32::from(self.front_panel_led).swap_bytes());
+        }
         let i = self.nvram.sram_index(pa, 4)?;
         Ok(u32::from_be_bytes(
             self.nvram.image[i..i + 4].try_into().unwrap(),
         ))
     }
     fn write_bypass_word(&mut self, pa: u64, value: u32) -> Result<(), String> {
+        if pa == AUXIO_LED {
+            self.front_panel_led = value.swap_bytes() & 1 != 0;
+            return Ok(());
+        }
         if !matches!(Self::ebus_offset(pa), Some(0..=0x0f_ffff)) {
             return Err(format!(
                 "unmapped Ultra 5 physical word write at {pa:#x} value={value:#010x}"
@@ -167,9 +197,12 @@ impl V9DataBus for Ultra5ResetBoard {
         Ok(())
     }
     fn read_bypass_xword(&mut self, pa: u64) -> Result<u64, String> {
-        // A freshly constructed board starts from SYS_RESET_L (IIi table 17-2).
-        if pa == 0x01fe_0000_f020 {
-            return Ok(1 << 31);
+        match pa {
+            MEM_CONTROL0 => return Ok(u64::from(self.mem_control0)),
+            MEM_CONTROL1 => return Ok(u64::from(self.mem_control1)),
+            // A freshly constructed board starts from SYS_RESET_L (IIi table 17-2).
+            0x01fe_0000_f020 => return Ok(1 << 31),
+            _ => {}
         }
         if matches!(Self::ebus_offset(pa), Some(0..=0x0f_ffff)) {
             return self.nvram.read_bypass_xword(pa);
@@ -227,6 +260,9 @@ impl V9DataBus for Ultra5ResetBoard {
     }
 
     fn write_bypass_le_word(&mut self, pa: u64, value: u32) -> Result<(), String> {
+        if pa == AUXIO_LED {
+            return self.write_bypass_word(pa, value.swap_bytes());
+        }
         if pa
             .checked_sub(PCI_CONFIG)
             .is_some_and(|offset| self.pcio_bar1_at(offset))
@@ -260,6 +296,125 @@ mod tests {
             BootFlash::new(vec![0; FLASH_SIZE]).unwrap(),
             ResetNvram::new(vec![0; RESET_NVRAM_SIZE]).unwrap(),
         )
+    }
+
+    #[test]
+    fn auxio_led_obeys_pci_byte_order_and_only_decodes_its_word() {
+        let mut board = fixture();
+        let led = 0x01ff_f172_6000;
+        assert_eq!(board.read_bypass_word(led).unwrap(), 0);
+        board.write_bypass_word(led, 0x0100_0000).unwrap();
+        assert!(board.front_panel_led);
+        assert_eq!(board.read_bypass_word(led).unwrap(), 0x0100_0000);
+        board.write_bypass_word(led, 1).unwrap();
+        assert!(!board.front_panel_led);
+        board.write_bypass_le_word(led, 0xfefe_fe01).unwrap();
+        assert!(board.front_panel_led);
+        assert!(board.write_bypass_byte(led, 0).is_err());
+        assert!(board.write_bypass_xword(led, 0).is_err());
+        assert!(board.write_bypass_word(led + 4, 0).is_err());
+        assert!(board.write_bypass_word(led - 0x2000, 0).is_err());
+        assert!(board.front_panel_led);
+        let mut cpu = V9Cpu::from(crate::ultra5::PowerOnReset::ultra_sparc_ii());
+        cpu.write_reg(1, led);
+        cpu.execute_fetched(0xc480_43a0, &mut board).unwrap(); // lduwa [%g1] ASI 0x1d,%g2
+        assert_eq!(cpu.read_reg(2), 1);
+        cpu.execute_fetched(0xc480_42a0, &mut board).unwrap(); // lduwa [%g1] ASI 0x15,%g2
+        assert_eq!(cpu.read_reg(2), 0x0100_0000);
+    }
+
+    #[test]
+    fn mcu_registers_retain_writable_fields_independently() {
+        let mut board = fixture();
+        let config = 0x01fe_0000_f010;
+        let timing = config + 8;
+        assert_eq!(board.read_bypass_xword(config).unwrap(), 0xf30);
+        assert_eq!(board.read_bypass_xword(timing).unwrap(), 0x4a2950);
+        board.write_bypass_xword(timing, u64::MAX).unwrap();
+        assert_eq!(
+            board.read_bypass_xword(timing).unwrap(),
+            u64::from(u32::MAX)
+        );
+        assert_eq!(board.read_bypass_xword(config).unwrap(), 0xf30);
+        board.write_bypass_xword(config, u64::MAX).unwrap();
+        assert_eq!(board.read_bypass_xword(config).unwrap(), 0x9e00_1fff);
+        assert!(board.write_bypass_word(config, 0).is_err());
+        assert!(board.write_bypass_xword(config + 4, 0).is_err());
+        board.write_bypass_xword(timing, 0).unwrap();
+        assert_eq!(board.read_bypass_xword(config).unwrap(), 0x9e00_1fff);
+        assert_eq!(board.read_bypass_xword(timing).unwrap(), 0);
+    }
+
+    #[test]
+    #[ignore = "requires the locally reconstructed OBP 3.31.0 flash"]
+    fn original_obp_sets_refresh_and_returns_to_the_ecache_probe() {
+        let image = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/local/firmware/ultra5/ultra5-obp331-post310-1mb.bin"
+        ))
+        .unwrap();
+        let flash = BootFlash::new(image).unwrap();
+        for marker in [[0; 8], *b"soft-rst"] {
+            for diagnostics in [false, true] {
+                let mut seed = vec![0; RESET_NVRAM_SIZE];
+                seed[1] = u8::from(diagnostics);
+                seed[0x10..0x18].copy_from_slice(&marker);
+                let mut board =
+                    Ultra5ResetBoard::new(flash.clone(), ResetNvram::new(seed).unwrap());
+                let reset = crate::ultra5::PowerOnReset::ultra_sparc_ii();
+                let base = reset.pc - 0x20;
+                let mut cpu = V9Cpu::from(reset);
+                let mut polls = [0; 2];
+                let mut writes = Vec::new();
+                let mut retired = 0;
+                while cpu.pc() != base + 0x714 && retired < 8_000 {
+                    let pc = cpu.pc();
+                    if pc == base + 0x14c0 || pc == base + 0x14f8 {
+                        assert_eq!(cpu.read_reg(2), 0x01ff_f172_6000);
+                        assert!(board.front_panel_led);
+                        polls[usize::from(pc == base + 0x14f8)] += 1;
+                    }
+                    if pc == base + 0xfc && cpu.current_window() == 1 {
+                        writes.push((cpu.read_reg(10) + cpu.read_reg(8), cpu.read_reg(9)));
+                    }
+                    board.step(&mut cpu).unwrap();
+                    retired += 1;
+                    if pc == base + 0x14fc {
+                        assert_eq!(
+                            (cpu.current_window(), cpu.pc(), cpu.npc()),
+                            (0, base + 0x1500, base + 0x1908)
+                        );
+                    }
+                }
+                assert_eq!(
+                    (cpu.pc(), cpu.npc(), cpu.read_reg(9)),
+                    (base + 0x714, base + 0x718, 1 << 39)
+                );
+                assert_eq!(
+                    writes,
+                    [
+                        (0x01fe_0000_f018, 0x0c4a_ab14),
+                        (0x01fe_0000_f010, 0x8000_053d)
+                    ]
+                );
+                assert_eq!(
+                    (board.mem_control0, board.mem_control1),
+                    (0x8000_053d, 0x0c4a_ab14)
+                );
+                assert_eq!(polls, [1_000, 1_000]);
+                let [ttya, ttyb] = board.take_serial_output();
+                let line: &[u8] = match (diagnostics, marker == *b"soft-rst") {
+                    (false, _) => b"",
+                    (true, true) => b"Software Power ON\r\n",
+                    (true, false) => b"Hardware Power ON\r\n",
+                };
+                assert_eq!(ttya, line);
+                assert!(ttyb.is_empty());
+                println!(
+                    "marker={marker:?} diagnostics={diagnostics} retired={retired} polls={polls:?}"
+                );
+            }
+        }
     }
 
     #[test]
