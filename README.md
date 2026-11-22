@@ -30,9 +30,10 @@ On the experimental **Ultra 5**, original OpenBoot 3.31.0 detects the
 module's 2 MiB external cache, prints its firmware version on serial A and
 clears the cache tags. Cold boot finishes the unplugged keyboard probe. Both
 reset paths discover 512 MiB, enable the instruction and data MMUs, copy
-256 KiB from flash and execute that copy from RAM. With diagnostics enabled,
-serial A reaches `Decompressing into Memory`. The interactive Ultra 5
-prompt is still in development. [Reproduce the serial checkpoint](docs/ultra5.md#executing-openboot-from-ram)
+256 KiB from flash and run the relocated decompressor. It expands 453,536
+bytes and jumps into that image in RAM. Serial A reports the expanded size
+when diagnostics are enabled. The interactive Ultra 5 prompt is still in
+development. [Reproduce the serial checkpoint](docs/ultra5.md#executing-the-expanded-firmware)
 
 **SPARCstation 20** and **Axil 320** profiles boot their original firmware to
 the serial `ok` prompt with either one CPU or two 75 MHz SuperSPARC-II modules.

@@ -63,8 +63,8 @@ machines should become explicit profiles; SPARC V9 is a separate CPU milestone.
 
 ## Ultra 5 serial console
 
-**Original OBP 3.31.0 executes from RAM on 22 November 2026.** Both reset
-paths reach the first word store in the relocated decompressor.
+**Original OBP 3.31.0 executes its expanded firmware from RAM on 22 November 2026.**
+Cold and soft-reset runs reach the same entry with diagnostics enabled or disabled.
 
 | Milestone | Evidence |
 | --- | --- |
@@ -76,10 +76,9 @@ paths reach the first word store in the relocated decompressor.
 | Instruction and data TLB clear | On both paths the firmware clears all 64 slots in each bank, returns to its caller and reaches the ASI `0x14` read at physical address zero. |
 | Physical DRAM discovery | OBP detects the two 256 MiB DIMMs in pair 2, selects 11-bit columns, reports the upper 256 MiB rank at `0x30000000` and clears the top 1 MiB. |
 | MMU enable and relocation | The original ROM copies 256 KiB to PA `0x3ff00000`, branches to VA `0x2038` backed by RAM and starts its decompressor. Both diagnostic runs print the flash and RAM PCs. |
+| Decompression and entry | OBP expands 453,536 bytes at VA `0xf0000000` and executes the entry at VA `0xf0051f8c`. A local-ROM test compares every byte against an independent decoder. |
 | Interactive OpenBoot console | Open. Acceptance is a serial `ok` prompt that takes `1 2 + .`, replies `3` and prompts again. |
 
-The next milestone is the decompressor. Its first unsupported instruction at
-VA `0x26fc` stores a 32-bit word to VA `0x4f26c`. Verify the destination bytes,
-adjacent lanes and decompressed image as that path progresses. Interactive
-serial input and a prompt that accepts a Forth command are still pending.
-[Reproduce the current checkpoint](ultra5.md#executing-openboot-from-ram)
+At VA `0xf0051fb8` the expanded firmware writes `0x3d` to the IIi dispatch
+control register. This is the next CPU operation on the path to an interactive
+serial prompt. [Reproduce the current checkpoint](ultra5.md#executing-the-expanded-firmware)

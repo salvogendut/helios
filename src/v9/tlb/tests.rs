@@ -272,15 +272,13 @@ fn obp_clears_every_seeded_instruction_and_data_entry_then_probes_memory() {
     }
 }
 
+const OBP_FLASH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/local/firmware/ultra5/ultra5-obp331-post310-1mb.bin"
+);
+
 fn boot_to_mmu_enable(diagnostics: bool) -> (BootFlash, Ultra5ResetBoard, V9Cpu) {
-    let flash = BootFlash::new(
-        std::fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/local/firmware/ultra5/ultra5-obp331-post310-1mb.bin"
-        ))
-        .unwrap(),
-    )
-    .unwrap();
+    let flash = BootFlash::new(std::fs::read(OBP_FLASH).unwrap()).unwrap();
     let mut seed = vec![0; RESET_NVRAM_SIZE];
     seed[1] = u8::from(diagnostics);
     seed[16..24].copy_from_slice(b"soft-rst");
@@ -423,4 +421,167 @@ fn original_obp_enables_mmus_copies_flash_and_executes_from_dram() {
     let [a, b] = board.take_serial_output();
     assert!(a.ends_with(b"MMUs ON\r\nCopy Done\r\nPC = 0000.01ff.f000.201c\r\nPC = 0000.0000.0000.2060\r\nDecompressing into Memory "));
     assert!(b.is_empty());
+}
+
+#[test]
+#[ignore = "requires the locally reconstructed OBP 3.31.0 flash and Python 3"]
+fn original_obp_expands_the_image_and_executes_its_entry_in_ram() {
+    let reference = std::process::Command::new("python3")
+        .args([
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tools/ultra5-fixture/decompress_reference.py"
+            ),
+            OBP_FLASH,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        reference.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reference.stderr)
+    );
+    assert_eq!(reference.stdout.len(), 0x6eba0);
+
+    let (_, mut board, mut cpu) = boot_to_mmu_enable(true);
+    let run_to = |board: &mut Ultra5ResetBoard, cpu: &mut V9Cpu, pc, limit| {
+        for _ in 0..limit {
+            if cpu.pc() == pc {
+                return;
+            }
+            board.step_mapped(cpu).unwrap();
+        }
+        panic!("did not reach {pc:#x}, stopped at {:#x}", cpu.pc());
+    };
+
+    run_to(&mut board, &mut cpu, 0x26e8, 150_000);
+    let base = 0x3ff8_0000;
+    let guards = [
+        (base - 8, 0x1234_5678_9abc_def0),
+        (base + 0x6eba0, 0xfedc_ba98_7654_3210),
+    ];
+    for (address, value) in guards {
+        board.write_cacheable_xword(address, value).unwrap();
+    }
+    run_to(&mut board, &mut cpu, 0x20b0, 22_000_000);
+    assert_eq!(
+        board.read_cacheable_xword(0x3ff4_1f50).unwrap() >> 32,
+        0xf006_eba0
+    );
+    for (i, chunk) in reference.stdout.chunks_exact(8).enumerate() {
+        let address = base + i as u64 * 8;
+        assert_eq!(
+            board.read_cacheable_xword(address).unwrap().to_be_bytes(),
+            chunk,
+            "PA {address:#x}"
+        );
+    }
+    for (address, value) in guards {
+        assert_eq!(board.read_cacheable_xword(address).unwrap(), value);
+    }
+
+    run_to(&mut board, &mut cpu, 0xf005_1f8c, 5_000);
+    let entry = board.step_mapped(&mut cpu).unwrap();
+    assert_eq!(
+        (entry.physical_address, entry.instruction),
+        (0x3ffd_1f8c, 0x9190_200f)
+    );
+    run_to(&mut board, &mut cpu, 0xf005_1fb8, 32);
+    assert_eq!(cpu.npc(), 0xf005_1fbc);
+    let [a, b] = board.take_serial_output();
+    assert!(a.ends_with(b"Decompressing into Memory Done\r\nSize = 0000.0000.0006.eba0"));
+    assert!(b.is_empty());
+}
+
+#[test]
+fn narrow_integer_accesses_select_dram_lanes_and_apply_endianness_once() {
+    let flash = BootFlash::new(vec![0; crate::ultra5::FLASH_SIZE]).unwrap();
+    let mut board =
+        Ultra5ResetBoard::new(flash, ResetNvram::new(vec![0; RESET_NVRAM_SIZE]).unwrap());
+    let mut cpu = V9Cpu::new(0);
+    cpu.lsu_control = LSU_DM;
+    cpu.data_tlb.stage_tag(0x2000);
+    let pa = 0x1000_0000;
+    let original = [0x81, 0x82, 0x93, 0x94, 0xa5, 0xa6, 0xb7, 0xb8];
+    let source = 0xfedc_ba98_e4d3_c2b1u64;
+    for pstate_little in [false, true] {
+        for page_inverted in [false, true] {
+            cpu.pstate = PSTATE_PRIV | (u16::from(pstate_little) << 9);
+            cpu.data_tlb.write_data(
+                3,
+                VALID | pa | 0x22 | (u64::from(page_inverted) << 59),
+                false,
+            );
+            let little = pstate_little ^ page_inverted;
+            // Immediate-address forms: load/store %g2 at [%g1 + 0].
+            for (load, store, width) in [
+                (0xc408_6000, 0xc428_6000, 1),
+                (0xc410_6000, 0xc430_6000, 2),
+                (0xc400_6000, 0xc420_6000, 4),
+            ] {
+                for lane in (0..8).step_by(width) {
+                    board
+                        .write_cacheable_xword(pa, u64::from_be_bytes(original))
+                        .unwrap();
+                    cpu.write_reg(1, 0x2000 + lane as u64);
+                    cpu.write_reg(2, u64::MAX);
+                    cpu.execute_fetched(load, &mut board).unwrap();
+                    let mut raw = original[lane..lane + width].to_vec();
+                    if little {
+                        raw.reverse();
+                    }
+                    let expected = raw.iter().fold(0u64, |acc, &b| (acc << 8) | u64::from(b));
+                    assert_eq!(cpu.read_reg(2), expected);
+                    cpu.write_reg(2, source);
+                    cpu.execute_fetched(store, &mut board).unwrap();
+                    let mut expected = original;
+                    let bytes = if little {
+                        source.to_le_bytes()
+                    } else {
+                        source.to_be_bytes()
+                    };
+                    expected[lane..lane + width].copy_from_slice(if little {
+                        &bytes[..width]
+                    } else {
+                        &bytes[8 - width..]
+                    });
+                    assert_eq!(
+                        board.read_cacheable_xword(pa).unwrap().to_be_bytes(),
+                        expected
+                    );
+                }
+            }
+            assert_ne!(cpu.data_tlb.read_data(3) & USED, 0);
+        }
+    }
+}
+
+#[test]
+fn narrow_data_faults_preserve_registers_memory_and_tlb_used() {
+    let mut cpu = V9Cpu::new(0);
+    let mut ram = V9Memory::new(18);
+    cpu.lsu_control = LSU_DM;
+    cpu.data_tlb.stage_tag(0x2000);
+    ram.write_u64(8, 0x1234_5678_90ab_cdef);
+    cpu.write_reg(2, u64::MAX);
+
+    // Read-only page, misaligned half/word, and a word straddling the backing limit.
+    for (op, va, flags) in [
+        (0xc428_6000, 0x2008, 0x20),
+        (0xc410_6000, 0x2009, 0x22),
+        (0xc430_6000, 0x2009, 0x22),
+        (0xc400_6000, 0x200a, 0x22),
+        (0xc420_6000, 0x2010, 0x22),
+    ] {
+        cpu.data_tlb.write_data(3, VALID | flags, false);
+        cpu.write_reg(1, va);
+        let before = (cpu.clone(), ram.clone());
+        assert!(cpu.execute_fetched(op, &mut ram).is_err());
+        assert_eq!((&cpu, &ram), (&before.0, &before.1));
+    }
+
+    cpu.write_reg(1, 0x2010);
+    cpu.execute_fetched(0xc430_6000, &mut ram).unwrap();
+    cpu.execute_fetched(0xc210_6000, &mut ram).unwrap(); // lduh [%g1],%g1, last two bytes
+    assert_eq!(cpu.read_reg(1), 0xffff);
 }

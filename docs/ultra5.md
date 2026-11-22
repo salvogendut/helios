@@ -4,7 +4,7 @@ The headless Ultra 5/10 fixture runs original OBP 3.31.0 far enough to
 transmit its version banner on serial A, clear the external-cache tags and
 complete the cold-start probe with the keyboard disconnected. Both boot paths
 clear the instruction and data TLBs, complete DRAM discovery, enable translation
-and execute the firmware copy from RAM through entry to the decompressor.
+and execute the 453,536-byte firmware image expanded in RAM.
 An interactive OpenBoot prompt remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
 
 ## Run the first serial diagnostic
@@ -236,9 +236,31 @@ instruction in RAM on a probe CPU to verify the fetch source.
 
 `Ultra5ResetBoard::step_mapped` steps flash and DRAM, reporting the physical
 address and retired instruction. The existing `step` method serves callers
-that need a flash offset. The current stop is `st %i0,[%l0+0x26c]` at
-VA `0x26fc` (PA `0x3ff026fc`). It would write `0x00002a80` to VA
-`0x4f26c`. Completion of decompression and the serial prompt remain open.
+that need a flash offset. The store at VA `0x26fc` writes the compressed
+stream address `0x2a80` to VA `0x4f26c`.
+
+## Executing the expanded firmware
+
+Use the serial example above with `--release` and a limit of `51181204`
+for the cold diagnostic seed or `20630112` for the soft diagnostic seed.
+The final serial A lines are
+
+```text
+Decompressing into Memory Done
+Size = 0000.0000.0006.eba0
+```
+
+OBP expands the stream at flash offsets `0x2a80..0x3b664` into 453,536 bytes
+starting at VA `0xf0000000` (PA `0x3ff80000`). Its first instruction in
+the expanded image is `wrpr 15,%pil` at VA `0xf0051f8c` (PA `0x3ffd1f8c`).
+The local-ROM regression compares the entire output against an independent
+LZW decoder, checks the guest's end pointer and the xwords bracketing the
+image, and observes the instruction retire from that physical address.
+
+After eleven instructions the fixture reaches `wr %g0,0x3d,%asr18` at
+VA `0xf0051fb8`. ASR 18 is the privileged IIi dispatch control register.
+Cold and soft resets also reach this instruction with diagnostics disabled
+and both serial ports quiet. [UltraSPARC-IIi User’s Manual, §§6.5, A.3 and I.1.2](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
 
 ## Reset and flash mapping
 
@@ -484,7 +506,7 @@ remain open. The window counters, PIL and TBA start at zero for
 repeatability where hardware reset values are unspecified.
 [IIi software interrupts, table 11-9](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=163) · [IIi window registers, §14.2.1](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223) · [IIi PSTATE and global banks, tables 14-12/13](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=235)
 
-With the reconstructed image installed, run the twenty local-ROM checks together.
+With the reconstructed image installed, run the local-ROM checks together.
 
 ```sh
 cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts --test ultra5_reset_setup --test ultra5_first_serial_access --test ultra5_ecache --test ultra5_keyboard_timeout -- --ignored --nocapture

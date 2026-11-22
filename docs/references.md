@@ -120,6 +120,10 @@ test rather than assuming either emulator defines the hardware.
   Section 15.11 describes the TLB Used bit. The pinned QEMU SPARC64
   translator also matches the full virtual page, context or global bit,
   and page size. [Sun IIi manual](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf) · [QEMU SPARC MMU, tag matching and instruction/data translation](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/mmu_helper.c#L506)
+- V9 Appendix A.27 and A.54 specify the width, alignment and zero extension
+  of the decompressor's integer transfers. A.31 defines ORcc's separate
+  32- and 64-bit condition codes. The original Ultra 5 firmware uses STW,
+  STH and STB for its workspace and output. [SPARC V9 manual](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf) · [Pinned QEMU SPARC instruction encodings](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/insns.decode#L645)
 - The IIi manual gives the rank and pair selects, Mem_Control0 column mode
   and the PA14 column test. The physical Ultra 5 POST transcript records the
   two 256 MiB modules in pair 2. QEMU's generic sun4u machine maps contiguous

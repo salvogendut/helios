@@ -84,6 +84,33 @@ pub struct V9Memory {
     bytes: Vec<u8>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IntegerWidth {
+    Byte = 1,
+    Half = 2,
+    Word = 4,
+    Xword = 8,
+}
+
+impl IntegerWidth {
+    fn mask(self) -> u64 {
+        u64::MAX >> (64 - 8 * self as u32)
+    }
+
+    fn lane_shift(self, pa: u64) -> u64 {
+        // translate() has already checked natural alignment.
+        (8 - self as u64 - (pa & 7)) * 8
+    }
+
+    fn reorder(self, value: u64, little: bool) -> u64 {
+        if little {
+            value.swap_bytes() >> (64 - 8 * self as u32)
+        } else {
+            value & self.mask()
+        }
+    }
+}
+
 /// Data accesses are independent of the instruction source. A reset-time
 /// peripheral may implement physical bypass reads without mapping virtual RAM.
 pub(crate) trait V9DataBus {
@@ -97,9 +124,52 @@ pub(crate) trait V9DataBus {
             "unmapped V9 cacheable physical xword write at {pa:#x}"
         ))
     }
-    fn read_cacheable_byte(&mut self, pa: u64) -> Result<u8, String> {
-        let word = self.read_cacheable_xword(pa & !7)?;
-        Ok((word >> ((7 - (pa & 7)) * 8)) as u8)
+    fn read_integer(
+        &mut self,
+        pa: u64,
+        width: IntegerWidth,
+        cacheable: bool,
+    ) -> Result<u64, String> {
+        if cacheable {
+            let word = self.read_cacheable_xword(pa & !7)?;
+            return Ok((word >> width.lane_shift(pa)) & width.mask());
+        }
+        match width {
+            IntegerWidth::Byte => self.read_bypass_byte(pa).map(u64::from),
+            IntegerWidth::Half => Err(format!("unmapped V9 noncacheable halfword read at {pa:#x}")),
+            IntegerWidth::Word => self.read_bypass_word(pa).map(u64::from),
+            IntegerWidth::Xword => self.read_bypass_xword(pa),
+        }
+    }
+
+    fn write_integer(
+        &mut self,
+        pa: u64,
+        width: IntegerWidth,
+        cacheable: bool,
+        value: u64,
+    ) -> Result<(), String> {
+        if cacheable {
+            if width == IntegerWidth::Xword {
+                return self.write_cacheable_xword(pa, value);
+            }
+            // Only the ordinary DRAM port permits a lane merge. An MMIO
+            // store below must issue exactly one operation of the guest width.
+            let base = pa & !7;
+            let shift = width.lane_shift(pa);
+            let old = self.read_cacheable_xword(base)?;
+            let mask = width.mask();
+            return self
+                .write_cacheable_xword(base, (old & !(mask << shift)) | ((value & mask) << shift));
+        }
+        match width {
+            IntegerWidth::Byte => self.write_bypass_byte(pa, value as u8),
+            IntegerWidth::Half => Err(format!(
+                "unmapped V9 noncacheable halfword write at {pa:#x}"
+            )),
+            IntegerWidth::Word => self.write_bypass_word(pa, value as u32),
+            IntegerWidth::Xword => self.write_bypass_xword(pa, value),
+        }
     }
     fn read_bypass_xword(&mut self, pa: u64) -> Result<u64, String> {
         Err(format!(
@@ -140,8 +210,29 @@ impl V9DataBus for V9Memory {
     fn write_cacheable_xword(&mut self, pa: u64, value: u64) -> Result<(), String> {
         self.try_write_u64(pa, value)
     }
-    fn read_cacheable_byte(&mut self, pa: u64) -> Result<u8, String> {
-        self.read_bypass_byte(pa)
+    fn read_integer(
+        &mut self,
+        pa: u64,
+        width: IntegerWidth,
+        _cacheable: bool,
+    ) -> Result<u64, String> {
+        let at = self.checked_range(pa, width as u64, width as u64)?;
+        let size = width as usize;
+        let mut bytes = [0; 8];
+        bytes[8 - size..].copy_from_slice(&self.bytes[at..at + size]);
+        Ok(u64::from_be_bytes(bytes))
+    }
+    fn write_integer(
+        &mut self,
+        pa: u64,
+        width: IntegerWidth,
+        _cacheable: bool,
+        value: u64,
+    ) -> Result<(), String> {
+        let at = self.checked_range(pa, width as u64, width as u64)?;
+        let size = width as usize;
+        self.bytes[at..at + size].copy_from_slice(&value.to_be_bytes()[8 - size..]);
+        Ok(())
     }
     fn write_bypass_xword(&mut self, pa: u64, value: u64) -> Result<(), String> {
         self.try_write_u64(pa, value)
@@ -465,8 +556,9 @@ impl V9Cpu {
                 0x04 => self.write_reg(rd, self.read_reg(rs1).wrapping_sub(b)),
                 0x05 => self.write_reg(rd, self.read_reg(rs1) & !b),
                 0x09 => self.write_reg(rd, self.read_reg(rs1).wrapping_mul(b)), // MULX
-                0x11 => {
-                    let result = self.read_reg(rs1) & b;
+                0x11 | 0x12 => {
+                    let a = self.read_reg(rs1);
+                    let result = if op3 == 0x11 { a & b } else { a | b };
                     let low = result as u32;
                     self.ccr = (u8::from((result as i64) < 0) << 7)
                         | (u8::from(result == 0) << 6)
@@ -602,42 +694,27 @@ impl V9Cpu {
                 _ => return Err(format!("unsupported V9 op3 {op3:#x}")),
             },
             3 => match op3 {
-                0x01 | 0x0b | 0x0e => {
-                    let va = self.read_reg(rs1).wrapping_add(b);
-                    let width = if op3 == 0x01 { 1 } else { 8 };
-                    let kind = if op3 == 0x0e {
-                        Access::Write
-                    } else {
-                        Access::Read
+                0x00..=0x02 | 0x04..=0x06 | 0x0b | 0x0e => {
+                    let width = match op3 {
+                        0x00 | 0x04 => IntegerWidth::Word,
+                        0x01 | 0x05 => IntegerWidth::Byte,
+                        0x02 | 0x06 => IntegerWidth::Half,
+                        _ => IntegerWidth::Xword,
                     };
-                    let mapping = self.translate(va, width, kind)?;
+                    let kind = if op3 & 4 == 0 {
+                        Access::Read
+                    } else {
+                        Access::Write
+                    };
+                    let va = self.read_reg(rs1).wrapping_add(b);
+                    let mapping = self.translate(va, width as u64, kind)?;
                     let little = mapping.invert_endian ^ (self.pstate & (1 << 9) != 0);
-                    match op3 {
-                        0x01 => {
-                            let byte = if mapping.cacheable {
-                                memory.read_cacheable_byte(mapping.pa)?
-                            } else {
-                                memory.read_bypass_byte(mapping.pa)?
-                            };
-                            self.write_reg(rd, u64::from(byte));
-                        }
-                        0x0b => {
-                            let word = if mapping.cacheable {
-                                memory.read_cacheable_xword(mapping.pa)?
-                            } else {
-                                memory.read_bypass_xword(mapping.pa)?
-                            };
-                            self.write_reg(rd, if little { word.swap_bytes() } else { word });
-                        }
-                        _ => {
-                            let word = self.read_reg(rd);
-                            let word = if little { word.swap_bytes() } else { word };
-                            if mapping.cacheable {
-                                memory.write_cacheable_xword(mapping.pa, word)?;
-                            } else {
-                                memory.write_bypass_xword(mapping.pa, word)?;
-                            }
-                        }
+                    if kind == Access::Write {
+                        let value = width.reorder(self.read_reg(rd), little);
+                        memory.write_integer(mapping.pa, width, mapping.cacheable, value)?;
+                    } else {
+                        let value = memory.read_integer(mapping.pa, width, mapping.cacheable)?;
+                        self.write_reg(rd, width.reorder(value, little));
                     }
                     if let Some(slot) = mapping.slot {
                         self.data_tlb.set_used(slot, true);
@@ -1018,6 +1095,30 @@ impl V9Cpu {
 mod tests {
     use super::*;
     use crate::ultra5::{BootFlash, FLASH_SIZE};
+
+    #[test]
+    fn orcc_sets_icc_and_xcc_from_the_result_and_clears_carry_and_overflow() {
+        let mut cpu = V9Cpu::new(0);
+        for (a, b, expected, ccr) in [
+            (0, 0, 0, 0x44),
+            (0x8000_0000_0000_0000, 0, 0x8000_0000_0000_0000, 0x84),
+            (0x8000_0000, 3, 0x8000_0003, 0x08),
+            (
+                0x8000_0000_0000_0000,
+                0x8000_0000,
+                0x8000_0000_8000_0000,
+                0x88,
+            ),
+        ] {
+            cpu.ccr = 0xff;
+            cpu.write_reg(1, a);
+            cpu.write_reg(2, b);
+            cpu.execute_fetched(0x8290_4002, &mut UnmappedData).unwrap(); // orcc %g1,%g2,%g1
+            assert_eq!((cpu.read_reg(1), cpu.ccr()), (expected, ccr));
+        }
+        cpu.execute_fetched(0x8090_3fff, &mut UnmappedData).unwrap(); // orcc %g0,-1,%g0
+        assert_eq!((cpu.read_reg(0), cpu.ccr()), (0, 0x88));
+    }
 
     #[test]
     fn mulx_uses_full_width_operands_and_preserves_ccr() {
