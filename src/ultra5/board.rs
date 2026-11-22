@@ -4,6 +4,7 @@ use super::{BootFlash, FlashFetch, ResetNvram, FLASH_BASE};
 use crate::v9::{V9Cpu, V9DataBus, PHYSICAL_ADDRESS_MASK};
 
 const PCI_CONFIG: u64 = 0x01fe_0100_0000;
+const APB_TICK_OFFSET: u64 = 0x08b0; // primary bus, device 1 function 0
 const PCI_MEMORY: u64 = 0x01ff_0000_0000;
 const EBUS_BAR1: u32 = 0xf100_0000;
 const SIO_INDEX: u64 = 0x30_0398;
@@ -35,6 +36,8 @@ pub struct Ultra5ResetBoard {
     super_io: SuperIoConfig,
     keyboard: KeyboardUart,
     serial: Serial,
+    elapsed_ns: u64,
+    tick_origin: u32,
 }
 
 impl Ultra5ResetBoard {
@@ -53,13 +56,40 @@ impl Ultra5ResetBoard {
             super_io: SuperIoConfig::default(),
             keyboard: KeyboardUart::default(),
             serial: Serial::default(),
+            elapsed_ns: 0,
+            tick_origin: 0,
         }
     }
 
     pub fn step(&mut self, cpu: &mut V9Cpu) -> Result<FlashFetch, String> {
         let fetch = self.flash.fetch_reset_word(cpu.pc(), cpu.npc())?;
         cpu.execute_fetched(fetch.instruction, self)?;
+        self.elapsed_ns = self.elapsed_ns.saturating_add(crate::machine::STEP_NS);
         Ok(fetch)
+    }
+
+    fn is_tick(&self, pa: u64) -> bool {
+        pa == PCI_CONFIG + (u64::from(self.host_primary) << 16) + APB_TICK_OFFSET
+    }
+
+    fn pci_cycles(&self) -> u32 {
+        // Ultra 5 primary PCI clock, 66 MHz. Preserve fractional cycles across
+        // steps and counter clears; the low 32 bits wrap independently.
+        ((self.elapsed_ns / 500) * 33 + (self.elapsed_ns % 500) * 33 / 500) as u32
+    }
+
+    fn tick(&self) -> u32 {
+        self.pci_cycles().wrapping_sub(self.tick_origin)
+    }
+
+    fn clear_tick(&mut self, value: u64) -> Result<(), String> {
+        if value != 0 {
+            return Err(format!(
+                "unsupported nonzero Ultra 5 APB tick write {value:#x}"
+            ));
+        }
+        self.tick_origin = self.pci_cycles();
+        Ok(())
     }
 
     /// SAB 82532 channel A/B configuration, indexed in board address order.
@@ -173,6 +203,9 @@ impl V9DataBus for Ultra5ResetBoard {
         self.read_bypass_byte(va & PHYSICAL_ADDRESS_MASK)
     }
     fn write_bypass_xword(&mut self, pa: u64, value: u64) -> Result<(), String> {
+        if self.is_tick(pa) {
+            return self.clear_tick(value.swap_bytes());
+        }
         match pa {
             MEM_CONTROL0 => {
                 // SME1430 RefEnable, ECCEnable, board timing, geometry and refresh fields.
@@ -190,6 +223,9 @@ impl V9DataBus for Ultra5ResetBoard {
         Ok(())
     }
     fn read_bypass_word(&mut self, pa: u64) -> Result<u32, String> {
+        if self.is_tick(pa) {
+            return Ok(self.tick().swap_bytes());
+        }
         if pa == AUXIO_LED {
             // PCIO bit 0 is in the first byte on the little-endian EBus interface.
             return Ok(u32::from(self.front_panel_led).swap_bytes());
@@ -200,6 +236,9 @@ impl V9DataBus for Ultra5ResetBoard {
         ))
     }
     fn write_bypass_word(&mut self, pa: u64, value: u32) -> Result<(), String> {
+        if self.is_tick(pa) {
+            return self.clear_tick(u64::from(value.swap_bytes()));
+        }
         if pa == AUXIO_LED {
             self.front_panel_led = value.swap_bytes() & 1 != 0;
             return Ok(());
@@ -214,6 +253,10 @@ impl V9DataBus for Ultra5ResetBoard {
         Ok(())
     }
     fn read_bypass_xword(&mut self, pa: u64) -> Result<u64, String> {
+        if self.is_tick(pa) {
+            // OBP reads the low PCI dword with a little-endian LDXA.
+            return Ok(u64::from(self.tick()).swap_bytes());
+        }
         match pa {
             MEM_CONTROL0 => return Ok(u64::from(self.mem_control0)),
             MEM_CONTROL1 => return Ok(u64::from(self.mem_control1)),
@@ -251,9 +294,9 @@ impl V9DataBus for Ultra5ResetBoard {
                 self.super_io.pending = None;
                 Ok(value)
             }
-            Some(off) if (KEYBOARD_UART..KEYBOARD_UART + 8).contains(&off) => {
-                self.keyboard.read(self.super_io.keyboard_register(off)?)
-            }
+            Some(off) if (KEYBOARD_UART..KEYBOARD_UART + 8).contains(&off) => self
+                .keyboard
+                .read(self.super_io.keyboard_register(off)?, self.elapsed_ns),
             Some(off @ 0x40_0000..=0x40_007f) => self.serial.read((off - 0x40_0000) as u8),
             _ => Err(format!("unmapped Ultra 5 physical byte read at {pa:#x}")),
         }
@@ -268,8 +311,11 @@ impl V9DataBus for Ultra5ResetBoard {
             Some(SIO_INDEX) => self.super_io.select(value)?,
             Some(SIO_DATA) => self.super_io.write_data(value),
             Some(off) if (KEYBOARD_UART..KEYBOARD_UART + 8).contains(&off) => {
+                let reg = self.super_io.keyboard_register(off)?;
+                // TUP[0,3] select the oscillator and UART1 prescaler.
+                let normal_clock = self.super_io.registers[7].is_some_and(|tup| tup & 9 == 0);
                 self.keyboard
-                    .write(self.super_io.keyboard_register(off)?, value)?;
+                    .write(reg, value, self.elapsed_ns, normal_clock)?;
             }
             Some(off @ 0x40_0000..=0x40_007f) => {
                 self.serial.write((off - 0x40_0000) as u8, value)?
@@ -284,6 +330,9 @@ impl V9DataBus for Ultra5ResetBoard {
     }
 
     fn write_bypass_le_word(&mut self, pa: u64, value: u32) -> Result<(), String> {
+        if self.is_tick(pa) {
+            return self.clear_tick(u64::from(value));
+        }
         if pa == AUXIO_LED {
             return self.write_bypass_word(pa, value.swap_bytes());
         }
@@ -320,6 +369,38 @@ mod tests {
             BootFlash::new(vec![0; FLASH_SIZE]).unwrap(),
             ResetNvram::new(vec![0; RESET_NVRAM_SIZE]).unwrap(),
         )
+    }
+
+    #[test]
+    fn apb_tick_wraps_on_pci_clock_edges_and_reads_do_not_advance_it() {
+        let mut board = fixture();
+        let tick = 0x01fe_0100_08b0;
+        board.elapsed_ns = 15;
+        assert_eq!(board.read_bypass_xword(tick).unwrap(), 0);
+        board.write_bypass_le_word(tick, 0).unwrap();
+        board.elapsed_ns = 16;
+        assert_eq!(board.read_bypass_xword(tick).unwrap(), 1u64.swap_bytes());
+        assert_eq!(board.read_bypass_word(tick).unwrap(), 1u32.swap_bytes());
+        assert!(board.write_bypass_xword(tick, 1).is_err());
+        assert!(board.read_bypass_xword(tick + 0x100).is_err());
+        assert!(board.write_bypass_word(tick + 4, 0).is_err());
+        assert_eq!(board.tick(), 1);
+        board.elapsed_ns = 65_075_262_050;
+        assert_eq!(board.tick(), u32::MAX);
+        board.elapsed_ns += 15;
+        assert_eq!(board.tick(), 0);
+        board.elapsed_ns += 500;
+        assert_eq!(board.tick(), 33);
+        board.write_bypass_xword(tick, 0).unwrap();
+        assert_eq!(board.tick(), 0);
+        board.write_bypass_byte(PCI_CONFIG + 0x40, 2).unwrap();
+        assert!(board.read_bypass_word(tick).is_err());
+        assert_eq!(board.read_bypass_word(tick + 0x20000).unwrap(), 0);
+        let reset = crate::ultra5::PowerOnReset::ultra_sparc_ii();
+        let now = board.elapsed_ns;
+        let mut cpu = V9Cpu::from(reset);
+        assert!(board.step(&mut cpu).is_err()); // zero flash cannot retire
+        assert_eq!(board.elapsed_ns, now);
     }
 
     #[test]
@@ -363,7 +444,12 @@ mod tests {
         assert_eq!(board.read_bypass_byte(port + 2).unwrap(), 0xc1);
         assert!(board.write_bypass_byte(port + 1, 1).is_err()); // IRQ delivery unsupported
         assert!(board.write_bypass_byte(port + 4, 0x10).is_err()); // loopback
-        assert!(board.write_bypass_byte(port, 1).is_err()); // THR, not DLL
+        assert!(board.write_bypass_byte(port, 1).is_err()); // unprogrammed clock
+        configure(&mut board, 7, 0);
+        board.write_bypass_byte(port, 1).unwrap(); // THR, not DLL
+        assert_eq!(board.read_bypass_byte(port + 5).unwrap(), 0x20);
+        board.write_bypass_byte(port + 3, 0x83).unwrap();
+        assert_eq!(board.read_bypass_byte(port).unwrap(), 0x5a);
         assert_eq!(board.take_serial_output(), [vec![], vec![]]);
     }
 

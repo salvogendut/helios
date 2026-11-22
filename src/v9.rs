@@ -550,16 +550,29 @@ impl V9Cpu {
                                 self.read_reg(rd) as u32,
                             )?;
                         }
-                        (ASI_PHYS_BYPASS_EC_WITH_EBIT, 0x1e) => {
+                        (ASI_PHYS_BYPASS_EC_WITH_EBIT | ASI_PHYS_BYPASS_EC_WITH_EBIT_LE, 0x1e) => {
+                            let pa = Self::bypass_address(address, 8)?;
+                            let value = self.read_reg(rd);
                             memory.write_bypass_xword(
-                                Self::bypass_address(address, 8)?,
-                                self.read_reg(rd),
+                                pa,
+                                if asi == ASI_PHYS_BYPASS_EC_WITH_EBIT_LE {
+                                    value.swap_bytes()
+                                } else {
+                                    value
+                                },
                             )?;
                         }
-                        (ASI_PHYS_BYPASS_EC_WITH_EBIT, 0x1b) => {
+                        (ASI_PHYS_BYPASS_EC_WITH_EBIT | ASI_PHYS_BYPASS_EC_WITH_EBIT_LE, 0x1b) => {
                             let pa = Self::bypass_address(address, 8)?;
                             let value = memory.read_bypass_xword(pa)?;
-                            self.write_reg(rd, value);
+                            self.write_reg(
+                                rd,
+                                if asi == ASI_PHYS_BYPASS_EC_WITH_EBIT_LE {
+                                    value.swap_bytes()
+                                } else {
+                                    value
+                                },
+                            );
                         }
                         (ASI_PHYS_BYPASS_EC_WITH_EBIT, 0x11) => {
                             let value =

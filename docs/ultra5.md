@@ -2,7 +2,7 @@
 
 The headless Ultra 5/10 fixture runs original OBP 3.31.0 far enough to
 transmit its version banner on serial A, clear the external-cache tags and
-configure the cold-start keyboard UART. An interactive OpenBoot prompt
+complete the cold-start probe with the keyboard disconnected. An interactive OpenBoot prompt
 remains in development. [Serial-console roadmap](roadmap.md#ultra-5-serial-console)
 
 ## Run the first serial diagnostic
@@ -104,7 +104,7 @@ capacity reported by hardware. The manual defines the in-range index bits.
 
 | Diagnostic run | Serial A after the banner | Next access |
 | --- | --- | --- |
-| Cold, 173,486 instructions | `Probing keyboard` | After configuring the keyboard UART, PC `0xffff_ffff_f000_0630` attempts a little-endian xword store to the APB tick register. |
+| Cold, 30,725,175 instructions | `Probing keyboard Done`, `Clearing E$ Tags  Done`, then `Clearing I/D TLBs` | PC `0xffff_ffff_f000_0780` writes zero to D-MMU Tag Access through ASI `0x58`, offset `0x30`. |
 | Soft marker, 174,083 instructions | `Clearing E$ Tags  Done`, then `Clearing I/D TLBs` | PC `0xffff_ffff_f000_0780` writes zero to D-MMU Tag Access through ASI `0x58`, offset `0x30`. |
 
 These limits stop immediately before the respective accesses. With NVRAM
@@ -116,17 +116,27 @@ silent.
 The board device tree assigns the keyboard to EBus offset `0x3083f8`.
 On a cold start OBP enables Super I/O UART1 at COM1, disables interrupts,
 enables the FIFOs and sets the divisor to 96. It restores LCR to `3`
-(eight data bits, one stop bit, no parity). The fixture models this polled
-setup with an unplugged keyboard. Keyboard data transfer, IRQ delivery
-and baud timing remain open. [Hardware device tree](https://rob.com/sun/sun4u-ss5/) · [National Super I/O, §§2.5 and 6](https://ardent-tool.com/datasheets/NS_PC87332VLJ.pdf)
+(eight data bits, one stop bit, no parity). OBP transmits one keyboard
+reset byte (`0x01`) and polls for transmitter completion. At this divisor,
+the ten-bit frame takes 8.320 ms of virtual time with the documented
+24 MHz oscillator and divide-by-13 prescaler. The disconnected keyboard
+supplies no receive bytes. Attached input devices, UART interrupts and other
+framing modes remain open. [Hardware device tree](https://rob.com/sun/sun4u-ss5/) · [National Super I/O, §§2.5 and 6](https://ardent-tool.com/datasheets/NS_PC87332VLJ.pdf)
 
 OBP starts its first receive timeout by writing zero to the APB tick
 register at physical `0x01fe_0100_08b0` (ASI `0x1d`, PCI 00:01.0,
-configuration offset `0xb0`). The cold fixture stops at that instruction.
-The following ROM words poll the UART's data-ready bit and compare the tick
-count with `0x03f941f8`. The diagnostic serial stream ends at
-`Probing keyboard ` pending support for the little-endian xword access
-and the bridge clock. [Linux SPARC APB register definitions](https://github.com/torvalds/linux/blob/v6.12/arch/sparc/include/asm/apb.h)
+configuration offset `0xb0`). Three receive waits each reach `0x03f941f8`
+ticks before returning. The guest then prints `Probing keyboard Done`.
+To reproduce this on serial A, run the example above with its cold diagnostic
+seed and an instruction budget of `30725175`.
+
+The fixture uses 100 ns of virtual time per retired instruction and the
+66 MHz primary PCI clock reported in the hardware device tree. The tick
+register wraps at 32 bits and supports the documented word access plus
+OBP's aligned eight-byte access with the count in the low dword.
+The clock source and zero-clear behavior are inferred from the board frequency
+and the ROM loop. Nonzero writes and accesses via the second bridge function
+remain unverified. [Linux SPARC APB register definitions](https://github.com/torvalds/linux/blob/v6.12/arch/sparc/include/asm/apb.h) · [Themis APB register map, table 1-6](https://www.artisantg.com/info/Themis_USPIIe_cPCI_Software_Manual.pdf) · [Ultra 5 PCI clock and serial trace](https://rob.com/sun/sun4u-ss5/)
 
 ## Reset and flash mapping
 
@@ -372,8 +382,8 @@ remain open. The window counters, PIL and TBA start at zero for
 repeatability where hardware reset values are unspecified.
 [IIi software interrupts, table 11-9](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=163) · [IIi window registers, §14.2.1](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=223) · [IIi PSTATE and global banks, tables 14-12/13](https://bebop.cs.berkeley.edu/resources/arch-manuals/ultra-IIi/ultra2i-manual-805-0087.pdf#page=235)
 
-With the reconstructed image installed, run the fifteen local-ROM checks together.
+With the reconstructed image installed, run the sixteen local-ROM checks together.
 
 ```sh
-cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts --test ultra5_reset_setup --test ultra5_first_serial_access --test ultra5_ecache -- --ignored --nocapture
+cargo test --locked --offline --lib --test ultra5_first_fetch --test ultra5_first_instruction --test ultra5_reset_branch --test ultra5_reset_cwp --test ultra5_window_select --test ultra5_reset_probe --test ultra5_reset_contexts --test ultra5_reset_setup --test ultra5_first_serial_access --test ultra5_ecache --test ultra5_keyboard_timeout -- --ignored --nocapture
 ```
