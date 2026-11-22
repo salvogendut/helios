@@ -79,6 +79,7 @@ Cold and soft-reset runs reach the same entry with diagnostics enabled or disabl
 | Decompression and entry | OBP expands 453,536 bytes at VA `0xf0000000` and executes the entry at VA `0xf0051f8c`. A local-ROM test compares every byte against an independent decoder. |
 | Interactive OpenBoot console | Open. Acceptance is a serial `ok` prompt that takes `1 2 + .`, replies `3` and prompts again. |
 
-At VA `0xf0051fb8` the expanded firmware writes `0x3d` to the IIi dispatch
-control register. This is the next CPU operation on the path to an interactive
-serial prompt. [Reproduce the current checkpoint](ultra5.md#executing-the-expanded-firmware)
+The expanded firmware programs IIi dispatch control and reaches its on-chip
+cache initialization. Next is the D-cache tag store at VA `0xf0051fc8`
+(ASI `0x47`, address `0x3fe0`), followed in the image by an I-cache tag
+loop using ASI `0x67`. [Reproduce the current checkpoint](ultra5.md#executing-the-expanded-firmware)

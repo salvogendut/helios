@@ -258,9 +258,13 @@ LZW decoder, checks the guest's end pointer and the xwords bracketing the
 image, and observes the instruction retire from that physical address.
 
 After eleven instructions the fixture reaches `wr %g0,0x3d,%asr18` at
-VA `0xf0051fb8`. ASR 18 is the privileged IIi dispatch control register.
-Cold and soft resets also reach this instruction with diagnostics disabled
-and both serial ports quiet. [UltraSPARC-IIi User’s Manual, §§6.5, A.3 and I.1.2](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+VA `0xf0051fb8`. ASR 18 is the privileged IIi dispatch control register. The guest sets the
+recommended GS/MVX/MS fields and clears error enables through ASI `0x4b`.
+These dispatch fields have register readback. Instruction timing and external
+debug pins are outside this functional model. The next unsupported access is
+the D-cache diagnostic tag store at VA `0xf0051fc8` (ASI `0x47`, index
+address `0x3fe0`). Add four to either diagnostic run limit above to stop
+just before this store. The quiet controls reach the same PC. [UltraSPARC-IIi User’s Manual, §§6.5, A.3 and I.1.2](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
 
 ## Reset and flash mapping
 

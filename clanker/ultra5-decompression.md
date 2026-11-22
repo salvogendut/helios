@@ -24,3 +24,12 @@ Transcripts and validation logs are under `local/ultra5-decompression-2026-11-22
 The next instruction is `0xa580203d`, a privileged write to dispatch control.
 The IIi manual's Appendix I.1.2 specifies the firmware's exact value as the
 recommended initialization. [Reproduction and sources](../docs/ultra5.md#executing-the-expanded-firmware)
+
+## Dispatch control follow-up
+
+At `0xf0051fb8`, the expanded firmware programs DCR with `0x3d`. Four more
+instructions retire, including the ASI `0x4b` store and the computation of
+the first D-cache tag address. The local-ROM test checks the DCR value, the
+next tag-store word `0xc0f048e0` at PA `0x3ffd1fc8` and `%g1 = 0x3fe0`.
+The diagnostic access uses ASI `0x47`. See `dispatch-control/` alongside
+the decompression logs for the four reruns at this boundary.

@@ -488,6 +488,21 @@ fn original_obp_expands_the_image_and_executes_its_entry_in_ram() {
     );
     run_to(&mut board, &mut cpu, 0xf005_1fb8, 32);
     assert_eq!(cpu.npc(), 0xf005_1fbc);
+    let dispatch = board.step_mapped(&mut cpu).unwrap();
+    assert_eq!(
+        (
+            dispatch.physical_address,
+            dispatch.instruction,
+            cpu.dispatch_control
+        ),
+        (0x3ffd_1fb8, 0xa580_203d, 0x3d)
+    );
+    run_to(&mut board, &mut cpu, 0xf005_1fc8, 4);
+    assert_eq!(cpu.read_reg(1), 0x3fe0); // first D-cache diagnostic tag address
+    assert_eq!(
+        board.read_cacheable_xword(0x3ffd_1fc8).unwrap() >> 32,
+        0xc0f0_48e0
+    );
     let [a, b] = board.take_serial_output();
     assert!(a.ends_with(b"Decompressing into Memory Done\r\nSize = 0000.0000.0006.eba0"));
     assert!(b.is_empty());

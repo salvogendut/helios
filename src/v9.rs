@@ -74,6 +74,7 @@ pub struct V9Cpu {
     otherwin: u8,
     wstate: u8,
     lsu_control: u64,
+    dispatch_control: u8,
     estate_error_enable: u8,
     async_fault_status: u64,
     ecache: Ecache,
@@ -381,6 +382,7 @@ impl V9Cpu {
             otherwin: 0,
             wstate: 0,
             lsu_control: 0,
+            dispatch_control: 0, // IIi table 17-5, power-on reset
             estate_error_enable: 0,
             async_fault_status: 0,
             ecache: Ecache::default(),
@@ -644,6 +646,10 @@ impl V9Cpu {
                 0x28 if rs1 == 2 => self.write_reg(rd, u64::from(self.ccr)),
                 0x28 if rs1 == 3 && word & 0x3fff == 0 => self.write_reg(rd, u64::from(self.asi)),
                 0x28 if rs1 == 5 && word & 0x3fff == 0 => self.write_reg(rd, self.pc),
+                0x28 if rs1 == 18 && word & 0x3fff == 0 => {
+                    self.require_privilege("RD dispatch control")?;
+                    self.write_reg(rd, u64::from(self.dispatch_control));
+                }
                 0x28 if rs1 == 22 && word & 0x3fff == 0 => {
                     self.require_privilege("RD SOFTINT")?;
                     self.write_reg(rd, u64::from(self.softint));
@@ -673,6 +679,19 @@ impl V9Cpu {
                         return Err(format!("unsupported V9 WRASI word {word:#x}"));
                     }
                     self.asi = (self.read_reg(rs1) ^ b) as u8;
+                }
+                0x30 if rd == 18 => {
+                    self.require_privilege("WR dispatch control")?;
+                    if word & (1 << 13) == 0 && word & 0x1fe0 != 0 {
+                        return Err(format!("unsupported V9 WR dispatch control word {word:#x}"));
+                    }
+                    let value = self.read_reg(rs1) ^ b;
+                    // IIi Appendix I.1.2: GS[5:3], MVX[2], MS[0]. Groups
+                    // 5 and 6 are undefined. This fixture has no UPA trace pins.
+                    if value & !0x3d != 0 || matches!(value >> 3, 5 | 6) {
+                        return Err(format!("unsupported IIi dispatch control value {value:#x}"));
+                    }
+                    self.dispatch_control = value as u8;
                 }
                 0x30 if rd == 22 => {
                     self.require_privilege("WR SOFTINT")?;
@@ -1118,6 +1137,50 @@ mod tests {
         }
         cpu.execute_fetched(0x8090_3fff, &mut UnmappedData).unwrap(); // orcc %g0,-1,%g0
         assert_eq!((cpu.read_reg(0), cpu.ccr()), (0, 0x88));
+    }
+
+    #[test]
+    fn iii_dispatch_control_supports_privileged_readback_and_obp_initialization() {
+        const READ: u32 = 0x8344_8000; // rd %asr18,%g1
+        const WRITE: u32 = 0xa580_4002; // wr %g1,%g2,%asr18
+        let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
+        cpu.write_reg(1, u64::MAX);
+        cpu.execute_fetched(READ, &mut UnmappedData).unwrap();
+        assert_eq!(cpu.read_reg(1), 0);
+        cpu.ccr = 0xa5;
+        let pc = cpu.pc();
+        cpu.execute_fetched(0xa580_203d, &mut UnmappedData).unwrap();
+        cpu.execute_fetched(READ, &mut UnmappedData).unwrap();
+        assert_eq!(
+            (cpu.read_reg(1), cpu.ccr(), cpu.pc(), cpu.npc()),
+            (0x3d, 0xa5, pc + 8, pc + 12)
+        );
+        for group in [0, 1, 2, 3, 4, 7] {
+            for dispatch in [0, 1, 4, 5] {
+                let expected = group << 3 | dispatch;
+                cpu.write_reg(1, expected ^ 0x3d);
+                cpu.write_reg(2, 0x3d);
+                cpu.execute_fetched(WRITE, &mut UnmappedData).unwrap();
+                cpu.execute_fetched(READ, &mut UnmappedData).unwrap();
+                assert_eq!((cpu.read_reg(1), cpu.ccr()), (expected, 0xa5));
+            }
+        }
+
+        for (pstate, word) in [
+            (0, READ),
+            (0, WRITE),
+            (PSTATE_PRIV, READ | 1),
+            (PSTATE_PRIV, WRITE | 0x1000),
+            (PSTATE_PRIV, 0xa580_2002),
+            (PSTATE_PRIV, 0xa580_2028),
+            (PSTATE_PRIV, 0xa580_2030),
+            (PSTATE_PRIV, 0xa580_2040),
+        ] {
+            cpu.pstate = pstate;
+            let before = cpu.clone();
+            assert!(cpu.execute_fetched(word, &mut UnmappedData).is_err());
+            assert_eq!(cpu, before);
+        }
     }
 
     #[test]

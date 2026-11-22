@@ -124,6 +124,11 @@ test rather than assuming either emulator defines the hardware.
   of the decompressor's integer transfers. A.31 defines ORcc's separate
   32- and 64-bit condition codes. The original Ultra 5 firmware uses STW,
   STH and STB for its workspace and output. [SPARC V9 manual](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf) · [Pinned QEMU SPARC instruction encodings](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/insns.decode#L645)
+- IIi table 6-9 defines privilege for ASR 18 and table 17-5 gives its
+  power-on reset value. Appendix I.1.2 specifies its dispatch and debug fields
+  and recommends `0x3d` for normal operation. Appendices A.7.2 and A.8.2
+  describe the I- and D-cache diagnostic tag ports used immediately afterwards.
+  [Sun UltraSPARC-IIi User’s Manual](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
 - The IIi manual gives the rank and pair selects, Mem_Control0 column mode
   and the PA14 column test. The physical Ultra 5 POST transcript records the
   two 256 MiB modules in pair 2. QEMU's generic sun4u machine maps contiguous
