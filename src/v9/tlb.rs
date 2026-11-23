@@ -42,10 +42,22 @@ impl Entry {
     }
 }
 
+/// Only a previously verified, uniquely matching 8 KiB subpage may bypass the CAM scan.
+#[derive(Clone, Debug, Default)]
+struct LookupHint(std::cell::Cell<Option<(u64, usize)>>);
+
+impl PartialEq for LookupHint {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    } // derived execution state
+}
+impl Eq for LookupHint {}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Tlb {
     tag_access: u64,
     entries: [Entry; 64],
+    last_hit: LookupHint,
 }
 
 impl Default for Tlb {
@@ -53,6 +65,7 @@ impl Default for Tlb {
         Self {
             tag_access: 0,
             entries: [Entry::default(); 64],
+            last_hit: Default::default(),
         }
     }
 }
@@ -65,26 +78,44 @@ impl Tlb {
         privileged: bool,
         access: Access,
     ) -> Result<Translation, CpuFault> {
-        let mut hit = None;
-        for (slot, entry) in self.entries.iter().enumerate() {
-            if !entry.matches_page(va, context) {
-                continue;
-            }
-            if hit.is_some() {
+        let key = (va & !0x1fff) | u64::from(context);
+        let slot = if let Some((_, slot)) = self.last_hit.0.get().filter(|(tag, _)| *tag == key) {
+            slot
+        } else {
+            let mut matches = self
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.matches_page(va, context));
+            let (slot, _) = matches.next().ok_or(CpuFault::TlbMiss(TlbMiss {
+                access,
+                address: va,
+                context,
+            }))?;
+            if matches.next().is_some() {
                 return Err(format!("multiple IIi TLB matches for {access:?} VA={va:#x}").into());
             }
-            hit = Some((slot, entry.data, entry.page_mask()));
-        }
-        let (slot, data, page_mask) = hit.ok_or(CpuFault::TlbMiss(TlbMiss {
-            access,
-            address: va,
-            context,
-        }))?;
-        if !privileged && data & 4 != 0 {
-            return Err(format!("IIi privileged page for {access:?} VA={va:#x}").into());
-        }
-        if access == Access::Write && data & 2 == 0 {
-            return Err(format!("IIi write protection at VA={va:#x}").into());
+            self.last_hit.0.set(Some((key, slot)));
+            slot
+        };
+        let data = self.entries[slot].data;
+        let page_mask = self.entries[slot].page_mask();
+        let privilege_violation = !privileged && data & 4 != 0;
+        if privilege_violation || (access == Access::Write && data & 2 == 0) {
+            let tag = TlbMiss {
+                address: va,
+                context,
+                access,
+            };
+            let status = (u64::from(privilege_violation) << 7)
+                | (u64::from(access != Access::Fetch && data & 8 != 0) << 6)
+                | (u64::from(access == Access::Write) << 2)
+                | 1;
+            return Err(CpuFault::MmuProtection {
+                tag,
+                status,
+                large: page_mask == 65535,
+            });
         }
         if data & (1 << 60) != 0 || (access == Access::Flush && data & 8 != 0) {
             return Err(format!("IIi prohibited {access:?} page attributes at VA={va:#x}").into());
@@ -144,6 +175,7 @@ impl Tlb {
             2 => 0,
             _ => return Ok(()),
         };
+        self.last_hit.0.set(None);
         for entry in &mut self.entries {
             let remove = if address & 0x40 == 0 {
                 entry.matches_page(address, context)
@@ -193,6 +225,7 @@ impl Tlb {
         if instruction {
             data &= !((1 << 60) | (1 << 59) | 0x1a); // NFO, IE, CV, E, W
         }
+        self.last_hit.0.set(None);
         self.entries[index] = Entry {
             tag: self.tag_access,
             data,

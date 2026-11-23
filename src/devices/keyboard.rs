@@ -58,7 +58,17 @@ impl Keyboard {
         }
         true
     }
-    fn command(&mut self, value: u8) {
+    pub(crate) fn has_bytes(&self) -> bool {
+        !self.queue.is_empty()
+    }
+    pub(crate) fn can_accept_command(&self, value: u8) -> bool {
+        self.led_command || !matches!(value, 7 | 15) || self.queue.len() <= 14
+    }
+    pub(crate) fn pop_byte(&mut self) -> Option<u8> {
+        self.queue.pop_front()
+    }
+
+    pub(crate) fn command(&mut self, value: u8) {
         if self.led_command {
             self.leds = value & 31;
             self.led_command = false;

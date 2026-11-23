@@ -90,8 +90,11 @@ Cold and soft-reset runs reach the same entry with diagnostics enabled or disabl
 | DRAM refresh and PCI identification | OBP restores Mem_Control0 through the primary caches, reads the onboard ATI device ID and identifies the Simba multifunction bridge. |
 | PCI enumeration and banner | The guest probes UPA and both Simba buses, identifies the onboard devices and prints the 440 MHz / 512 MB Ultra 5/10 banner. |
 | Interactive OpenBoot console | Verified by typing `1 2 + .` and receiving `3` and a second `ok`, both with autoboot disabled and after serial BREAK. |
+| Graphical OpenBoot console | Heliacal displays the Sun logo and banner on Mach64 and accepts a keyboard-entered `1 2 + .`, returning `3` and another prompt. |
 | Read-only ATAPI CD-ROM | OBP detects the secondary master and returns all 2,048 bytes of Solaris 7 ISO sector 16 through its device method. |
+| Primary ATA disk | OpenBoot enumerates device 0. Sector writes persist through PIO and CMD646 bus-master DMA. |
+| Solaris 7 installation CD | The 11/99 SPARC kernel mounts the installation CD, attaches the primary disk and enters Solaris Interactive Installation. |
+| Installed Solaris 7 | The installer writes the disk label, filesystems, packages and boot blocks. After a clean halt, OpenBoot starts the installed kernel from IDE unit 0 with the CD removed. |
+| Graphical login | Heliacal displays the installed Solaris CDE greeter on the Mach64 with a username field and a working Sun keyboard. |
 
-The next CPU instruction needed by the Solaris 7 CD boot is LDSB. Two runs
-reached PC `0x116524` before any Solaris loader text appeared. Disk and
-network boot remain open. [Run the interactive example](ultra5.md#interactive-serial-console)
+[Boot the installed Ultra 5](ultra5.md#boot-the-installed-solaris-7-system)

@@ -19,6 +19,7 @@ const REGISTER_COUNT: usize = GLOBAL_REGISTERS + WINDOW_COUNT as usize * 16;
 const PSTATE_AG: u16 = 1;
 const PSTATE_IE: u16 = 1 << 1;
 const PSTATE_PRIV: u16 = 1 << 2;
+const PSTATE_AM: u16 = 1 << 3;
 const PSTATE_PEF: u16 = 1 << 4;
 const PSTATE_RED: u16 = 1 << 5;
 const PSTATE_MG: u16 = 1 << 10;
@@ -72,8 +73,15 @@ struct TrapFrame {
 pub(crate) enum CpuFault {
     DataAccessError,
     DivisionByZero,
+    Window(u16),
+    Synchronous(u16),
     Interrupt(u8),
     TlbMiss(TlbMiss),
+    MmuProtection {
+        tag: TlbMiss,
+        status: u64,
+        large: bool,
+    },
     Stop(String),
 }
 
@@ -101,8 +109,22 @@ impl From<CpuFault> for String {
         match fault {
             CpuFault::Stop(message) => message,
             CpuFault::DataAccessError => "IIi deferred data access error (TT=0x32)".into(),
+            CpuFault::Synchronous(tt) => format!("V9 synchronous trap TT={tt:#x}"),
+            CpuFault::Window(tt) => {
+                let kind = if tt == 0x24 {
+                    "clean"
+                } else if tt < 0xc0 {
+                    "spill"
+                } else {
+                    "fill"
+                };
+                format!("V9 window {kind} trap (TT={tt:#x})")
+            }
             CpuFault::DivisionByZero => "V9 division_by_zero (TT=0x28)".into(),
             CpuFault::Interrupt(level) => format!("IIi interrupt pending at level {level}"),
+            CpuFault::MmuProtection { tag, .. } => {
+                format!("IIi protection for {:?} VA={:#x}", tag.access, tag.address)
+            }
             CpuFault::TlbMiss(miss) => format!(
                 "IIi TLB miss for {:?} VA={:#x} context={:#x}",
                 miss.access, miss.address, miss.context
@@ -119,9 +141,16 @@ pub struct V9Cpu {
     npc: u64,
     ccr: u8,
     fprs: u8,
+    fregs: [u32; 64],
+    fsr: u64,
+    gsr: u64,
     y: u32,
     cwp: u8,
     asi: u8,
+    tsb: [u64; 2],
+    sfsr: [u64; 2],
+    sfar: u64,
+    direct_tsb_large: bool,
     primary_context: u16,
     secondary_context: u16,
     instruction_tlb: Tlb,
@@ -132,6 +161,7 @@ pub struct V9Cpu {
     tl: u8,
     traps: [TrapFrame; MAX_TL as usize],
     softint: u16,
+    interrupt_receive: u16, // IIi BUSY (bit 15 internally) and 11-bit vector
     tick: u64,
     tick_compare: u64,
     cansave: u8,
@@ -458,9 +488,16 @@ impl V9Cpu {
             npc: pc.wrapping_add(4),
             ccr: 0,
             y: 0,
+            fregs: [0; 64],
+            fsr: 0,
+            gsr: 0,
             fprs: 0, // IIi leaves FPRS unknown at POR.
             cwp: 0,
             asi: 0,
+            tsb: [0; 2],
+            sfsr: [0; 2],
+            sfar: 0,
+            direct_tsb_large: false,
             primary_context: 0,
             secondary_context: 0,
             instruction_tlb: Tlb::default(),
@@ -471,6 +508,7 @@ impl V9Cpu {
             tl: 0,
             traps: [TrapFrame::default(); MAX_TL as usize],
             softint: 0,
+            interrupt_receive: 0,
             tick: TICK_NPT,
             tick_compare: TICK_INT_DIS, // low bits unspecified at reset
             cansave: 0,
@@ -566,7 +604,37 @@ impl V9Cpu {
     }
 
     fn translate(&self, address: u64, width: u64, access: Access) -> Result<Translation, CpuFault> {
-        let va = if self.pstate & (1 << 3) != 0 {
+        self.translate_asi(address, width, access, None)
+    }
+
+    fn translate_asi(
+        &self,
+        address: u64,
+        width: u64,
+        access: Access,
+        asi: Option<u8>,
+    ) -> Result<Translation, CpuFault> {
+        if matches!(asi, Some(ASI_PHYS_USE_EC | 0x1c)) {
+            return Ok(Translation {
+                pa: Self::bypass_address(address, width)?,
+                cacheable: true,
+                virtual_cacheable: false,
+                invert_endian: false,
+                slot: None,
+            });
+        }
+        let (context, privileged) = match asi {
+            Some(asi) => self.asi_translation(asi),
+            None => (
+                if self.tl == 0 {
+                    self.primary_context
+                } else {
+                    0
+                },
+                self.pstate & PSTATE_PRIV != 0,
+            ),
+        };
+        let va = if self.pstate & PSTATE_AM != 0 {
             address & 0xffff_ffff
         } else {
             address
@@ -593,12 +661,31 @@ impl V9Cpu {
         } else {
             &self.data_tlb
         };
-        let context = if self.tl == 0 {
-            self.primary_context
-        } else {
-            0
-        };
-        tlb.lookup(va, context, self.pstate & PSTATE_PRIV != 0, access)
+        tlb.lookup(va, context, privileged, access)
+            .map_err(|fault| match fault {
+                CpuFault::MmuProtection { tag, status, large } => {
+                    let ct: u64 = match asi {
+                        Some(0x04 | 0x0c | 0x24 | 0x2c) => 2,
+                        Some(a) => u64::from(a & 1),
+                        None => {
+                            if self.tl == 0 {
+                                0
+                            } else {
+                                2
+                            }
+                        }
+                    };
+                    let default_asi = if self.tl == 0 { 0x80 } else { 4 };
+                    let little = access != Access::Fetch && self.pstate & (1 << 9) != 0;
+                    let effective = asi.unwrap_or(default_asi | (u8::from(little) << 3));
+                    let status = status
+                        | (u64::from(effective) << 16)
+                        | (ct << 4)
+                        | (u64::from(self.pstate & PSTATE_PRIV != 0) << 3);
+                    CpuFault::MmuProtection { tag, status, large }
+                }
+                other => other,
+            })
     }
 
     pub(crate) fn retire_fetch(
@@ -641,25 +728,45 @@ impl V9Cpu {
             0 if op2 == 4 => {
                 self.write_reg(rd, u64::from(word & 0x3f_ffff) << 10);
             }
-            0 if op2 == 1 || op2 == 2 => {
+            0 if matches!(op2, 1 | 2 | 5 | 6) => {
                 let condition = word >> 25 & 15;
                 let annul = word & (1 << 29) != 0;
-                let (displacement, flags) = if op2 == 1 {
-                    let cc = (word >> 20) & 3;
+                let predicted = op2 & 1 != 0;
+                let cc = if predicted { (word >> 20) & 3 } else { 0 };
+                let displacement = if predicted {
+                    ((word << 13) as i32) >> 11
+                } else {
+                    ((word << 10) as i32) >> 8
+                };
+                let taken = if op2 & 4 != 0 {
+                    self.require_fpu()?;
+                    crate::fpu::floating_condition(
+                        (self.fsr >> Self::fcc_shift(cc)) as u32 & 3,
+                        condition,
+                    )
+                } else {
                     let flags = match cc {
                         0 => self.ccr,
                         2 => self.ccr >> 4,
                         _ => return Err(format!("unsupported V9 BPcc word {word:#x}").into()),
                     };
-                    (((word << 13) as i32) >> 11, flags)
-                } else {
-                    (((word << 10) as i32) >> 8, self.ccr)
+                    Self::condition(condition, flags)
                 };
-                let taken = Self::condition(condition, flags);
                 if taken {
                     next_npc = self.pc.wrapping_add_signed(i64::from(displacement));
                 }
                 if annul && (!taken || condition == 8) {
+                    self.pc = next_npc;
+                    self.npc = next_npc.wrapping_add(4);
+                    return Ok(());
+                }
+            }
+            0 if op2 == 3 && word & (1 << 28) == 0 => {
+                let taken = Self::register_condition((word >> 25) & 7, self.read_reg(rs1))?;
+                let disp = (((word >> 6) & 0xc000) | (word & 0x3fff)) as i16;
+                if taken {
+                    next_npc = self.pc.wrapping_add_signed(i64::from(disp) * 4);
+                } else if word & (1 << 29) != 0 {
                     self.pc = next_npc;
                     self.npc = next_npc.wrapping_add(4);
                     return Ok(());
@@ -677,7 +784,59 @@ impl V9Cpu {
                 0x03 => self.write_reg(rd, self.read_reg(rs1) ^ b),
                 0x04 => self.write_reg(rd, self.read_reg(rs1).wrapping_sub(b)),
                 0x05 => self.write_reg(rd, self.read_reg(rs1) & !b),
+                0x06 => self.write_reg(rd, self.read_reg(rs1) | !b),
+                0x07 => self.write_reg(rd, !(self.read_reg(rs1) ^ b)),
+                0x0a | 0x0b => {
+                    let a = self.read_reg(rs1);
+                    let product = if op3 == 0x0a {
+                        u64::from(a as u32) * u64::from(b as u32)
+                    } else {
+                        (i64::from(a as i32) * i64::from(b as i32)) as u64
+                    };
+                    self.y = (product >> 32) as u32;
+                    self.write_reg(rd, product);
+                }
+                0x08 => self.write_reg(
+                    rd,
+                    self.read_reg(rs1)
+                        .wrapping_add(b)
+                        .wrapping_add(u64::from(self.ccr & 1)),
+                ),
+                0x0c => self.write_reg(
+                    rd,
+                    self.read_reg(rs1)
+                        .wrapping_sub(b)
+                        .wrapping_sub(u64::from(self.ccr & 1)),
+                ),
                 0x09 => self.write_reg(rd, self.read_reg(rs1).wrapping_mul(b)), // MULX
+                0x0e | 0x0f | 0x1e | 0x1f => {
+                    let dividend = (u64::from(self.y) << 32) | u64::from(self.read_reg(rs1) as u32);
+                    if b as u32 == 0 {
+                        return Err(CpuFault::DivisionByZero);
+                    }
+                    let (result, overflow) = if op3 & 1 == 0 {
+                        let quotient = dividend / u64::from(b as u32);
+                        (
+                            quotient.min(u64::from(u32::MAX)),
+                            quotient > u64::from(u32::MAX),
+                        )
+                    } else {
+                        let quotient = i128::from(dividend as i64) / i128::from(b as i32);
+                        let saturated = quotient.clamp(i128::from(i32::MIN), i128::from(i32::MAX));
+                        (saturated as u64, saturated != quotient)
+                    };
+                    self.write_reg(rd, result);
+                    if op3 & 0x10 != 0 {
+                        self.ccr = Self::logic_flags(result) | (u8::from(overflow) << 1);
+                    }
+                }
+                0x2d if word & (1 << 13) != 0 || word & 0x1fe0 == 0 => {
+                    if b == 0 {
+                        return Err(CpuFault::DivisionByZero);
+                    }
+                    let result = (self.read_reg(rs1) as i64).wrapping_div(b as i64);
+                    self.write_reg(rd, result as u64);
+                }
                 0x0d if word & (1 << 13) != 0 || word & 0x1fe0 == 0 => {
                     // V9 A.37: UDIVX uses unsigned 64-bit operands and preserves CCR.
                     let quotient = self
@@ -686,14 +845,17 @@ impl V9Cpu {
                         .ok_or(CpuFault::DivisionByZero)?;
                     self.write_reg(rd, quotient);
                 }
-                0x11 | 0x12 => {
+                0x11..=0x13 | 0x15..=0x17 => {
                     let a = self.read_reg(rs1);
-                    let result = if op3 == 0x11 { a & b } else { a | b };
-                    let low = result as u32;
-                    self.ccr = (u8::from((result as i64) < 0) << 7)
-                        | (u8::from(result == 0) << 6)
-                        | (u8::from((low as i32) < 0) << 3)
-                        | (u8::from(low == 0) << 2);
+                    let result = match op3 {
+                        0x11 => a & b,
+                        0x12 => a | b,
+                        0x13 => a ^ b,
+                        0x15 => a & !b,
+                        0x16 => a | !b,
+                        _ => !(a ^ b),
+                    };
+                    self.ccr = Self::logic_flags(result);
                     self.write_reg(rd, result);
                 }
                 0x38 => {
@@ -707,6 +869,214 @@ impl V9Cpu {
                     self.write_reg(rd, self.pc);
                     next_npc = target;
                 }
+                0x2c if word & (1 << 18) != 0 => {
+                    let flags = match (word >> 11) & 3 {
+                        0 => self.ccr,
+                        2 => self.ccr >> 4,
+                        _ => return Err("reserved MOVcc condition-code selector".into()),
+                    };
+                    if Self::condition((word >> 14) & 15, flags) {
+                        let value = if word & (1 << 13) == 0 {
+                            b
+                        } else {
+                            ((word << 21) as i32 >> 21) as i64 as u64
+                        };
+                        self.write_reg(rd, value);
+                    }
+                }
+                0x2f => {
+                    if Self::register_condition((word >> 10) & 7, self.read_reg(rs1))? {
+                        let value = if word & (1 << 13) == 0 {
+                            b
+                        } else {
+                            ((word << 22) as i32 >> 22) as i64 as u64
+                        };
+                        self.write_reg(rd, value);
+                    }
+                }
+                0x34 if matches!((word >> 5) & 511, 1 | 2 | 5 | 6 | 9 | 10) => {
+                    self.require_fpu()?;
+                    let opf = (word >> 5) & 511;
+                    let rs2 = (word & 31) as u8;
+                    let wide = opf & 3 == 2;
+                    let value = if wide {
+                        self.fp_double(rs2)
+                    } else {
+                        u64::from(self.fregs[usize::from(rs2)])
+                    };
+                    let sign = if wide { 1 << 63 } else { 1 << 31 };
+                    let value = match opf & 12 {
+                        4 => value ^ sign,
+                        8 => value & !sign,
+                        _ => value,
+                    };
+                    if wide {
+                        self.write_fp_double(rd, value);
+                    } else {
+                        self.fregs[usize::from(rd)] = value as u32;
+                        self.fprs |= 1;
+                    }
+                }
+                0x34 => {
+                    self.require_fpu()?;
+                    let opf = (word >> 5) & 0x1ff;
+                    let rs2 = (word & 31) as u8;
+                    let rounding = (self.fsr >> 30) as u32 & 3;
+                    let trap_underflow = self.fsr & (4 << 23) != 0;
+                    let (result, flags, double) = match opf {
+                        0x41 | 0x42 | 0x45 | 0x46 | 0x49 | 0x4a | 0x4d | 0x4e => {
+                            let double = opf & 3 == 2;
+                            let (value, flags) = crate::fpu::binary_result(
+                                opf,
+                                self.fp_operand(rs1, double),
+                                self.fp_operand(rs2, double),
+                                double,
+                                rounding,
+                                trap_underflow,
+                            );
+                            (value, flags, double)
+                        }
+                        0xc4 | 0xc8 | 0xc6 | 0xc9 | 0xd1 | 0xd2 | 0x29 | 0x2a => {
+                            let bits = self.fp_operand(rs2, matches!(opf, 0xc6 | 0xd2 | 0x2a));
+                            let (value, flags) =
+                                crate::fpu::v9_unary(opf, bits, rounding, trap_underflow);
+                            (value, flags, matches!(opf, 0xc8 | 0xc9 | 0x2a))
+                        }
+                        _ => return Err(format!("unsupported V9 FPop1 opf {opf:#x}").into()),
+                    };
+                    self.complete_fp(flags)?;
+                    if double {
+                        self.write_fp_double(rd, result);
+                    } else {
+                        self.fregs[usize::from(rd)] = result as u32;
+                        self.fprs |= 1;
+                    }
+                }
+                0x35 if matches!((word >> 5) & 511, 0x51 | 0x52 | 0x55 | 0x56) && rd < 4 => {
+                    self.require_fpu()?;
+                    let opf = (word >> 5) & 511;
+                    let double = opf & 3 == 2;
+                    let (sign, exp, quiet) = if double {
+                        (1 << 63, 0x7ff0_0000_0000_0000, 1 << 51)
+                    } else {
+                        (1 << 31, 0x7f80_0000, 1 << 22)
+                    };
+                    let (fcc, flags) = crate::fpu::compare_bits(
+                        self.fp_operand(rs1, double),
+                        self.fp_operand((word & 31) as u8, double),
+                        sign,
+                        exp,
+                        quiet,
+                        opf & 4 != 0,
+                    );
+                    self.complete_fp(flags)?;
+                    let shift = Self::fcc_shift(u32::from(rd));
+                    self.fsr = (self.fsr & !(3 << shift)) | (u64::from(fcc) << shift);
+                }
+                0x36 if matches!((word >> 5) & 0x1ff, 0x18 | 0x1a) => {
+                    self.require_fpu()?;
+                    let addr = self
+                        .read_reg(rs1)
+                        .wrapping_add(self.read_reg((word & 31) as u8));
+                    let offset = if word & 0x40 == 0 {
+                        addr
+                    } else {
+                        addr.wrapping_neg()
+                    };
+                    self.gsr = (self.gsr & !7) | (offset & 7);
+                    self.write_reg(rd, addr & !7);
+                }
+                0x36 if (word >> 5) & 0x1ff == 0x48 => {
+                    self.require_fpu()?;
+                    let pair = (u128::from(self.fp_double(rs1)) << 64)
+                        | u128::from(self.fp_double((word & 31) as u8));
+                    let aligned = (pair >> (64 - (self.gsr & 7) * 8)) as u64;
+                    self.write_fp_double(rd, aligned);
+                }
+                0x36 if word >> 5 & 0x1f1 == 0x20 => {
+                    self.require_fpu()?;
+                    // IIi §13.4.7. Signed lanes, with the low lane in mask bit zero.
+                    let opf = word >> 5;
+                    let bits = if opf & 4 == 0 { 16 } else { 32 };
+                    let a = self.fp_double(rs1);
+                    let b = self.fp_double((word & 31) as u8);
+                    let mut mask = 0;
+                    for i in 0..64 / bits {
+                        let lane =
+                            |v: u64| ((v >> (i * bits) << (64 - bits)) as i64) >> (64 - bits);
+                        let (x, y) = (lane(a), lane(b));
+                        let selected = match opf & 10 {
+                            0 => x <= y,
+                            2 => x != y,
+                            8 => x > y,
+                            _ => x == y,
+                        };
+                        mask |= u64::from(selected) << i;
+                    }
+                    self.write_reg(rd, mask);
+                }
+                0x36 if (0x60..=0x7f).contains(&((word >> 5) & 0x1ff)) => {
+                    self.require_fpu()?;
+                    let single = word & 0x20 != 0;
+                    let read = |r| {
+                        if single {
+                            u64::from(self.fregs[usize::from(r)])
+                        } else {
+                            self.fp_double(r)
+                        }
+                    };
+                    let a = read(rs1);
+                    let b = read((word & 31) as u8);
+                    // IIi table 13-11 encodes the four-bit Boolean function in opf[4:1].
+                    let result = match (word >> 6) & 15 {
+                        0 => 0,
+                        1 => !(a | b),
+                        2 => a & !b,
+                        3 => !b,
+                        4 => !a & b,
+                        5 => !a,
+                        6 => a ^ b,
+                        7 => !(a & b),
+                        8 => a & b,
+                        9 => !(a ^ b),
+                        10 => a,
+                        11 => a | !b,
+                        12 => b,
+                        13 => !a | b,
+                        14 => a | b,
+                        _ => u64::MAX,
+                    };
+                    if single {
+                        self.fregs[usize::from(rd)] = result as u32;
+                        self.fprs |= 1;
+                    } else {
+                        self.write_fp_double(rd, result);
+                    }
+                }
+                0x2b if word == 0x8158_0000 => {
+                    // FLUSHW
+                    if self.cansave != WINDOW_MASK - 1 {
+                        return Err(self.window_fault(0x80));
+                    }
+                }
+                0x31 if rd < 2 && word & 0x7ffff == 0 => {
+                    self.require_privilege("SAVED/RESTORED")?;
+                    if rd == 0 {
+                        self.cansave = (self.cansave + 1) & WINDOW_MASK;
+                        if self.otherwin == 0 {
+                            self.canrestore = self.canrestore.wrapping_sub(1) & WINDOW_MASK;
+                        }
+                    } else {
+                        self.canrestore = (self.canrestore + 1) & WINDOW_MASK;
+                        self.cleanwin = (self.cleanwin + 1).min(WINDOW_MASK);
+                        if self.otherwin == 0 {
+                            self.cansave = self.cansave.wrapping_sub(1) & WINDOW_MASK;
+                        }
+                    }
+                    if self.otherwin != 0 {
+                        self.otherwin -= 1;
+                    }
+                }
                 0x39 | 0x3c | 0x3d => {
                     // SAVE, RESTORE and RETURN read their operands in the old window.
                     if (word & (1 << 13) == 0 && word & 0x1fe0 != 0) || (op3 == 0x39 && rd != 0) {
@@ -716,10 +1086,10 @@ impl V9Cpu {
                     match op3 {
                         0x3c => {
                             if self.cansave == 0 {
-                                return Err("V9 window spill trap not implemented".into());
+                                return Err(self.window_fault(0x80));
                             }
                             if self.cleanwin == self.canrestore {
-                                return Err("V9 clean window trap not implemented".into());
+                                return Err(CpuFault::Window(0x24));
                             }
                             self.cwp = (self.cwp + 1) & WINDOW_MASK;
                             self.cansave -= 1;
@@ -727,7 +1097,7 @@ impl V9Cpu {
                         }
                         _ => {
                             if self.canrestore == 0 {
-                                return Err("V9 window fill trap not implemented".into());
+                                return Err(self.window_fault(0xc0));
                             }
                             if op3 == 0x39 {
                                 if sum & 3 != 0 || !matches!((sum as i64) >> 43, 0 | -1) {
@@ -744,18 +1114,33 @@ impl V9Cpu {
                         self.write_reg(rd, sum);
                     }
                 }
-                0x10 => {
+                0x10 | 0x14 | 0x18 | 0x1c => {
                     let a = self.read_reg(rs1);
-                    let result = a.wrapping_add(b);
+                    let subtract = op3 & 4 != 0;
+                    let carry = op3 & 8 != 0 && self.ccr & 1 != 0;
+                    let result = if subtract {
+                        a.wrapping_sub(b).wrapping_sub(u64::from(carry))
+                    } else {
+                        a.wrapping_add(b).wrapping_add(u64::from(carry))
+                    };
+                    self.ccr = Self::arithmetic_flags(a, b, result, subtract, carry);
                     self.write_reg(rd, result);
-                    self.set_add_cc(a, b, result);
                 }
-                0x14 => {
-                    let a = self.read_reg(rs1);
-                    let icc = Self::sub_flags(u64::from(a as u32), u64::from(b as u32), 1 << 31);
-                    let xcc = Self::sub_flags(a, b, 1 << 63);
-                    self.write_reg(rd, a.wrapping_sub(b));
-                    self.ccr = (xcc << 4) | icc;
+                0x24 => {
+                    let a = self.read_reg(rs1) as u32;
+                    let sign = ((self.ccr >> 3) ^ (self.ccr >> 1)) & 1;
+                    let shifted = (a >> 1) | (u32::from(sign) << 31);
+                    let addend = if self.y & 1 != 0 { b as u32 } else { 0 };
+                    self.y = (self.y >> 1) | (a << 31);
+                    let result = u64::from(shifted) + u64::from(addend);
+                    self.ccr = Self::arithmetic_flags(
+                        u64::from(shifted),
+                        u64::from(addend),
+                        result,
+                        false,
+                        false,
+                    );
+                    self.write_reg(rd, u64::from(result as u32));
                 }
                 0x25..=0x27 => {
                     let a = self.read_reg(rs1);
@@ -789,25 +1174,25 @@ impl V9Cpu {
                     self.require_privilege("RD dispatch control")?;
                     self.write_reg(rd, u64::from(self.dispatch_control));
                 }
-                0x28 if rs1 == 0 && word & 0x3fff == 0 => self.write_reg(rd, u64::from(self.y)),
-                0x30 if rd == 0 && (word & (1 << 13) != 0 || word & 0x1fe0 == 0) => {
-                    self.y = (self.read_reg(rs1) ^ b) as u32
+                0x28 if rs1 == 19 && word & 0x3fff == 0 => {
+                    self.require_fpu()?;
+                    self.write_reg(rd, self.gsr);
+                }
+                0x30 if rd == 19 && (word & (1 << 13) != 0 || word & 0x1fe0 == 0) => {
+                    self.require_fpu()?;
+                    self.gsr = (self.read_reg(rs1) ^ b) & 0x7f;
                 }
                 0x28 if rs1 == 22 && word & 0x3fff == 0 => {
                     self.require_privilege("RD SOFTINT")?;
                     self.write_reg(rd, u64::from(self.softint));
                 }
-                0x28 if rs1 == 0 && word & 0x3fff == 0 => self.write_reg(rd, u64::from(self.y)),
-                0x30 if rd == 0 && (word & (1 << 13) != 0 || word & 0x1fe0 == 0) => {
-                    self.y = (self.read_reg(rs1) ^ b) as u32
-                }
                 0x28 if rs1 == 23 && word & 0x3fff == 0 => {
                     self.require_privilege("RD TICK_CMPR")?;
                     self.write_reg(rd, self.tick_compare);
                 }
-                // MEMBAR #Sync: all earlier operations in this single-CPU
-                // fixture have already completed when an instruction retires.
-                0x28 if word == 0x8143_e040 => {}
+                // All prior loads and stores complete synchronously on this board.
+                // Pending deferred errors are checked before fetch, including barriers.
+                0x28 if word & !0x7f == 0x8143_e000 || word == 0x8143_c000 => {}
                 0x3e if rd <= 1 && word & 0x7ffff == 0 => {
                     self.require_privilege("DONE/RETRY")?;
                     let frame = self.traps[self.trap_index()?];
@@ -842,11 +1227,7 @@ impl V9Cpu {
                     if Self::condition(u32::from(rd), flags) {
                         let operand = if immediate { u64::from(word & 0x7f) } else { b };
                         let number = self.read_reg(rs1).wrapping_add(operand) & 0x7f;
-                        return Err(format!(
-                            "V9 software trap TT={:#x} entry not implemented",
-                            0x100 + number
-                        )
-                        .into());
+                        return Err(CpuFault::Synchronous(0x100 + number as u16));
                     }
                 }
                 0x3b if rd == 0 && (word & (1 << 13) != 0 || word & 0x1fe0 == 0) => {
@@ -902,8 +1283,7 @@ impl V9Cpu {
                         return Err(format!("unsupported V9 WR SOFTINT word {word:#x}").into());
                     }
                     let value = self.read_reg(rs1) ^ b;
-                    let bits = u16::try_from(value)
-                        .map_err(|_| format!("unsupported IIi SOFTINT bits in {value:#x}"))?;
+                    let bits = value as u16; // IIi table 11-9 implements only bits 15:0.
                     match rd {
                         20 => self.softint |= bits,
                         21 => self.softint &= !bits,
@@ -926,13 +1306,108 @@ impl V9Cpu {
                 _ => return Err(format!("unsupported V9 op3 {op3:#x}").into()),
             },
             3 => match op3 {
+                0x33 | 0x37
+                    if matches!(
+                        self.instruction_asi(word),
+                        0x70 | 0x71 | 0x78 | 0x79 | 0xf0 | 0xf1 | 0xf8 | 0xf9
+                    ) =>
+                {
+                    self.require_fpu()?;
+                    let asi = self.instruction_asi(word);
+                    if asi < 0x80 {
+                        self.require_privilege("alternate FP memory access")?;
+                    }
+                    let va = self.read_reg(rs1).wrapping_add(b);
+                    self.fp_block(memory, va, rd, asi, op3 == 0x37)?;
+                }
+                0x20 | 0x21 | 0x23 | 0x24 | 0x25 | 0x27 | 0x30 | 0x33 | 0x34 | 0x37 => {
+                    self.require_fpu()?;
+                    let va = self.read_reg(rs1).wrapping_add(b);
+                    let status = op3 & 3 == 1;
+                    if status && rd > 1 {
+                        return Err(CpuFault::Synchronous(0x10));
+                    }
+                    let wide = op3 & 3 == 3 || (status && rd == 1);
+                    let width = if wide {
+                        IntegerWidth::Xword
+                    } else {
+                        IntegerWidth::Word
+                    };
+                    let store = op3 & 4 != 0;
+                    let asi = (op3 & 0x10 != 0).then(|| self.instruction_asi(word));
+                    if let Some(a) = asi {
+                        if a < 0x80 {
+                            self.require_privilege("alternate FP memory access")?;
+                        }
+                        if !matches!(
+                            a,
+                            0x04 | 0x0c | 0x10 | 0x11 | 0x18 | 0x19 | 0x80 | 0x81 | 0x88 | 0x89
+                        ) {
+                            return Err(
+                                format!("unsupported V9 floating load/store ASI {a:#x}").into()
+                            );
+                        }
+                    }
+                    let map = self.translate_asi(
+                        va,
+                        width as u64,
+                        if store { Access::Write } else { Access::Read },
+                        asi,
+                    )?;
+                    let little =
+                        map.invert_endian ^ asi.map_or(self.pstate & (1 << 9) != 0, |a| a & 8 != 0);
+                    if store {
+                        let value = if status {
+                            self.fsr
+                        } else if wide {
+                            self.fp_double(rd)
+                        } else {
+                            u64::from(self.fregs[usize::from(rd)])
+                        };
+                        let data = width.reorder(value, little) & width.mask();
+                        memory.write_integer(map.pa, width, map.cacheable, data)?;
+                        if map.cacheable {
+                            self.update_data_hit(va, map.pa, width, data);
+                        }
+                        if status {
+                            self.fsr &= !(7 << 14);
+                        }
+                    } else {
+                        let data = width.reorder(self.load_data(memory, va, map, width)?, little);
+                        if status {
+                            let writable = 0x3f_cfc0_0fffu64 & width.mask();
+                            self.fsr = (self.fsr & !writable) | (data & writable);
+                        } else if wide {
+                            self.write_fp_double(rd, data);
+                        } else {
+                            self.fregs[usize::from(rd)] = data as u32;
+                            self.fprs |= 1;
+                        }
+                    }
+                    if let Some(slot) = map.slot {
+                        self.data_tlb.set_used(slot, true);
+                    }
+                }
                 0x3c | 0x3e => {
                     let asi = if word & 0x2000 == 0 {
                         (word >> 5) as u8
                     } else {
                         self.asi
                     };
-                    if !matches!(asi, 0x80 | 0x88) {
+                    if !matches!(
+                        asi,
+                        0x14 | 0x1c
+                            | 0x04
+                            | 0x0c
+                            | 0x10
+                            | 0x11
+                            | 0x18
+                            | 0x19
+                            | 0x80
+                            | 0x81
+                            | 0x88
+                            | 0x89
+                    ) {
                         return Err(format!("unsupported V9 compare-and-swap ASI {asi:#x}").into());
                     }
                     let width = if op3 == 0x3c {
@@ -941,12 +1416,15 @@ impl V9Cpu {
                         IntegerWidth::Xword
                     };
                     let va = self.read_reg(rs1);
-                    let map = self.translate(va, width as u64, Access::Write)?;
+                    if asi < 0x80 {
+                        self.require_privilege("alternate compare-and-swap")?;
+                    }
+                    let map = self.translate_asi(va, width as u64, Access::Write, Some(asi))?;
                     if !map.cacheable {
                         return Err("unsupported V9 compare-and-swap on I/O".into());
                     }
                     let value = memory.read_integer(map.pa, width, true)?;
-                    let little = map.invert_endian ^ (asi == 0x88);
+                    let little = map.invert_endian ^ (asi & 8 != 0);
                     let old = width.reorder(value, little);
                     if old == self.read_reg((word & 31) as u8) & width.mask() {
                         let new = width.reorder(self.read_reg(rd), little) & width.mask();
@@ -958,36 +1436,11 @@ impl V9Cpu {
                         self.data_tlb.set_used(slot, true);
                     }
                 }
-                0x00..=0x02 | 0x04..=0x06 | 0x0b | 0x0e => {
-                    let width = match op3 {
-                        0x00 | 0x04 => IntegerWidth::Word,
-                        0x01 | 0x05 => IntegerWidth::Byte,
-                        0x02 | 0x06 => IntegerWidth::Half,
-                        _ => IntegerWidth::Xword,
-                    };
-                    let kind = if op3 & 4 == 0 {
-                        Access::Read
-                    } else {
-                        Access::Write
-                    };
+                0x00..=0x0b | 0x0d..=0x0f => {
                     let va = self.read_reg(rs1).wrapping_add(b);
-                    let mapping = self.translate(va, width as u64, kind)?;
-                    let little = mapping.invert_endian ^ (self.pstate & (1 << 9) != 0);
-                    if kind == Access::Write {
-                        let value = width.reorder(self.read_reg(rd), little);
-                        memory.write_integer(mapping.pa, width, mapping.cacheable, value)?;
-                        if mapping.cacheable {
-                            self.update_data_hit(va, mapping.pa, width, value);
-                        }
-                    } else {
-                        let value = self.load_data(memory, va, mapping, width)?;
-                        self.write_reg(rd, width.reorder(value, little));
-                    }
-                    if let Some(slot) = mapping.slot {
-                        self.data_tlb.set_used(slot, true);
-                    }
+                    self.integer_access(memory, op3, rd, va, None)?;
                 }
-                0x10..=0x12 | 0x14..=0x16 | 0x1b | 0x1e => {
+                0x10..=0x1b | 0x1d..=0x1f => {
                     let asi = if word & (1 << 13) != 0 {
                         self.asi
                     } else {
@@ -1000,6 +1453,12 @@ impl V9Cpu {
                     }
                     let address = self.read_reg(rs1).wrapping_add(b);
                     match (asi, op3) {
+                        (
+                            0x04 | 0x0c | 0x10 | 0x11 | 0x18 | 0x19 | 0x80 | 0x81 | 0x88 | 0x89,
+                            _,
+                        ) => {
+                            self.integer_access(memory, op3 & 15, rd, address, Some(asi))?;
+                        }
                         (
                             ASI_PHYS_BYPASS_EC_WITH_EBIT | ASI_PHYS_BYPASS_EC_WITH_EBIT_LE,
                             0x12 | 0x16,
@@ -1019,23 +1478,8 @@ impl V9Cpu {
                                 self.write_reg(rd, width.reorder(value, little));
                             }
                         }
-                        (ASI_PHYS_USE_EC, 0x1b) => {
-                            let pa = Self::bypass_address(address, 8)?;
-                            let mapping = Translation {
-                                pa,
-                                cacheable: true,
-                                virtual_cacheable: false,
-                                invert_endian: false,
-                                slot: None,
-                            };
-                            let value = self.load_data(memory, pa, mapping, IntegerWidth::Xword)?;
-                            self.write_reg(rd, value);
-                        }
-                        (ASI_PHYS_USE_EC, 0x1e) => {
-                            let pa = Self::bypass_address(address, 8)?;
-                            let value = self.read_reg(rd);
-                            memory.write_cacheable_xword(pa, value)?;
-                            self.update_data_hit(pa, pa, IntegerWidth::Xword, value);
+                        (ASI_PHYS_USE_EC | 0x1c, _) => {
+                            self.integer_access(memory, op3 & 15, rd, address, Some(asi))?
                         }
                         (ASI_PHYS_BYPASS_EC_WITH_EBIT | ASI_PHYS_BYPASS_EC_WITH_EBIT_LE, 0x10) => {
                             let value = self.uncached_read(
@@ -1101,7 +1545,7 @@ impl V9Cpu {
                             )?;
                         }
                         (0x45, 0x1b | 0x1e) => self.access_lsu_control(op3, address, rd)?,
-                        (ASI_DCACHE_TAG | ASI_ICACHE_TAG, 0x1e) => {
+                        (ASI_DCACHE_TAG | ASI_ICACHE_TAG, 0x1b | 0x1e) => {
                             if address & !0x3fe0 != 0 {
                                 return Err(format!(
                                     "invalid IIi cache tag address {address:#x} for ASI {asi:#x}"
@@ -1110,11 +1554,36 @@ impl V9Cpu {
                             }
                             let index = (address >> 5) as usize;
                             let value = self.read_reg(rd);
-                            if asi == ASI_ICACHE_TAG {
+                            if op3 == 0x1b {
+                                let tag = if asi == ASI_ICACHE_TAG {
+                                    u64::from(self.icache_tags[index]) << 8
+                                } else {
+                                    u64::from(self.dcache_tags[index])
+                                };
+                                self.write_reg(rd, tag);
+                            } else if asi == ASI_ICACHE_TAG {
                                 self.icache_tags[index] = (value >> 8) as u32 & 0x1fff_ffff;
                             } else {
                                 self.dcache_tags[index] = value as u32 & 0x3fff_ffff;
                             }
+                        }
+                        (0x49, 0x1b) if address == 0 => {
+                            self.write_reg(rd, u64::from(self.interrupt_receive >> 15) << 5)
+                        }
+                        (0x49, 0x1e) if address == 0 => {
+                            if self.read_reg(rd) & 0x20 == 0 {
+                                self.interrupt_receive &= 0x7ff;
+                            }
+                        }
+                        (ASI_SDB_READ, 0x1b) if matches!(address, 0x40 | 0x50 | 0x60) => {
+                            self.write_reg(
+                                rd,
+                                if address == 0x40 {
+                                    u64::from(self.interrupt_receive & 0x7ff)
+                                } else {
+                                    0
+                                },
+                            );
                         }
                         (ASI_UPA_CONFIG, 0x1b) if address == 0 => {
                             self.write_reg(rd, self.ecache.upa_config());
@@ -1169,6 +1638,63 @@ impl V9Cpu {
                             } else {
                                 // Table 16-3. Only the sticky flags are write-one-to-clear.
                                 self.async_fault_status &= !(self.read_reg(rd) & 0x0001_adf0_0000);
+                            }
+                        }
+                        (ASI_IMMU | ASI_DMMU, 0x1b | 0x1e)
+                            if matches!(address, 0 | 0x18 | 0x20 | 0x28) =>
+                        {
+                            let index = usize::from(asi == ASI_DMMU);
+                            match (address,op3) {
+                                (0,0x1b) => {
+                                    let tag=if index==0 {self.instruction_tlb.tag_access()} else {self.data_tlb.tag_access()};
+                                    self.write_reg(rd, ((tag & 0x1fff)<<48) | (tag>>22));
+                                }
+                                (0x18,0x1b)=>self.write_reg(rd,self.sfsr[index]),
+                                (0x18,0x1e)=> {if self.read_reg(rd)&1==0 {self.sfsr[index]=0;} },
+                                (0x20,0x1b) if index==1=>self.write_reg(rd,self.sfar),
+                                (0x28,0x1e)=>self.tsb[index]=self.read_reg(rd)&!0xff8,
+                                (0x28,0x1b)=>self.write_reg(rd,self.tsb[index]),
+                                _=>return Err(format!("unsupported MMU status access offset={address:#x} op3={op3:#x}").into()),
+                            }
+                        }
+                        (0x51 | 0x52 | 0x59 | 0x5a | 0x5b, 0x1b) if address == 0 => {
+                            let d = asi & 8 != 0;
+                            let large = asi & 3 == 2 || (asi == 0x5b && self.direct_tsb_large);
+                            let tag = if d {
+                                self.data_tlb.tag_access()
+                            } else {
+                                self.instruction_tlb.tag_access()
+                            };
+                            let tsb = self.tsb[usize::from(d)];
+                            let half_size = 8192u64 << (tsb & 7);
+                            let index = (tag >> if large { 12 } else { 9 }) & (half_size - 16);
+                            let split = tsb & (1 << 12) != 0;
+                            let base = tsb & !(half_size * if split { 2 } else { 1 } - 1);
+                            self.write_reg(
+                                rd,
+                                base | index | if split && large { half_size } else { 0 },
+                            );
+                        }
+                        (0x24 | 0x2c, 0x13) => {
+                            if rd & 1 != 0 {
+                                return Err(CpuFault::Synchronous(0x10));
+                            }
+                            if address & 15 != 0 {
+                                return Err(CpuFault::Synchronous(0x34));
+                            }
+                            let map = self.translate_asi(address, 16, Access::Read, Some(asi))?;
+                            if !map.cacheable {
+                                return Err("quad load outside cacheable RAM".into());
+                            }
+                            let little = map.invert_endian ^ (asi & 8 != 0);
+                            let a = IntegerWidth::Xword
+                                .reorder(memory.read_cacheable_xword(map.pa)?, little);
+                            let b = IntegerWidth::Xword
+                                .reorder(memory.read_cacheable_xword(map.pa + 8)?, little);
+                            self.write_reg(rd, a);
+                            self.write_reg(rd + 1, b);
+                            if let Some(slot) = map.slot {
+                                self.data_tlb.set_used(slot, true);
                             }
                         }
                         (ASI_IMMU | ASI_DMMU, 0x1b | 0x1e) if address == 0x30 => {
@@ -1259,6 +1785,38 @@ impl V9Cpu {
         Ok(tt)
     }
 
+    pub(crate) fn enter_mmu_protection(
+        &mut self,
+        tag: TlbMiss,
+        status: u64,
+        large: bool,
+        fetch: Option<Translation>,
+    ) -> Result<u16, String> {
+        self.prepare_normal_trap(fetch)?;
+        let data = tag.access != Access::Fetch;
+        let i = usize::from(data);
+        self.sfsr[i] = status | ((self.sfsr[i] & 1) << 1);
+        if data {
+            self.sfar = tag.address;
+        }
+        let tlb = if data {
+            &mut self.data_tlb
+        } else {
+            &mut self.instruction_tlb
+        };
+        tlb.stage_tag((tag.address & !0x1fff) | u64::from(tag.context));
+        let (tt, globals) = if status & (1 << 7) == 0 {
+            self.direct_tsb_large = large;
+            (0x6c, PSTATE_MG)
+        } else if data {
+            (0x30, PSTATE_MG)
+        } else {
+            (0x8, PSTATE_MG)
+        };
+        self.enter_normal_trap(tt, globals);
+        Ok(tt)
+    }
+
     pub(crate) fn enter_data_access_error(&mut self) -> Result<(), String> {
         self.prepare_normal_trap(None)?;
         self.data_error_pending = false;
@@ -1301,10 +1859,245 @@ impl V9Cpu {
         }
     }
 
+    pub(crate) fn can_take_vector(&self) -> bool {
+        self.interrupt_receive & 0x8000 == 0
+            && !self.data_error_pending
+            && self.pstate & (PSTATE_IE | PSTATE_RED) == PSTATE_IE
+    }
+    pub(crate) fn enter_vector(&mut self, ino: u8) -> Result<(), String> {
+        self.prepare_normal_trap(None)?;
+        self.interrupt_receive = 0x8000 | (0x1f << 6) | u16::from(ino);
+        self.enter_normal_trap(0x60, PSTATE_IG);
+        Ok(())
+    }
+
     pub(crate) fn enter_interrupt(&mut self, level: u8) -> Result<(), String> {
         self.prepare_normal_trap(None)?;
         // IIi table 6-12 selects alternate globals for interrupt_level_n.
         self.enter_normal_trap(0x40 + u16::from(level), PSTATE_AG);
+        Ok(())
+    }
+
+    fn asi_translation(&self, asi: u8) -> (u16, bool) {
+        let context = match asi {
+            0x04 | 0x0c | 0x24 | 0x2c => 0,
+            _ if asi & 1 != 0 => self.secondary_context,
+            _ => self.primary_context,
+        };
+        let privileged = !matches!(asi & 0xf0, 0x10 | 0x70) && self.pstate & PSTATE_PRIV != 0;
+        (context, privileged)
+    }
+
+    fn instruction_asi(&self, word: u32) -> u8 {
+        if word & (1 << 13) == 0 {
+            (word >> 5) as u8
+        } else {
+            self.asi
+        }
+    }
+
+    fn fp_operand(&self, reg: u8, double: bool) -> u64 {
+        if double {
+            self.fp_double(reg)
+        } else {
+            u64::from(self.fregs[usize::from(reg)])
+        }
+    }
+    fn fcc_shift(cc: u32) -> u32 {
+        if cc == 0 {
+            10
+        } else {
+            30 + cc * 2
+        }
+    }
+    fn complete_fp(&mut self, flags: u32) -> Result<(), CpuFault> {
+        let enabled = flags & (self.fsr >> 23) as u32 & 31;
+        if enabled != 0 {
+            self.fsr = (self.fsr & !0x1c01f) | (1 << 14) | (1u64 << (31 - enabled.leading_zeros()));
+            return Err(CpuFault::Synchronous(0x21));
+        }
+        self.fsr = (self.fsr & !0x1c01f) | u64::from(flags | (flags << 5));
+        Ok(())
+    }
+    fn require_fpu(&self) -> Result<(), CpuFault> {
+        if self.pstate & PSTATE_PEF == 0 || self.fprs & 4 == 0 {
+            Err(CpuFault::Synchronous(0x20))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn fp_index(rd: u8) -> usize {
+        usize::from((rd & 0x1e) | ((rd & 1) << 5))
+    }
+    fn fp_double(&self, rd: u8) -> u64 {
+        let n = Self::fp_index(rd);
+        (u64::from(self.fregs[n]) << 32) | u64::from(self.fregs[n + 1])
+    }
+    fn write_fp_double(&mut self, rd: u8, value: u64) {
+        let n = Self::fp_index(rd);
+        self.fregs[n] = (value >> 32) as u32;
+        self.fregs[n + 1] = value as u32;
+        self.fprs |= if n < 32 { 1 } else { 2 };
+    }
+    fn fp_block(
+        &mut self,
+        memory: &mut dyn V9DataBus,
+        va: u64,
+        rd: u8,
+        asi: u8,
+        store: bool,
+    ) -> Result<(), CpuFault> {
+        if !matches!(asi, 0x70 | 0x71 | 0x78 | 0x79 | 0xf0 | 0xf1 | 0xf8 | 0xf9) {
+            return Err(format!("unsupported V9 FP block ASI {asi:#x}").into());
+        }
+        if va & 63 != 0 {
+            return Err(CpuFault::Synchronous(0x34));
+        }
+        if Self::fp_index(rd) & 15 != 0 {
+            return Err(CpuFault::Synchronous(0x10));
+        }
+        let kind = if store { Access::Write } else { Access::Read };
+        let map = self.translate_asi(va, 64, kind, Some(asi))?;
+        if !map.cacheable {
+            return Err("UltraSPARC block transfer to noncacheable memory".into());
+        }
+        let little = map.invert_endian ^ (asi & 8 != 0);
+        let mut words = [0; 8];
+        for (i, v) in words.iter_mut().enumerate() {
+            let pa = map.pa + 8 * i as u64;
+            let reg = rd + (2 * i) as u8;
+            if store {
+                let value = IntegerWidth::Xword.reorder(self.fp_double(reg), little);
+                memory.write_cacheable_xword(pa, value)?;
+                self.update_data_hit(va + 8 * i as u64, pa, IntegerWidth::Xword, value);
+            } else {
+                *v = IntegerWidth::Xword.reorder(memory.read_cacheable_xword(pa)?, little);
+            }
+        }
+        if !store {
+            for (i, v) in words.into_iter().enumerate() {
+                self.write_fp_double(rd + (2 * i) as u8, v);
+            }
+        }
+        if let Some(slot) = map.slot {
+            self.data_tlb.set_used(slot, true);
+        }
+        Ok(())
+    }
+    pub(crate) fn enter_synchronous(
+        &mut self,
+        tt: u16,
+        fetch: Option<Translation>,
+    ) -> Result<(), String> {
+        self.prepare_normal_trap(fetch)?;
+        self.enter_normal_trap(tt, PSTATE_AG);
+        Ok(())
+    }
+
+    fn integer_access(
+        &mut self,
+        memory: &mut dyn V9DataBus,
+        op3: u32,
+        rd: u8,
+        va: u64,
+        asi: Option<u8>,
+    ) -> Result<(), CpuFault> {
+        if matches!(op3, 3 | 7) && rd & 1 != 0 {
+            return Err("V9 doubleword requires an even register pair".into());
+        }
+        let width = match op3 {
+            0x00 | 0x04 | 0x08 | 0x0f => IntegerWidth::Word,
+            0x01 | 0x05 | 0x09 | 0x0d => IntegerWidth::Byte,
+            0x02 | 0x06 | 0x0a => IntegerWidth::Half,
+            _ => IntegerWidth::Xword,
+        };
+        let kind = if op3 & 4 == 0 {
+            Access::Read
+        } else {
+            Access::Write
+        };
+        let (mapping, little) = match asi {
+            Some(asi) => (
+                self.translate_asi(va, width as u64, kind, Some(asi))?,
+                asi & 8 != 0,
+            ),
+            None => (
+                self.translate(va, width as u64, kind)?,
+                self.pstate & (1 << 9) != 0,
+            ),
+        };
+        let little = mapping.invert_endian ^ little;
+        if matches!(op3, 0x0d | 0x0f) {
+            if !mapping.cacheable {
+                return Err("unsupported V9 atomic exchange on I/O".into());
+            }
+            let old = memory.read_integer(mapping.pa, width, true)?;
+            let new = if op3 == 0x0d {
+                0xff
+            } else {
+                width.reorder(self.read_reg(rd), little)
+            };
+            memory.write_integer(mapping.pa, width, true, new)?;
+            self.update_data_hit(va, mapping.pa, width, new);
+            self.write_reg(rd, width.reorder(old, little));
+        } else if kind == Access::Write {
+            let value = if op3 == 7 {
+                (self.read_reg(rd) << 32) | u64::from(self.read_reg(rd + 1) as u32)
+            } else {
+                self.read_reg(rd)
+            };
+            let value = width.reorder(value, little);
+            memory.write_integer(mapping.pa, width, mapping.cacheable, value)?;
+            if mapping.cacheable {
+                self.update_data_hit(va, mapping.pa, width, value);
+            }
+        } else {
+            let value = self.load_data(memory, va, mapping, width)?;
+            let value = width.reorder(value, little);
+            if op3 == 3 {
+                self.write_reg(rd + 1, u64::from(value as u32));
+            }
+            self.write_reg(
+                rd,
+                match op3 {
+                    0x03 => value >> 32,
+                    0x08 => value as i32 as i64 as u64,
+                    0x09 => value as i8 as i64 as u64,
+                    0x0a => value as i16 as i64 as u64,
+                    _ => value,
+                },
+            );
+        }
+        if let Some(slot) = mapping.slot {
+            self.data_tlb.set_used(slot, true);
+        }
+        Ok(())
+    }
+
+    fn window_fault(&self, base: u16) -> CpuFault {
+        let vector = if self.otherwin == 0 {
+            (self.wstate & 7) << 2
+        } else {
+            0x20 | ((self.wstate >> 3) << 2)
+        };
+        CpuFault::Window(base | u16::from(vector))
+    }
+
+    pub(crate) fn enter_window_trap(
+        &mut self,
+        tt: u16,
+        fetch: Option<Translation>,
+    ) -> Result<(), String> {
+        self.prepare_normal_trap(fetch)?;
+        // SAVE grows the architectural CWP upwards. TSTATE must record
+        // the faulting window before the trap handler selects its operands.
+        self.enter_normal_trap(tt, PSTATE_AG);
+        self.cwp = match tt {
+            0x24 => self.cwp + 1,
+            0x80..=0xbf => self.cwp + self.cansave + 2,
+            _ => self.cwp.wrapping_sub(1),
+        } & WINDOW_MASK;
         Ok(())
     }
 
@@ -1436,7 +2229,8 @@ impl V9Cpu {
             }
             6 => {
                 // Big-endian data and TSO. IE admits implemented software interrupt levels.
-                let supported = GLOBAL_SELECT | PSTATE_IE | PSTATE_PRIV | PSTATE_PEF | PSTATE_RED;
+                let supported =
+                    GLOBAL_SELECT | PSTATE_IE | PSTATE_PRIV | PSTATE_AM | PSTATE_PEF | PSTATE_RED;
                 if value & !u64::from(supported) != 0
                     || (value as u16 & GLOBAL_SELECT).count_ones() > 1
                 {
@@ -1552,32 +2346,49 @@ impl V9Cpu {
         }
     }
 
-    fn sub_flags(a: u64, b: u64, sign: u64) -> u8 {
-        let result = a.wrapping_sub(b);
-        let overflow = (a ^ b) & (a ^ result) & sign != 0;
-        (u8::from(result & sign != 0) << 3)
-            | (u8::from(a == b) << 2)
-            | (u8::from(overflow) << 1)
-            | u8::from(a < b)
+    fn register_condition(condition: u32, value: u64) -> Result<bool, CpuFault> {
+        let v = value as i64;
+        Ok(match condition {
+            1 => v == 0,
+            2 => v <= 0,
+            3 => v < 0,
+            5 => v != 0,
+            6 => v > 0,
+            7 => v >= 0,
+            _ => return Err("reserved register condition".into()),
+        })
     }
 
-    fn set_add_cc(&mut self, a: u64, b: u64, result: u64) {
-        let low = (a as u32).wrapping_add(b as u32);
-        let low_wide = u64::from(a as u32) + u64::from(b as u32);
-        let low_carry = low_wide > u64::from(u32::MAX);
-        let wide = u128::from(a) + u128::from(b);
-        let wide_carry = wide > u128::from(u64::MAX);
-        let low_signed = i64::from(a as i32) + i64::from(b as i32);
-        let full_signed = i128::from(a as i64) + i128::from(b as i64);
-        self.ccr = u8::from(low & 0x8000_0000 != 0) << 3
-            | u8::from(low == 0) << 2
-            | u8::from(low_signed < i64::from(i32::MIN) || low_signed > i64::from(i32::MAX)) << 1
-            | u8::from(low_carry)
-            | u8::from(result & (1 << 63) != 0) << 7
-            | u8::from(result == 0) << 6
-            | u8::from(full_signed < i128::from(i64::MIN) || full_signed > i128::from(i64::MAX))
-                << 5
-            | u8::from(wide_carry) << 4;
+    fn logic_flags(result: u64) -> u8 {
+        let low = result as u32;
+        (u8::from((result as i64) < 0) << 7)
+            | (u8::from(result == 0) << 6)
+            | (u8::from((low as i32) < 0) << 3)
+            | (u8::from(low == 0) << 2)
+    }
+
+    fn arithmetic_flags(a: u64, b: u64, result: u64, subtract: bool, carry: bool) -> u8 {
+        let overflow = if subtract {
+            (a ^ b) & (a ^ result)
+        } else {
+            !(a ^ b) & (a ^ result)
+        };
+        let carry_out = |left, right, sum| {
+            if subtract {
+                left < right || (carry && left == right)
+            } else {
+                sum < left || (carry && sum == left)
+            }
+        };
+        Self::logic_flags(result)
+            | ((overflow >> 58) as u8 & 0x20)
+            | ((overflow >> 30) as u8 & 2)
+            | (u8::from(carry_out(a, b, result)) << 4)
+            | u8::from(carry_out(
+                a & 0xffff_ffff,
+                b & 0xffff_ffff,
+                result & 0xffff_ffff,
+            ))
     }
 }
 
@@ -1620,6 +2431,100 @@ mod tests {
             (0x32, 0x40, 0x40)
         );
         assert!(!cpu.data_error_pending);
+    }
+
+    #[test]
+    fn floating_conversions_compare_and_annul_use_the_selected_condition_register() {
+        let mut cpu = V9Cpu::new(0x1000);
+        cpu.pstate = PSTATE_PEF;
+        cpu.fprs = 4;
+        let fpop = |op: u32, rd: u32, rs1: u32, opf: u32, rs2: u32| {
+            (2 << 30) | (rd << 25) | (op << 19) | (rs1 << 14) | (opf << 5) | rs2
+        };
+        cpu.fregs[3] = (-17i32) as u32;
+        cpu.execute_fetched(fpop(0x34, 1, 0, 0xc8, 3), &mut UnmappedData)
+            .unwrap();
+        assert_eq!(cpu.fp_double(1), (-17.0f64).to_bits()); // encoded 1 addresses %f32:%f33
+        cpu.write_fp_double(4, 2.0f64.to_bits());
+        cpu.execute_fetched(fpop(0x35, 2, 1, 0x52, 4), &mut UnmappedData)
+            .unwrap();
+        assert_eq!(cpu.fsr, 1 << 34); // fcc2 = less
+        let pc = cpu.pc;
+        cpu.execute_fetched(
+            (6 << 25) | (5 << 22) | (2 << 20) | (1 << 29) | 7,
+            &mut UnmappedData,
+        )
+        .unwrap(); // fbg,a %fcc2
+        assert_eq!((cpu.pc, cpu.npc), (pc + 8, pc + 12));
+        cpu.write_fp_double(4, 0x7ff8_1234_5678_abcd);
+        cpu.execute_fetched(fpop(0x34, 11, 0, 0xd2, 4), &mut UnmappedData)
+            .unwrap();
+        assert_eq!(cpu.fregs[11], 0x7fff_ffff);
+        assert_eq!(cpu.fsr & 0x3ff, 0x210);
+        cpu.fsr |= 16 << 23;
+        let pc = cpu.pc;
+        assert!(matches!(
+            cpu.execute_fetched(fpop(0x35, 2, 4, 0x56, 4), &mut UnmappedData),
+            Err(CpuFault::Synchronous(0x21))
+        ));
+        assert_eq!((cpu.pc, cpu.fsr >> 34 & 3), (pc, 1));
+    }
+
+    #[test]
+    fn vis_compare_returns_signed_lane_masks_in_an_integer_register() {
+        let mut cpu = V9Cpu::new(0);
+        cpu.pstate = PSTATE_PEF;
+        cpu.fprs = 4;
+        cpu.write_fp_double(6, 0x8000_0000_ffff_0005);
+        cpu.write_fp_double(8, 0x8000_0000_0000_0004);
+        for (opf, expected) in [
+            (0x26, 1),
+            (0x2c, 0),
+            (0x2e, 2),
+            (0x22, 3),
+            (0x20, 14),
+            (0x28, 1),
+        ] {
+            cpu.execute_fetched(0x9bb1_8008 | opf << 5, &mut UnmappedData)
+                .unwrap();
+            assert_eq!(cpu.read_reg(13), expected);
+        }
+    }
+
+    #[test]
+    fn vis_alignment_crosses_double_registers_and_preserves_scale() {
+        let mut cpu = V9Cpu::new(0);
+        cpu.pstate = PSTATE_PEF;
+        cpu.fprs = 4;
+        cpu.write_reg(3, 0x1233);
+        cpu.gsr = 0x50;
+        let vis = |opf: u32, rd: u32, a: u32, b: u32| {
+            0x81b0_0000 | (rd << 25) | (a << 14) | (opf << 5) | b
+        };
+        cpu.execute_fetched(vis(0x18, 4, 3, 0), &mut UnmappedData)
+            .unwrap();
+        assert_eq!((cpu.read_reg(4), cpu.gsr), (0x1230, 0x53));
+        cpu.write_fp_double(2, 0x0001_0203_0405_0607);
+        cpu.write_fp_double(4, 0x0809_0a0b_0c0d_0e0f);
+        cpu.execute_fetched(vis(0x48, 2, 2, 4), &mut UnmappedData)
+            .unwrap();
+        assert_eq!(cpu.fp_double(2), 0x0304_0506_0708_090a);
+        cpu.execute_fetched(vis(0x1a, 4, 3, 0), &mut UnmappedData)
+            .unwrap();
+        assert_eq!((cpu.read_reg(4), cpu.gsr), (0x1230, 0x55));
+        cpu.execute_fetched(vis(0x74, 1, 2, 0), &mut UnmappedData)
+            .unwrap();
+        assert_eq!(cpu.fp_double(1), 0x0304_0506_0708_090a);
+        assert_eq!(cpu.fprs, 7);
+        cpu.execute_fetched(0x9544_c000, &mut UnmappedData).unwrap();
+        assert_eq!(cpu.read_reg(10), 0x55);
+        cpu.fprs = 0;
+        let before = cpu.clone();
+        assert!(matches!(
+            cpu.execute_fetched(0x9544_c000, &mut UnmappedData),
+            Err(CpuFault::Synchronous(0x20))
+        ));
+        assert_eq!(cpu, before);
     }
 
     #[test]
@@ -2040,7 +2945,7 @@ mod tests {
             (0xc6a0_4ee0, 0, true), // STWA
             (0xc4d8_4fe0, 1, true),
             (0xc6f0_4ee0, 0x1000_0000_0018, true),
-            (0xc4d8_4fe0, 0x40, true), // interrupt receive port, separate function
+            (0xc4d8_4fe0, 0x48, true), // between interrupt receive data ports
             (0xc6f0_4ee0, 0, false),
             (0xc4d8_4fe0, 0x18, false),
         ] {
@@ -2205,5 +3110,75 @@ mod tests {
         cpu.lsu_control = (1 << 40) | 3;
         cpu.execute_fetched(0xc4d8_08a0, &mut UnmappedData).unwrap();
         assert_eq!(cpu.read_reg(2), 0x100_0000_0003);
+    }
+}
+
+#[cfg(test)]
+mod solaris_loader_tests {
+    use super::*;
+
+    #[test]
+    fn signed_extended_division_wraps_the_single_overflow_and_preserves_ccr() {
+        let mut cpu = V9Cpu::new(0);
+        cpu.ccr = 0xa5;
+        for (a, b, expected) in [(i64::MIN, -1, i64::MIN), (-7, 2, -3), (7, -2, -3)] {
+            cpu.write_reg(1, a as u64);
+            cpu.write_reg(2, b as u64);
+            cpu.execute_fetched(0x8768_4002, &mut UnmappedData).unwrap();
+            assert_eq!((cpu.read_reg(3) as i64, cpu.ccr), (expected, 0xa5));
+        }
+    }
+
+    #[test]
+    fn signed_loads_extend_after_byte_order_conversion_and_preserve_ccr() {
+        let mut m = V9Memory::new(64);
+        m.load_words(32, &[0x8765_4321]);
+        for (op, expect) in [
+            (0x09, 0xffff_ffff_ffff_ff87),
+            (0x0a, 0xffff_ffff_ffff_8765),
+            (0x08, 0xffff_ffff_8765_4321),
+        ] {
+            let mut c = V9Cpu::new(0);
+            c.ccr = 0xa5;
+            c.execute_fetched(0xc200_2020 | (op << 19), &mut m).unwrap();
+            assert_eq!((c.read_reg(1), c.ccr, c.pc()), (expect, 0xa5, 4));
+        }
+        let mut c = V9Cpu::new(0);
+        c.pstate |= 1 << 9;
+        c.execute_fetched(0xc240_2020, &mut m).unwrap();
+        assert_eq!(c.read_reg(1), 0x2143_6587);
+    }
+
+    #[test]
+    fn spilled_window_has_its_own_registers_and_retry_reexecutes_save() {
+        let mut cpu = V9Cpu::new(0x40);
+        cpu.pstate = PSTATE_PRIV;
+        cpu.tl = 0;
+        cpu.tba = 0x10000;
+        cpu.cwp = 7;
+        cpu.cansave = 0;
+        cpu.canrestore = 6;
+        cpu.cleanwin = 7;
+        cpu.write_reg(16, 0x12345678);
+        let saved_pc = (cpu.pc, cpu.npc);
+        let Err(CpuFault::Window(tt)) = cpu.execute_fetched(0x9de3_bfa0, &mut UnmappedData) else {
+            panic!("SAVE should spill")
+        };
+        assert_eq!(tt, 0x80);
+        cpu.enter_window_trap(tt, None).unwrap();
+        assert_eq!(
+            (cpu.pc, cpu.cwp, cpu.traps[0].tstate as u8),
+            (0x11000, 1, 7)
+        );
+        assert_ne!(cpu.read_reg(16), 0x12345678);
+        cpu.execute_fetched(0x8188_0000, &mut UnmappedData).unwrap(); // saved
+        cpu.execute_fetched(0x83f0_0000, &mut UnmappedData).unwrap(); // retry
+        assert_eq!((cpu.pc, cpu.npc), saved_pc);
+        assert_eq!(cpu.read_reg(16), 0x12345678);
+        cpu.execute_fetched(0x9de3_bfa0, &mut UnmappedData).unwrap();
+        assert_eq!(
+            (cpu.pc, cpu.cwp, cpu.cansave, cpu.canrestore),
+            (0x44, 0, 0, 6)
+        );
     }
 }

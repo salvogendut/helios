@@ -1227,3 +1227,29 @@ fn narrow_data_faults_preserve_registers_memory_and_tlb_used() {
     cpu.execute_fetched(0xc210_6000, &mut ram).unwrap(); // lduh [%g1],%g1, last two bytes
     assert_eq!(cpu.read_reg(1), 0xffff);
 }
+
+#[test]
+fn a_verified_subpage_rechecks_write_privilege_and_overlapping_edits() {
+    let mut tlb = Tlb::default();
+    tlb.stage_tag(0x14000 | 3);
+    tlb.write_data(0, VALID | (1 << 61) | 0x20000 | 4, false);
+    assert_eq!(
+        tlb.lookup(0x14568, 3, true, Access::Read).unwrap().pa,
+        0x24568
+    );
+    assert!(tlb.lookup(0x14568, 3, true, Access::Write).is_err());
+    assert!(tlb.lookup(0x14568, 3, false, Access::Read).is_err());
+    tlb.stage_tag(0x16000 | 3);
+    tlb.write_data(1, VALID | 0x38000 | 2, false);
+    assert!(tlb
+        .lookup(0x16200, 3, true, Access::Read)
+        .map_err(String::from)
+        .unwrap_err()
+        .contains("multiple"));
+    assert_eq!(
+        tlb.lookup(0x14568, 3, true, Access::Read).unwrap().pa,
+        0x24568
+    );
+    tlb.demap(0x14000, 3, 0).unwrap();
+    assert!(tlb.lookup(0x14568, 3, true, Access::Read).is_err());
+}

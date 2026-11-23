@@ -85,6 +85,11 @@ impl Mouse {
         }
     }
 
+    pub(crate) fn pop_byte(&mut self) -> Option<u8> {
+        self.schedule();
+        self.queue.pop_front()
+    }
+
     fn schedule(&mut self) {
         while self.queue.len() + 5 <= 32 && (self.dx != 0 || self.dy != 0 || self.changed) {
             let dx = self.dx.clamp(-120, 127);

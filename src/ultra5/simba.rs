@@ -38,7 +38,7 @@ impl Simba {
         let start = offset & 0xff;
         (start..start + N)
             .all(|i| {
-                matches!(i, 0..=0x0b | 0x0d..=0x0e | 0x18..=0x1b | 0x1e..=0x1f | 0x28..=0x2f | 0x3d | 0xc0 |
+                matches!(i, 0..=0x0f | 0x18..=0x1b | 0x1e..=0x1f | 0x28..=0x2f | 0x3c..=0x3f | 0xc0 |
                 0xc8..=0xcf | 0xd8..=0xdc | 0xde..=0xef)
             })
             .then_some((offset >> 8, start))
@@ -59,8 +59,10 @@ impl Simba {
                 4 => regs[i] = value & 0x47, // I/O, memory, master, parity response
                 5 => regs[i] = value & 1,    // SERR enable
                 7 | 0x1f => regs[i] &= !(value & 0xf9), // sticky PCI errors, W1C
+                0x0c => regs[i] = value,     // cache line size in DWORDs
                 0x0d | 0x1b => regs[i] = value & 0xf8,
                 0x18..=0x1a | 0xc0 | 0xd8..=0xdc | 0xde..=0xdf => regs[i] = value,
+                0x3e => regs[i] = value & 0x23, // secondary parity, SERR and master abort reporting
                 0xe0 => regs[i] = value & 0x0f, // bus grants
                 0xe1 => regs[i] = value & 1,    // error interrupt enable
                 0xe2 => regs[i] = value & 0x20, // arbiter parking

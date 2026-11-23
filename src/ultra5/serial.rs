@@ -59,6 +59,15 @@ impl Serial {
         }
     }
 
+    pub fn next_timeout(&self) -> Option<u64> {
+        self.channels.iter().filter_map(|ch| ch.timeout_at).min()
+    }
+
+    pub fn interrupt(&self) -> bool {
+        self.channels
+            .iter()
+            .any(|ch| ch.isr0 & !ch.registers[0x1a] != 0 || ch.isr1 & !ch.registers[0x1b] != 0)
+    }
     pub fn ccr0(&self) -> [u8; 2] {
         std::array::from_fn(|i| self.channels[i].registers[usize::from(CCR0 - 0x20)])
     }
@@ -102,14 +111,32 @@ impl Serial {
         true
     }
 
+    /// A single EBus transfer through consecutive FIFO lanes.
+    pub fn write_pool(&mut self, offset: u8, bytes: &[u8]) -> Result<(), String> {
+        let ch = &mut self.channels[usize::from(offset / 0x40)];
+        if usize::from(offset % 0x40) + bytes.len() > 32
+            || !ch.tx_ready()
+            || ch.used + bytes.len() > 32
+        {
+            return Err("SAB 82532 transmit pool unavailable".into());
+        }
+        ch.fifo[ch.used..ch.used + bytes.len()].copy_from_slice(bytes);
+        ch.used += bytes.len();
+        Ok(())
+    }
+    pub fn read_pool<const N: usize>(&mut self, offset: u8) -> Result<[u8; N], String> {
+        let ch = &mut self.channels[usize::from(offset / 0x40)];
+        if usize::from(offset % 0x40) + N > 32 || ch.rx_read + N > ch.rx_pool {
+            return Err("SAB 82532 receive pool unavailable".into());
+        }
+        ch.rx_read += N;
+        Ok(std::array::from_fn(|_| ch.rx.pop_front().unwrap()))
+    }
     pub fn read(&mut self, offset: u8) -> Result<u8, String> {
         let channel = &mut self.channels[usize::from(offset / 0x40)];
         let reg = offset % 0x40;
         match reg {
-            0..=0x1f if channel.rx_read < channel.rx_pool => {
-                channel.rx_read += 1;
-                Ok(channel.rx.pop_front().unwrap())
-            }
+            0..=0x1f => self.read_pool::<1>(offset).map(|bytes| bytes[0]),
             STATUS_COMMAND => {
                 Ok((u8::from(channel.tx_ready()) << 6) | (u8::from(!channel.rx.is_empty()) << 5))
             }
@@ -147,13 +174,7 @@ impl Serial {
         let channel = &mut self.channels[usize::from(offset / 0x40)];
         let reg = offset % 0x40;
         match reg {
-            0..=0x1f => {
-                if !channel.tx_ready() {
-                    return Err("SAB 82532 transmit pool unavailable".into());
-                }
-                channel.fifo[channel.used] = value;
-                channel.used += 1;
-            }
+            0..=0x1f => return self.write_pool(offset, &[value]),
             STATUS_COMMAND => match value {
                 0x01 | 0x40 | 0x41 => {
                     if value & 1 != 0 {
@@ -206,7 +227,7 @@ impl Serial {
             0x3d => self.pim = value,
             0x3e => self.pcr = value,
             // Writing BGR and the interrupt masks does not modify their read aliases.
-            CCR0 | 0x22..=0x28 | 0x2b | 0x2d..=0x2f | 0x34 | 0x3a | 0x3b | 0x3f => {
+            CCR0 | 0x22..=0x28 | 0x2a..=0x2b | 0x2d..=0x34 | 0x36..=0x37 | 0x3a | 0x3b | 0x3f => {
                 channel.registers[usize::from(reg - 0x20)] = value;
             }
             _ => return Err(format!("unsupported SAB 82532 write at offset {offset:#x}")),

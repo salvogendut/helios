@@ -1,9 +1,56 @@
-# Ultra 5/10 OpenBoot and serial console
+# Ultra 5/10 OpenBoot consoles
 
 Original Sun OpenBoot 3.31.0 reaches a responsive `ok` prompt on serial
 port A in the headless Ultra 5. The firmware reports a 440 MHz UltraSPARC-IIi,
 512 MiB of memory and no keyboard. It initializes both Simba PCI buses and
 enumerates EBus, Ethernet, graphics and IDE before printing the banner.
+
+## Graphical console in Heliacal
+
+In **F9 → General**, select **Sun Ultra 5** and choose the original 1 MiB
+OpenBoot flash. Heliacal selects one UltraSPARC-IIi, 512 MiB, the onboard
+ATI Mach64 and a Sun Type 5 US keyboard. Save with **F9**, boot with
+**Ctrl+P** and click inside the display to capture the keyboard. **Ctrl+Enter**
+releases it. With `auto-boot?` set to `false`, the ROM prints its Sun banner
+and `Keyboard Present`, then accepts commands at `ok`. Typing `1 2 + .`
+and pressing Enter returns `3` and a new prompt.
+
+The graphical console uses the original firmware's 1152×900, 8-bit indexed
+mode. Scanout follows the CRTC offset, pitch and palette. The PC87332 UART
+supplies reset, layout and key events at 1200 baud. Heliacal saves an
+independent Ultra 5 NVRAM file. The Solaris 7 CD kernel attaches the onboard
+display as `m640`. The CD’s Xsun server uses the Solaris Mach64 driver to
+draw the language and locale chooser. The device supports indexed and direct
+color scanout, a two-color hardware cursor, masked fills and blits, solid
+lines and monochrome host-data expansion. Writes through the big-endian
+aperture follow the GTB memory controller’s independently selectable byte,
+16-bit or 32-bit ordering for each framebuffer aperture. Keyboard and mouse bytes reach
+separate PC87332 UARTs.
+
+## Boot the installed Solaris 7 system
+
+The Solaris 7 11/99 SPARC End User installation uses the 32-bit sun4u kernel
+and a separate 4 GiB writable raw disk on the CMD646 primary master.
+Sun OpenBoot calls the disk unit 0 and Solaris calls it `c0t0d0`.
+The install CD can be detached after the installer finishes and halts.
+
+The local test machine has an installed disk, a dedicated NVRAM and a
+Heliacal configuration. From the Helios checkout, run
+
+```sh
+../heliacal/target/release/heliacal --config local/ultra5-solaris7-install/installed.cfg
+```
+
+Press **Ctrl+P**, click the guest display, then type `boot disk` at the
+`ok` prompt. Wait for **Welcome to ultra5** and **Please enter your user
+name**. These appear in the installed CDE login manager running on Xsun.
+The installation image, firmware and local account credentials are kept
+under the ignored `local/` directory.
+
+To use a different installation, select **Sun Ultra 5** and its original
+OpenBoot PROM in **F9 → General**. Under **Media**, attach a writable raw
+IDE disk on the primary master and a Solaris SPARC ISO on the secondary
+master. Use `boot cdrom` for installation and `boot disk` afterward.
 
 ## Interactive serial console
 
@@ -65,7 +112,7 @@ The example paces host input for the 9600-baud console.
 
 Append `--cdrom` and the path to a raw ISO to the serial-console command.
 The example opens the image read-only. The board attaches it as the CMD646
-secondary master, OpenBoot unit 2. The other three IDE positions are empty.
+secondary master, OpenBoot unit 2. An optional disk attaches as primary master, unit 0.
 
 ```sh
 cargo run --release --locked --offline --example ultra5_serial -- \
@@ -77,8 +124,16 @@ cargo run --release --locked --offline --example ultra5_serial -- \
 At the serial prompt, `devalias cdrom` shows
 `/pci@1f,0/pci@1,1/ide@3/cdrom@2,0:f`. Run `probe-ide` to see
 `Removable ATAPI Model: HELIOS ATAPI CD-ROM` under device 2. The driver
-uses polled packet I/O. ATA hard disks, bus-master DMA and IDE interrupt
-delivery are still open.
+uses polled packet I/O. Pass `--disk-rw path/to/ultra5-ide0.img` to the example
+to attach an existing writable disk. OpenBoot then reports `ATA Model: HELIOS ATA DISK`
+at device 0. The disk implements 512-byte PIO and multiword DMA sector
+transfers. CMD646 bus-master descriptors and their data buffers use the IIi
+IOMMU. Use an independent image for installations.
+
+With both devices attached, `boot cdrom -v` loads the original Solaris 7
+kernel. It mounts its UFS installation root on CD unit 2, probes the disk as
+`dad0` and starts system identification. A first read of sector zero on a
+blank disk reports a missing Solaris disk label.
 
 To check a known sector in OpenBoot, enter the following lines at `ok` with
 the Solaris 7 11/99 SPARC disc attached. The commands use hex numbers.
@@ -95,11 +150,10 @@ cd-buf 10 dump
 cd-ih close-dev
 ```
 
-With the handle closed, `boot cdrom` opens slice `:f`. Two runs stop at
-PC `0x116524`, nPC `0x116528`, on V9 memory opcode `0x09` (LDSB).
-The Solaris disc's SPARC V9 `sun4u/ufsboot` executable places
-`ldsb [%g4], %o4` at that address. The serial transcript ends at
-OpenBoot's `Boot device:` line, before a Solaris banner.
+With the handle closed, `boot cdrom -v` loads the SPARC V9 `sun4u/ufsboot`
+from slice `:f` and starts the disc's SPARC32PLUS kernel. The kernel prints
+`SunOS Release 5.7 Version Generic_106541-08` on serial A. Installer and
+installed-disk acceptance are tracked separately from this kernel milestone.
 
 ## Run the first serial diagnostic
 
@@ -136,7 +190,7 @@ register offset and value from flash, repeats its configuration on channel B,
 polls STAR, writes each character to XFIFO and issues the transmit command
 at PC `0xffff_ffff_f000_0380`. The fixture completes transmission
 synchronously and exposes the transmitted bytes through
-`Ultra5ResetBoard::take_serial_output()`. The monitor polls for serial input; external UART interrupt delivery and transmit-line timing remain open. [Siemens SAB 82532 register descriptions](https://media.digikey.com/pdf/Data%20Sheets/Infineon%20PDFS/SAB%2CSAF82532.pdf)
+`Ultra5ResetBoard::take_serial_output()`. The monitor polls for serial input. Solaris receives SAB interrupts through the IIi interrupt controller. Transmit completion is synchronous. [Siemens SAB 82532 register descriptions](https://media.digikey.com/pdf/Data%20Sheets/Infineon%20PDFS/SAB%2CSAF82532.pdf)
 
 The IIi host retains its software bus numbers. Its primary PCI bus stays
 at bus 0. Simba’s bus numbers route downstream PCIO configuration cycles.

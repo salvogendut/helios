@@ -208,10 +208,25 @@ fn unsupported_trap_levels_and_host_bus_faults_leave_cpu_intact() {
     cpu.data_tlb.write_data(1, VALID | RAM | 0x20, false); // read-only, a protection fault is distinct
     let before = cpu.clone();
     assert!(board
-        .step_outcome(&mut cpu)
+        .step_mapped(&mut cpu)
         .unwrap_err()
         .contains("protection"));
     assert_eq!(cpu, before);
+    assert!(matches!(
+        board.step_outcome(&mut cpu).unwrap(),
+        BoardStep::TrapTaken { tt: 0x6c, .. }
+    ));
+    assert_eq!(cpu.sfsr[1], 0x80_000d);
+    assert_eq!(cpu.sfar, 0);
+    assert_eq!(
+        cpu.pstate & super::super::GLOBAL_SELECT,
+        super::super::PSTATE_MG
+    );
+    assert_eq!(
+        board.read_cacheable_xword(RAM).unwrap(),
+        0xc470_6000_0100_0000
+    );
+    cpu = before;
     for (mode, tl, op) in [
         (PSTATE_PRIV, 0, 0x83f0_0000),
         (0, 1, 0x81f0_0000),

@@ -38,6 +38,34 @@ impl Dram {
         Ok(Some((installed >> 12, ((installed & 4095) >> 3) as usize)))
     }
 
+    pub(super) fn dma_bytes(
+        &mut self,
+        mut pa: u64,
+        control: u32,
+        mut bytes: &mut [u8],
+        write: bool,
+    ) -> Result<(), String> {
+        while !bytes.is_empty() {
+            let base = pa & !7;
+            let start = (pa & 7) as usize;
+            let count = (8 - start).min(bytes.len());
+            let data = &mut bytes[..count];
+            if write && count == 8 {
+                self.write(base, control, u64::from_be_bytes(data.try_into().unwrap()))?;
+            } else {
+                let mut word = self.read(base, control)?.to_be_bytes();
+                if write {
+                    word[start..start + count].copy_from_slice(data);
+                    self.write(base, control, u64::from_be_bytes(word))?;
+                } else {
+                    data.copy_from_slice(&word[start..start + count]);
+                }
+            }
+            pa += count as u64;
+            bytes = &mut bytes[count..];
+        }
+        Ok(())
+    }
     pub(super) fn read(&self, pa: u64, control: u32) -> Result<u64, String> {
         Ok(Self::location(pa, control)?
             .and_then(|(page, index)| self.pages.get(&page).map(|words| words[index]))

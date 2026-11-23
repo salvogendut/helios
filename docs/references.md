@@ -5,6 +5,40 @@ emulators for implementation details, device behavior and practical firmware
 requirements. When they disagree, retain the disagreement and build a focused
 test rather than assuming either emulator defines the hardware.
 
+## Ultra 5 graphical console
+
+- Mach64 CRTC timing, offset/pitch, pixel depth, blanking and DAC index/data
+  registers determine the framebuffer presented to the host. The Ultra 5
+  OpenBoot 3.31 console exercises the indexed, 8-bit 1152×900 mode.
+  [ATI register reference](https://bitsavers.computerhistory.org/components/ati/RRG-G02700_mach64_Register_Reference_Guide_ATI-264VT_and_3D_RAGE_1996.pdf) · [Linux Mach64 register definitions](https://github.com/torvalds/linux/blob/v6.12/include/video/mach64.h)
+
+- The 3D Rage II+ (264GTB) selects byte, word or dword ordering separately
+  for the lower and upper 8 MiB apertures with MEM_CNTL bits 25:24 and
+  27:26. The Solaris 7 Xsun driver programs both fields to zero in its
+  indexed mode. [X.Org Mach64 register masks and modes](https://sources.debian.org/src/xserver-xorg-video-mach64/6.9.5-1/src/atiregs.h) · [X.Org depth selection](https://sources.debian.org/src/xserver-xorg-video-mach64/6.9.5-1/src/atimach64.c)
+
+- The draw engine uses the ATI register guide’s destination trajectory,
+  scissor, pixel width, host data, compare and mix registers. Raster
+  interrupts use the CRTC line comparator and vertical blank (chapter 4).
+  Solaris exercises both CPU-written framebuffer pixels and accelerated
+  primitives in the same indexed display. [ATI mach64 register guide](https://bitsavers.computerhistory.org/components/ati/RRG-G02700_mach64_Register_Reference_Guide_ATI-264VT_and_3D_RAGE_1996.pdf)
+
+- UltraSPARC-IIi PCI DMA writes snoop the instruction and data caches. The
+  coherent read path invalidates physical instruction lines and matching
+  data subblocks at either virtual cache index. See the UltraSPARC-IIi
+  User’s Manual §§1.3.6 and 3.1.1.
+
+- On EBus the CS4231 index, data, status and PIO ports are byte accesses
+  spaced four bytes apart. The PCI board uses its own EBus DMA channels.
+  [NetBSD EBus codec attachment](https://github.com/NetBSD/src/blob/trunk/sys/dev/ebus/cs4231_ebus.c) · [NetBSD codec port accesses](https://github.com/NetBSD/src/blob/trunk/sys/dev/ic/cs4231.c)
+
+- The hardware cursor uses two bits per pixel, a 16-byte row stride and an
+  origin measured in eight-byte units. The driver advances the base for rows
+  clipped above the display. [Linux ATI cursor driver](https://github.com/torvalds/linux/blob/v6.12/drivers/video/fbdev/aty/mach64_cursor.c)
+- The HME global reset, transmit/receive configuration, MIF frame interface
+  and Clause 22 PHY registers support Solaris device discovery with the link
+  down. [Sun HME register definitions](https://github.com/torvalds/linux/blob/v6.12/drivers/net/ethernet/sun/sunhme.h)
+
 ## Ultra 5 optical drive
 
 - The original Ultra 5/10 OBP 3.31 `devalias cdrom` and `probe-ide` commands
@@ -12,6 +46,14 @@ test rather than assuming either emulator defines the hardware.
   packet-device signature and the word layout of IDENTIFY PACKET DEVICE.
   Its ATAPI transport shows the command, data and completion phases and
   host byte-count limit. [IDE core](https://github.com/qemu/qemu/blob/v9.2.0/hw/ide/core.c) · [ATAPI transport](https://github.com/qemu/qemu/blob/v9.2.0/hw/ide/atapi.c)
+
+- The ATA task file, master/slave selection, ATA IDENTIFY fields, 28-bit LBA
+  and sector-count-zero convention follow the parallel ATA command set.
+  [T13 ATA/ATAPI-6 draft](https://courses.cs.washington.edu/courses/cse451/16au/readings/ata.pdf)
+- SPARC V9 §§5.2.1.7 and 6.4.2.4 and Appendix A describe address masking,
+  spill/fill window selection, signed loads, paired word order, multiply-step
+  and division flags. These paths are exercised by `sun4u/ufsboot` and the
+  Solaris 7 kernel. [SPARC V9 manual](https://icps.u-strasbg.fr/~loechner/enseignement/SPARC/v9.pdf)
 
 ## Architecture and project model
 
@@ -733,3 +775,5 @@ specification used for the graphical console implementation.
   the target firmware build uses `-O2` instead of upstream's size-oriented
   `-Os`. This is a firmware compilation choice, not a change to guest CPU
   execution or hardware timing.
+
+The CMD646 mirrors its bus-master registers through PCI BAR4. OpenBoot’s onboard bridge interrupt map routes IDE INTA to INO 0x20. An absent slave on a populated channel reports clear BSY and DRQ. [Linux CMD64x register definitions](https://github.com/torvalds/linux/blob/v6.12/drivers/ata/pata_cmd64x.c) · [QEMU ATA task-file reads](https://github.com/qemu/qemu/blob/v10.2.0/hw/ide/core.c#L2159-L2186)

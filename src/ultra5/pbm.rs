@@ -11,7 +11,7 @@ const SERR: u64 = 1 << 34;
 pub(super) struct Pbm {
     control: u64,
     faults: FaultStatus,
-    iommu: Iommu,
+    pub(super) iommu: Iommu,
     // One bit for each 512 MiB region of the incoming 32-bit PCI address space.
     target_regions: u8,
     disable_retry_limit: bool,
@@ -102,12 +102,16 @@ impl Pbm {
         }
         match offset {
             0x200..=0x217 | 0xa580..=0xa67f => self.iommu.read(offset),
+            0x0010 | 0x0020 | 0x0100 | 0x0108 | 0x1a00 => Ok(0), // Reserved IIi CSRs (table 6-6).
             0x2000 => Ok(self.control),
             0x2010 => Ok(self.faults.pio_write),
             0x0030 => Ok(self.faults.dma_uncorrectable),
             0x0040 => Ok(self.faults.dma_correctable),
             0x2020 => Ok(u64::from(self.disable_retry_limit) << 6),
             0x2028 => Ok(u64::from(self.target_regions)),
+            // The clear ports are write-only. Solaris reads back a posted clear.
+            0x1400..=0x14f8 | 0x1800..=0x1858 | 0x1870..=0x1880 if offset & 7 == 0 => Ok(0),
+            0x1c20 => Ok(0), // all prior DMA writes have completed
             0xa800 => Ok(self.pci_interrupts),
             0xa808 => Ok(self.onboard_interrupts),
             _ => Err(format!(
@@ -125,6 +129,7 @@ impl Pbm {
         }
         match offset {
             0x200..=0x217 | 0xa580..=0xa67f => self.iommu.write(offset, value),
+            0x0010 | 0x0020 | 0x0100 | 0x0108 | 0x1a00 => Ok(()),
             0x2000 => {
                 self.control = (self.control & SERR & !value) | (value & CONTROL_RW);
                 Ok(())
@@ -167,6 +172,40 @@ impl Pbm {
         }
     }
 
+    pub(super) fn assert_pci(&mut self, ino: u8) {
+        let shift = 2 * ino;
+        if (self.pci_interrupts >> shift) & 3 == 0 {
+            self.pci_interrupts |= 1u64 << shift;
+        }
+    }
+    pub(super) fn assert_onboard(&mut self, ino: u8) {
+        let shift = 2 * (ino - 0x20);
+        if (self.onboard_interrupts >> shift) & 3 == 0 {
+            self.onboard_interrupts |= 1u64 << shift;
+        }
+    }
+
+    pub(super) fn pending_vector(&self) -> Option<u8> {
+        // The serial and keyboard sources outrank the IDE interrupt.
+        [0x2b, 0x29, 0x2a, 0x27, 0x20]
+            .into_iter()
+            .find(|&ino| {
+                self.enabled & (1u64 << ino) != 0
+                    && self.onboard_interrupts >> (2 * (ino - 0x20)) & 3 == 1
+            })
+            .or_else(|| {
+                (self.enabled & (1 << 0xc) != 0 && self.pci_interrupts >> (2 * 0xf) & 3 == 1)
+                    .then_some(0xf)
+            })
+    }
+    pub(super) fn sent_vector(&mut self, ino: u8) {
+        if ino < 0x20 {
+            self.pci_interrupts |= 3u64 << (2 * ino);
+        } else {
+            self.onboard_interrupts |= 3u64 << (2 * (ino - 0x20));
+        }
+    }
+
     fn partial_ino(offset: u16) -> Option<u16> {
         if offset & 7 != 0 {
             return None;
@@ -193,6 +232,22 @@ impl Pbm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mach64_shares_the_slot_map_and_acknowledges_its_own_pin() {
+        let mut pbm = Pbm::default();
+        pbm.assert_pci(0xf);
+        assert_eq!(pbm.pending_vector(), None);
+        pbm.write(0xc18, 1 << 31).unwrap();
+        assert_eq!(pbm.pending_vector(), Some(0xf));
+        pbm.sent_vector(0xf);
+        assert_eq!(pbm.pending_vector(), None);
+        assert_eq!(pbm.read(0xa800).unwrap(), 3 << 30);
+        pbm.write(0x1460, 0).unwrap();
+        assert_eq!(pbm.read(0xa800).unwrap(), 3 << 30);
+        pbm.write(0x1478, 0).unwrap();
+        assert_eq!(pbm.read(0xa800).unwrap(), 0);
+    }
 
     #[test]
     fn fault_status_reset_and_w1c_are_specific_to_each_register() {
@@ -343,7 +398,7 @@ mod tests {
         assert_eq!(pbm.read(0xa808).unwrap(), (1 << 32) | (3 << 22));
         assert_eq!(pbm.read(0xa800).unwrap(), (1 << 62) | 3);
         assert!(pbm.write(0xa800, 0).is_err());
-        assert!(pbm.read(0x14f8).is_err());
+        assert_eq!(pbm.read(0x14f8).unwrap(), 0);
         pbm.write(0x14f8, 0).unwrap();
         assert_eq!(pbm.read(0xa800).unwrap(), 3);
     }

@@ -22,6 +22,7 @@ pub(super) struct Cdrom {
     control: u8,
     features: u8,
     status: u8,
+    irq: bool,
     error: u8,
     count: u8,
     sector: u8,
@@ -43,6 +44,7 @@ impl Cdrom {
             device: 0xa0,
             control: 0,
             features: 0,
+            irq: false,
             status: 0,
             error: 0,
             count: 0,
@@ -61,6 +63,7 @@ impl Cdrom {
     }
 
     fn reset(&mut self) {
+        self.irq = false;
         self.phase = Phase::Idle;
         self.remaining_blocks = 0;
         self.device = 0xa0;
@@ -75,9 +78,15 @@ impl Cdrom {
         self.phase_end = 0;
     }
 
-    pub(super) fn read(&self, reg: u8) -> Result<u8, String> {
+    pub(super) fn interrupt(&self) -> bool {
+        self.irq && self.control & 6 == 0
+    }
+    pub(super) fn read(&mut self, reg: u8) -> Result<u8, String> {
         if self.device & 0x10 != 0 {
-            return Ok(0xff);
+            return Ok(if matches!(reg, 1 | 7 | 8) { 0 } else { 0xff });
+        }
+        if reg == 7 {
+            self.irq = false;
         }
         Ok(match reg {
             1 => self.error,
@@ -123,6 +132,7 @@ impl Cdrom {
     }
 
     fn command(&mut self, op: u8) {
+        self.irq = op != 0xa0; // IDENTIFY word 0 advertises polled packet request
         self.remaining_blocks = 0;
         self.pos = 0;
         self.error = 0;
@@ -144,6 +154,10 @@ impl Cdrom {
                 self.phase = Phase::Identify;
                 self.status = DRDY | DRQ;
             }
+            0xef if self.features == 3 && matches!(self.count,0..=4 | 8..=12) => {
+                self.phase = Phase::Idle;
+                self.status = DRDY;
+            }
             0xec => {
                 self.reset(); // return the ATAPI signature on ATA IDENTIFY
                 self.abort(4);
@@ -153,6 +167,7 @@ impl Cdrom {
     }
 
     fn abort(&mut self, error: u8) {
+        self.irq = true;
         self.phase = Phase::Idle;
         self.remaining_blocks = 0;
         self.status = DRDY | ERR;
@@ -223,6 +238,7 @@ impl Cdrom {
     }
 
     fn next_data_phase(&mut self) {
+        self.irq = true;
         let remaining = self.buffer.len() - self.pos;
         // Intermediate phases always transfer complete words. A final odd byte
         // is padded on the wire only.
@@ -242,6 +258,7 @@ impl Cdrom {
     }
 
     fn finish(&mut self) {
+        self.irq = self.phase != Phase::Identify;
         self.phase = Phase::Idle;
         self.remaining_blocks = 0;
         self.status = DRDY;

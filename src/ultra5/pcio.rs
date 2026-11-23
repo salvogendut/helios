@@ -81,6 +81,40 @@ impl PciFunction {
         None
     }
 
+    // CMD646 can report a channel request to software while its PCI INTA is
+    // masked. BMIDESR latches rising edges until the driver writes one to bit 2.
+    pub(super) fn ide_interrupts(&mut self, primary: bool, secondary: bool) -> bool {
+        let lines = (u8::from(primary) << 2) | (u8::from(secondary) << 3);
+        let rising = lines & !self.header[0x71];
+        self.header[0x71] = (self.header[0x71] & !0x0c) | lines;
+        self.header[0x50] |= rising & 4;
+        self.header[0x57] |= (rising & 8) << 1;
+        self.header[0x72] |= rising & 4;
+        self.header[0x7a] |= (rising & 8) >> 1;
+        lines & !(self.header[0x71] >> 2) & 0xc != 0
+    }
+
+    pub(super) fn bus_master_offset(&self, addr: u32) -> Option<usize> {
+        if self.header[4] & 1 == 0 {
+            return None;
+        }
+        addr.checked_sub(self.bar_address(4))
+            .filter(|off| *off < 16)
+            .map(|off| 0x70 + off as usize)
+    }
+
+    pub(super) fn dma_command(&self) -> Option<(bool, u32)> {
+        (self.header[4] & 4 != 0 && self.header[0x70] & 1 != 0).then(|| {
+            (
+                self.header[0x70] & 8 != 0,
+                u32::from_le_bytes(self.header[0x74..0x78].try_into().unwrap()),
+            )
+        })
+    }
+    pub(super) fn dma_finished(&mut self, failed: bool) {
+        self.header[0x72] &= !1;
+        self.header[0x72] |= 4 | (u8::from(failed) << 1);
+    }
     pub(super) fn memory_enabled(&self) -> bool {
         self.header[4] & 2 != 0
     }
@@ -91,7 +125,7 @@ impl PciFunction {
         }
         if at + N > 64
             && !(self.header[2..4] == [0x46, 0x06]
-                && (at..at + N).all(|i| matches!(i,0x50..=0x5b | 0x71..=0x74 | 0x78..=0x7b)))
+                && (at..at + N).all(|i| matches!(i,0x50..=0x5b | 0x70..=0x7f)))
         {
             return None;
         }
@@ -115,11 +149,42 @@ impl PciFunction {
                     self.header[reg] = (self.header[reg] & !mask) | (b & mask);
                 }
                 0x51..=0x56 | 0x58..=0x5b | 0x73 | 0x7b => self.header[reg] = b,
-                0x57 => self.header[reg] = b & !0x10,
-                0x71 => self.header[reg] = b & 0x33,
+                0x50 => self.header[reg] &= !(b & 4),
+                0x57 => self.header[reg] = (self.header[reg] & 0x10 & !b) | (b & !0x10),
+                0x70 | 0x78 => self.header[reg] = b & 9, // direction and start
+                0x72 | 0x7a => self.header[reg] = (self.header[reg] & 6 & !b) | (b & 0x60),
+                0x74 | 0x7c => self.header[reg] = b & !3,
+                0x75..=0x77 | 0x7d..=0x7f => self.header[reg] = b,
+                0x71 => self.header[reg] = (self.header[reg] & 0x0c) | (b & 0x33),
                 _ => {}
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn ide_channel_events_survive_task_file_ack_and_have_separate_clear_bits() {
+        let mut f = PciFunction::onboard().into_iter().last().unwrap();
+        f.write(0x71, [0x30]);
+        assert!(!f.ide_interrupts(true, false));
+        assert!(!f.ide_interrupts(false, false));
+        assert_eq!(f.read(0x50), Some([4]));
+        assert_eq!(f.read(0x72), Some([4]));
+        f.write(0x50, [4]);
+        assert_eq!(f.read(0x50), Some([0]));
+        assert_eq!(f.read(0x72), Some([4]));
+        f.write(0x72, [4]);
+        assert_eq!(f.read(0x72), Some([0]));
+        f.write(0x71, [0]);
+        assert!(f.ide_interrupts(false, true));
+        f.ide_interrupts(false, false);
+        assert_eq!(f.read(0x57), Some([0x10]));
+        f.write(0x57, [0x94]);
+        assert_eq!(f.read(0x57), Some([0x84]));
+        assert_eq!(f.read(0x7a), Some([4]));
     }
 }

@@ -8,18 +8,21 @@ use std::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
-    let usage = "usage: ultra5_serial <1-MiB-flash> <8-KiB-nvram> <step-limit> [--interactive] [--cdrom <image>]";
+    let usage = "usage: ultra5_serial <1-MiB-flash> <8-KiB-nvram> <step-limit> [--interactive] [--cdrom <image>] [--disk-rw <image>]";
     let [rom, nvram, steps, options @ ..] = args.as_slice() else {
         return Err(usage.into());
     };
     let mut interactive = false;
     let mut cdrom = None;
+    let mut disk = None;
     let mut options = options.iter();
     while let Some(option) = options.next() {
         if option == "--interactive" && !interactive {
             interactive = true;
         } else if option == "--cdrom" && cdrom.is_none() {
             cdrom = Some(options.next().ok_or(usage)?);
+        } else if option == "--disk-rw" && disk.is_none() {
+            disk = Some(options.next().ok_or(usage)?);
         } else {
             return Err(usage.into());
         }
@@ -34,6 +37,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     if let Some(path) = cdrom {
         board.attach_cdrom(path)?;
+    }
+    if let Some(path) = disk {
+        board.attach_disk(path, true)?;
     }
     let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
     let mut stdout = io::stdout().lock();
@@ -70,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // One 8N1 byte at 9600 baud is about 10,417 board outcomes.
             next_poll = steps + if byte.is_some() { 10417 } else { 100_000 };
         }
-        if steps % 257 == 0 {
+        if steps % 31 == 0 {
             let limit = if interactive {
                 (next_poll - steps).min(budget - steps)
             } else {

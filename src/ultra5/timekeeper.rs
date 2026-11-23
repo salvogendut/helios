@@ -10,6 +10,7 @@ const CENTURY: u8 = 0x10;
 const CALENDAR_MASK: [u8; 7] = [0xff, 0x7f, 0x3f, 0x37, 0x3f, 0x1f, 0xff];
 const SECOND_NS: u64 = 1_000_000_000;
 
+#[derive(Clone)]
 pub(super) struct Timekeeper {
     flags: u8,
     alarm: [u8; 4],
@@ -69,6 +70,15 @@ impl Timekeeper {
         }
     }
 
+    pub(super) fn save(&self, regs: &mut [u8], now_ns: u64) {
+        let mut clock = self.clone();
+        clock.sync(now_ns);
+        regs[0] = clock.flags;
+        regs[2..6].copy_from_slice(&clock.alarm);
+        regs[8] = clock.control;
+        regs[9..].copy_from_slice(&clock.transfer);
+    }
+
     pub(super) fn read(&mut self, offset: usize, now_ns: u64) -> Result<u8, String> {
         match offset {
             0 => {
@@ -94,9 +104,12 @@ impl Timekeeper {
     }
 
     pub(super) fn write(&mut self, offset: usize, value: u8, now_ns: u64) -> Result<(), String> {
+        if offset == 7 && value == 0 {
+            return Ok(());
+        } // disable the watchdog
         if offset < 8 {
             return Err(format!(
-                "unsupported M48T59 register write at {:#x}",
+                "unsupported M48T59 register write value={value:#x} at {:#x}",
                 0x1ff0 + offset
             ));
         }

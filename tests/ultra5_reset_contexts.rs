@@ -162,8 +162,8 @@ fn invalid_context_accesses_and_state_encodings_leave_all_state_intact() {
         0xc6f0_2010, // store with nonzero reserved context bits
         0xc0f0_2009,
         0xc0d8_2011, // misaligned store and load into %g0
-        0xc0f0_2018,
-        0xc2d8_2000, // other, unimplemented D-MMU registers
+        0xc0f0_2020,
+        0xc0f0_2000, // writes to read-only D-SFAR and D-TSB Tag Target
         0x8780_4022,
         0x8740_c001,      // reserved WRASI and RDASI operand bits
         SYNC | (1 << 25), // malformed barrier destination

@@ -55,11 +55,12 @@ impl V9Cpu {
         result
     }
 
-    /// Retire only taken iterations of BG,pt %xcc,. / SUBcc r,1,r.
-    /// Both instructions must share a resident xword and a live translation.
-    /// Leave the exit and any compare crossing to ordinary stepping.
+    /// Retire resident integer countdowns without passing a timer, page or cache-line
+    /// boundary. Both OBP's two-word loop and the Solaris microsecond delay have
+    /// no data accesses. Leave the final exit to ordinary execution.
     pub(crate) fn repeat_countdown(&mut self, budget: u64) -> u64 {
-        if self.pc & 7 != 0
+        if self.pc & 3 != 0
+            || self.pc & 31 == 28
             || self.npc != self.pc.wrapping_add(4)
             || self.ccr != 0
             || self.lsu_control & LSU_IC == 0
@@ -81,10 +82,19 @@ impl V9Cpu {
         else {
             return 0;
         };
-        let pair = self.icache_data[way][(fetch.pa as usize >> 3) & 3];
-        let sub = pair as u32;
+        let line = self.icache_data[way];
+        let first = (fetch.pa as usize & 31) / 4;
+        let word = |n: usize| {
+            if n & 1 == 0 {
+                (line[n / 2] >> 32) as u32
+            } else {
+                line[n / 2] as u32
+            }
+        };
+        let branch = word(first);
+        let sub = word(first + 1);
         let reg = ((sub >> 25) & 31) as u8;
-        if pair >> 32 != 0x1468_0000
+        if !matches!(branch, 0x1468_0000 | 0x1280_0000)
             || reg == 0
             || sub != (0x80a0_2001 | (u32::from(reg) << 25) | (u32::from(reg) << 14))
         {
@@ -94,22 +104,64 @@ impl V9Cpu {
         if !(2..=i32::MAX as u64).contains(&count) {
             return 0;
         }
-        let mut pairs = (budget / 2).min(count - 1);
+        let mut remaining = budget;
         if self.tick_compare & super::TICK_INT_DIS == 0 {
             let distance = self.tick_compare.wrapping_sub(self.tick) & !super::TICK_NPT;
             if distance != 0 {
-                pairs = pairs.min((distance - 1) / (2 * super::TICK_CYCLES_PER_OUTCOME));
+                remaining = remaining.min((distance - 1) / super::TICK_CYCLES_PER_OUTCOME);
             }
         }
-        if pairs == 0 {
-            return 0;
+        let iterations = (remaining / 2).min(count - 1);
+        let mut steps = 2 * iterations;
+        let mut final_inner = count - iterations;
+        // BNE . / SUBcc %o3,1,%o3 / SUBcc %o0,1,%o0 / BG .-12 /
+        // ORcc %o4,0,%o3. Completing the outer branch resets CCR and %o3.
+        if branch == 0x1280_0000
+            && sub == 0x96a2_e001
+            && first <= 3
+            && [word(first + 2), word(first + 3), word(first + 4)]
+                == [0x90a2_2001, 0x14bf_fffd, 0x9693_2000]
+        {
+            let outer = self.read_reg(8);
+            let reload = self.read_reg(12);
+            let first_cost = 2 * (count + 1) + 3;
+            if (2..=i32::MAX as u64).contains(&outer)
+                && (1..=i32::MAX as u64).contains(&reload)
+                && remaining >= first_cost
+            {
+                let cost = 2 * (reload + 1) + 3;
+                let extra = ((remaining - first_cost) / cost).min(outer - 2);
+                steps = first_cost + extra * cost;
+                self.write_reg(8, outer - 1 - extra);
+                final_inner = reload;
+            }
         }
-        self.instruction_tlb.set_used(tlb_slot, true);
-        self.write_reg(reg, count - pairs);
-        let elapsed = pairs * 2 * super::TICK_CYCLES_PER_OUTCOME;
-        self.tick =
-            (self.tick & super::TICK_NPT) | (self.tick.wrapping_add(elapsed) & !super::TICK_NPT);
-        pairs * 2
+        if steps != 0 {
+            self.instruction_tlb.set_used(tlb_slot, true);
+            self.write_reg(reg, final_inner);
+            let elapsed = steps.wrapping_mul(super::TICK_CYCLES_PER_OUTCOME);
+            self.tick = (self.tick & super::TICK_NPT)
+                | (self.tick.wrapping_add(elapsed) & !super::TICK_NPT);
+        }
+        steps
+    }
+
+    /// Coherent PCI writes snoop both IIi primary caches (§§1.3.6 and 3.1.1).
+    pub(crate) fn snoop_dma_write(&mut self, pa: u64, bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        let last = (pa + bytes as u64 - 1) & !15;
+        for subblock in (pa & !15..=last).step_by(16) {
+            self.flush_instruction(subblock);
+            let set = (subblock as usize >> 5) & 255;
+            let valid = 1 << ((subblock >> 4) & 1);
+            for slot in [set, set + 256] {
+                if self.dcache_tags[slot] >> 2 == (subblock >> 13) as u32 {
+                    self.dcache_tags[slot] &= !valid;
+                }
+            }
+        }
     }
 
     pub(super) fn flush_instruction(&mut self, pa: u64) {
@@ -239,6 +291,42 @@ mod tests {
         assert_eq!(cpu.repeat_countdown(4), 0);
     }
 
+    #[test]
+    fn solaris_nested_delay_matches_single_steps_at_each_budget() {
+        let mut ram = V9Memory::new(64);
+        ram.load_words(
+            8,
+            &[
+                0x9693_2000,
+                0x1280_0000,
+                0x96a2_e001,
+                0x90a2_2001,
+                0x14bf_fffd,
+                0x9693_2000,
+                0x0100_0000,
+            ],
+        );
+        let mut seed = cpu();
+        seed.pc = 8;
+        seed.npc = 12;
+        seed.write_reg(8, 17);
+        seed.write_reg(12, 7);
+        seed.step(&mut ram).unwrap();
+        for budget in [1, 2, 3, 11, 12, 13, 18, 19, 20, 37, 38, 39, 64, 1000] {
+            let mut fast = seed.clone();
+            let mut slow = seed.clone();
+            let count = fast.repeat_countdown(budget);
+            assert!(count <= budget);
+            if budget >= 19 {
+                assert!(count >= 19);
+            }
+            for _ in 0..count {
+                slow.step(&mut ram).unwrap();
+            }
+            assert!(fast == slow, "budget={budget} count={count}");
+        }
+    }
+
     fn cpu() -> V9Cpu {
         let mut cpu = V9Cpu::new(0);
         cpu.pstate = PSTATE_PRIV;
@@ -341,6 +429,22 @@ mod tests {
         cpu.write_reg(1, 0);
         cpu.execute_fetched(0xc458_6000, &mut mem).unwrap();
         assert_eq!(cpu.read_reg(2), 0x00fe_0000_0000_0000);
+    }
+
+    #[test]
+    fn dma_write_snoops_both_virtual_colors_and_instruction_ways() {
+        let mut cpu = cpu();
+        for slot in [0, 1, 256, 257] {
+            cpu.dcache_tags[slot] = 3;
+            cpu.icache_tags[slot] = I_VALID;
+        }
+        cpu.dcache_tags[257] = (1 << 2) | 3; // same index, different physical page
+        cpu.snoop_dma_write(31, 2);
+        assert_eq!((cpu.dcache_tags[0], cpu.dcache_tags[256]), (1, 1));
+        assert_eq!((cpu.dcache_tags[1], cpu.dcache_tags[257]), (2, 7));
+        for slot in [0, 1, 256, 257] {
+            assert_eq!(cpu.icache_tags[slot] & I_VALID, 0);
+        }
     }
 
     #[test]

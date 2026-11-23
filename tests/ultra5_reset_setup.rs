@@ -167,10 +167,9 @@ fn unsupported_and_unprivileged_accesses_leave_the_faulting_cpu_intact() {
     cpu.write_reg(2, 1 << 44);
     for word in [
         0x8d90_2405,
-        0x8d90_200d,
-        0x8d90_2205, // multiple banks, AM, CLE
-        0x8b90_8000,
-        0xad80_8000, // TBA in VA hole, reserved SOFTINT bits
+        0x8d90_2045,
+        0x8d90_2205, // multiple banks, unsupported MM, CLE
+        0x8b90_8000, // TBA in VA hole
         0xad80_0020,
         0x8345_8001,
         0x9990_0020,

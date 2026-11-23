@@ -26,14 +26,16 @@ parallel-port DMA register. Installed Solaris boot checkpoints are described
 below. See the
 [latest firmware checkpoint](docs/firmware.md#timer-and-ethernet-bring-up).
 
-The experimental **Ultra 5** boots original OpenBoot 3.31 to an interactive
-serial A monitor. OBP identifies the 440 MHz UltraSPARC-IIi and 512 MiB of
-RAM, enumerates the onboard PCI devices and prints its normal banner. With
-`auto-boot?` disabled it enters the monitor directly. A serial BREAK after
-the banner also works with factory defaults. In both cases, typing
-`1 2 + .` returns `3` and another `ok`. The headless example also attaches a read-only ATAPI CD-ROM.
-OpenBoot reads the Solaris 7 11/99 volume descriptor on this drive. Ultra 5 OS boot and Heliacal integration remain open.
-[Run the Ultra 5 serial console](docs/ultra5.md#interactive-serial-console)
+The **Ultra 5** boots Solaris 7 11/99 from a dedicated 4 GiB IDE disk.
+Heliacal displays the installed system’s Xsun/CDE login on the onboard
+Mach64. The verified installation uses the 32-bit sun4u kernel, one
+440 MHz UltraSPARC-IIi and 512 MiB of RAM.
+
+Original OpenBoot 3.31 also runs on serial A or the 1152×900 graphical
+console. With `auto-boot?` disabled, the firmware enters `ok` directly.
+Typing `1 2 + .` returns `3`. A serial BREAK after the banner also
+reaches the monitor with factory defaults.
+[Boot installed Solaris](docs/ultra5.md#boot-the-installed-solaris-7-system) · [Run the graphical console](docs/ultra5.md#graphical-console-in-heliacal) · [Run the serial console](docs/ultra5.md#interactive-serial-console)
 
 **SPARCstation 20** and **Axil 320** profiles boot their original firmware to
 the serial `ok` prompt with either one CPU or two 75 MHz SuperSPARC-II modules.

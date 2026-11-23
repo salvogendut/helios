@@ -1,5 +1,7 @@
 # Agent notes
 
+- [Ultra 5 graphical console and Solaris 7](ultra5-graphical-console.md) — original OpenBoot, interactive CD, dedicated IDE disk and installed Xsun login.
+
 - [Ultra 5 ATAPI CD-ROM and Solaris 7 boot](ultra5-atapi-cdrom.md) — original OpenBoot device identification, complete sector comparison and the reproducible LDSB stop.
 
 - [Ultra 5 MMU refill and PCI setup](ultra5-mmu-refill.md) — original OBP trap handling, PCI and IOMMU setup, CPU timer calibration, PCIO configuration, RTC polling, error acknowledgements, cache-backed DRAM refresh, PCI enumeration, the normal banner and the verified interactive serial monitor.

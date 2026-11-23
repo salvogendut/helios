@@ -28,6 +28,66 @@ pub(super) struct Iommu {
 }
 
 impl Iommu {
+    pub(super) fn translate(
+        &mut self,
+        va: u32,
+        write: bool,
+        dram: &super::dram::Dram,
+        mcr: u32,
+    ) -> Result<u64, String> {
+        if self.control & 1 == 0 {
+            return Ok(u64::from(va));
+        }
+        let vpn = va >> 13;
+        let hit = self.entries.iter().position(|e| {
+            let mask = if e.tag & PAGE_64K == 0 { VPN } else { VPN & !7 };
+            e.data & VALID != 0 && (e.tag ^ vpn) & mask == 0
+        });
+        let slot = match hit {
+            Some(i) => i,
+            None => {
+                let shift = if self.control & 4 == 0 { 13 } else { 16 };
+                let index = (va >> shift) & ((1024 << ((self.control >> 16) & 7)) - 1);
+                let tte = dram.read(self.tsb_base + 8 * u64::from(index), mcr)?;
+                const USED: u32 = 1 << 29;
+                let i = if self.control & (1 << 23) != 0 {
+                    ((self.control >> 19) & 15) as usize
+                } else if let Some(i) = self
+                    .entries
+                    .iter()
+                    .position(|e| e.data & VALID == 0)
+                    .or_else(|| self.entries.iter().position(|e| e.data & USED == 0))
+                {
+                    i
+                } else {
+                    for e in &mut self.entries[1..] {
+                        e.data &= !USED;
+                    }
+                    1
+                };
+                let mut entry = Entry {
+                    tag: vpn
+                        | (((tte >> 61) as u32 & 1) << 19)
+                        | (((tte >> 60) as u32 & 1) << 20)
+                        | (((tte >> 1) as u32 & 1) << 21),
+                    data: VALID | ((tte >> 13) as u32 & 0x1fffff) | (((tte >> 4) as u32 & 1) << 28),
+                };
+                if tte >> 63 == 0 {
+                    entry.tag |= 3 << 22;
+                    self.control = (self.control & !ERROR_STATUS) | (3 << 24);
+                }
+                self.entries[i] = entry;
+                i
+            }
+        };
+        let e = &mut self.entries[slot];
+        if e.tag & (1 << 22) != 0 || write && e.tag & (1 << 21) == 0 {
+            return Err(format!("IIi IOMMU DMA fault for {va:#x}"));
+        }
+        e.data |= 1 << 29;
+        let mask = if e.tag & PAGE_64K == 0 { 8191 } else { 65535 };
+        Ok((u64::from(e.data & 0x1fffff) << 13) & !mask | u64::from(va) & mask)
+    }
     fn diagnostic_index(&self, offset: u16) -> Result<usize, String> {
         if self.control & DIAGNOSTIC_ENABLE == 0 {
             return Err(format!("IIi IOMMU diagnostic mode disabled at {offset:#x}"));

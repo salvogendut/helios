@@ -53,6 +53,23 @@ pub struct Fpu {
     deferred: Option<DeferredEntry>,
 }
 
+/// Shared IEEE operations on raw register bits. Register layout and exception delivery
+/// belong to the issuing processor.
+pub(crate) fn binary_result(
+    opf: u32,
+    a: u64,
+    b: u64,
+    double: bool,
+    rounding: u32,
+    trap_underflow: bool,
+) -> (u64, u32) {
+    match opf {
+        0x49 | 0x4a => multiplication::multiply(a, b, double, rounding, trap_underflow),
+        0x4d | 0x4e => division::divide(a, b, double, rounding, trap_underflow),
+        _ => addition::add(a, b, double, opf & 4 != 0, rounding, trap_underflow),
+    }
+}
+
 impl Default for Fpu {
     fn default() -> Self {
         Self::with_version(FSR_VERSION_MICROSPARC2)
@@ -215,11 +232,7 @@ impl Fpu {
         };
         let rounding = self.status >> 30;
         let trap_underflow = self.status & (ieee::UF << 23) != 0;
-        let (result, flags) = match opf {
-            0x49 | 0x4a => multiplication::multiply(a, b, double, rounding, trap_underflow),
-            0x4d | 0x4e => division::divide(a, b, double, rounding, trap_underflow),
-            _ => addition::add(a, b, double, opf & 4 != 0, rounding, trap_underflow),
-        };
+        let (result, flags) = binary_result(opf, a, b, double, rounding, trap_underflow);
         if self.complete_exceptions(flags, pc, instruction) {
             if double {
                 self.write_reg(rd & !1, (result >> 32) as u32);
@@ -286,31 +299,8 @@ impl Fpu {
             ),
             _ => return false,
         };
-        let fraction = (quiet << 1) - 1;
-        let nan_a = a & exponent == exponent && a & fraction != 0;
-        let nan_b = b & exponent == exponent && b & fraction != 0;
-        let unordered = nan_a || nan_b;
-        let invalid =
-            (nan_a && a & quiet == 0) || (nan_b && b & quiet == 0) || (opf & 4 != 0 && unordered);
-        if self.complete_exceptions(if invalid { NV } else { 0 }, pc, instruction) {
-            let fcc = if unordered {
-                3
-            } else if a == b || (a & !sign == 0 && b & !sign == 0) {
-                0 // signed zeros compare equal
-            } else {
-                let less = if (a ^ b) & sign != 0 {
-                    a & sign != 0
-                } else if a & sign != 0 {
-                    a > b // negative encodings run opposite to numeric order
-                } else {
-                    a < b
-                };
-                if less {
-                    1
-                } else {
-                    2
-                }
-            };
+        let (fcc, flags) = compare_bits(a, b, sign, exponent, quiet, opf & 4 != 0);
+        if self.complete_exceptions(flags, pc, instruction) {
             self.status = (self.status & !FSR_FCC) | (fcc << 10);
         }
         true
@@ -321,29 +311,109 @@ impl Fpu {
     }
 
     pub(crate) fn matches(&self, condition: u32) -> bool {
-        let fcc = (self.status >> 10) & 3;
-        let equal = fcc == 0;
-        let less = fcc == 1;
-        let greater = fcc == 2;
-        let unordered = fcc == 3;
-        match condition {
-            0 => false,
-            1 => !equal,
-            2 => less || greater,
-            3 => less || unordered,
-            4 => less,
-            5 => greater || unordered,
-            6 => greater,
-            7 => unordered,
-            8 => true,
-            9 => equal,
-            10 => equal || unordered,
-            11 => equal || greater,
-            12 => !less,
-            13 => equal || less,
-            14 => !greater,
-            15 => !unordered,
-            _ => unreachable!("four-bit condition"),
+        floating_condition((self.status >> 10) & 3, condition)
+    }
+}
+
+pub(crate) fn floating_condition(fcc: u32, condition: u32) -> bool {
+    let equal = fcc == 0;
+    let less = fcc == 1;
+    let greater = fcc == 2;
+    let unordered = fcc == 3;
+    match condition {
+        0 => false,
+        1 => !equal,
+        2 => less || greater,
+        3 => less || unordered,
+        4 => less,
+        5 => greater || unordered,
+        6 => greater,
+        7 => unordered,
+        8 => true,
+        9 => equal,
+        10 => equal || unordered,
+        11 => equal || greater,
+        12 => !less,
+        13 => equal || less,
+        14 => !greater,
+        15 => !unordered,
+        _ => unreachable!("four-bit condition"),
+    }
+}
+
+pub(crate) fn compare_bits(
+    a: u64,
+    b: u64,
+    sign: u64,
+    exponent: u64,
+    quiet: u64,
+    exception_on_unordered: bool,
+) -> (u32, u32) {
+    let fraction = (quiet << 1) - 1;
+    let nan_a = a & exponent == exponent && a & fraction != 0;
+    let nan_b = b & exponent == exponent && b & fraction != 0;
+    let unordered = nan_a || nan_b;
+    let invalid = (nan_a && a & quiet == 0)
+        || (nan_b && b & quiet == 0)
+        || (exception_on_unordered && unordered);
+    let fcc = if unordered {
+        3
+    } else if a == b || (a & !sign == 0 && b & !sign == 0) {
+        0 // signed zeros compare equal
+    } else {
+        let less = if (a ^ b) & sign != 0 {
+            a & sign != 0
+        } else if a & sign != 0 {
+            a > b // negative encodings run opposite to numeric order
+        } else {
+            a < b
+        };
+        if less {
+            1
+        } else {
+            2
         }
+    };
+    (fcc, if invalid { NV } else { 0 })
+}
+
+pub(crate) fn v9_unary(opf: u32, bits: u64, rounding: u32, trap_underflow: bool) -> (u64, u32) {
+    match opf {
+        0xc4 | 0xc8 => conversion::from_integer(bits as u32, opf == 0xc8, rounding),
+        0xd1 | 0xd2 => {
+            let (word, flags) = conversion::to_integer(bits, opf == 0xd2);
+            if flags & NV != 0 {
+                // SPARC V9 Appendix B.5. Invalid inputs saturate according to sign.
+                (
+                    if bits >> (if opf == 0xd2 { 63 } else { 31 }) == 0 {
+                        0x7fff_ffff
+                    } else {
+                        0x8000_0000
+                    },
+                    flags,
+                )
+            } else {
+                (word, flags)
+            }
+        }
+        0xc6 | 0xc9 => {
+            let wide = opf == 0xc9;
+            // Keep the sign and highest available NaN payload bits; quiet signaling NaNs.
+            let (fraction, exp) = if wide { (23, 0xff) } else { (52, 0x7ff) };
+            let mask = (1u64 << fraction) - 1;
+            if bits >> fraction & exp == exp && bits & mask != 0 {
+                let quiet = 1u64 << (fraction - 1);
+                let result = if wide {
+                    ((bits & 0x8000_0000) << 32) | 0x7ff8_0000_0000_0000 | ((bits & mask) << 29)
+                } else {
+                    ((bits >> 32) & 0x8000_0000) | 0x7fc0_0000 | ((bits & mask) >> 29)
+                };
+                (result, if bits & quiet == 0 { NV } else { 0 })
+            } else {
+                conversion::between_formats(bits, wide, rounding, trap_underflow)
+            }
+        }
+        0x29 | 0x2a => sqrt::square_root(bits, opf == 0x2a, rounding),
+        _ => unreachable!("decoded floating conversion or square root"),
     }
 }
