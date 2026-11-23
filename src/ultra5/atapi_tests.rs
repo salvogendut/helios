@@ -131,6 +131,7 @@ fn packet_reads_native_sectors_in_bounded_phases_and_preserves_media_on_errors()
         bytes.extend(data(&mut b, expected_len));
     }
     assert_eq!(bytes, disc.image[2048..]);
+    assert_eq!(b.ide_activity(), [(0, 0), (0, 0), (1, 0), (0, 0)]);
     assert_eq!(b.read_bypass_byte(TASK + 2).unwrap(), 3);
     for (opcode, lba, key) in [(0x28, 2, 5), (0x2a, 0, 7)] {
         cmd[0] = opcode;
@@ -142,6 +143,7 @@ fn packet_reads_native_sectors_in_bounded_phases_and_preserves_media_on_errors()
         assert_eq!(data(&mut b, 17)[2], key);
     }
     assert_eq!(fs::read(&disc.path).unwrap(), disc.image);
+    assert_eq!(b.ide_activity(), [(0, 0), (0, 0), (1, 0), (0, 0)]);
 }
 
 #[test]
@@ -191,11 +193,13 @@ fn primary_disk_pio_persists_whole_sectors_and_rejects_an_out_of_range_batch() {
     };
     address(&mut disk, 3, 2);
     disk.write(7, 0x30).unwrap();
+    assert_eq!(disk.activity(), (0, 0));
     let bytes: Vec<u8> = (0..1024u32).map(|i| (i ^ (i >> 8)) as u8).collect();
     for word in bytes.chunks_exact(2) {
         disk.write_data([word[0], word[1]]).unwrap();
     }
     assert_eq!((disk.read(2).unwrap(), disk.read(3).unwrap()), (0, 5));
+    assert_eq!(disk.activity(), (0, 2));
     disk.write(7, 0xe7).unwrap();
     assert_eq!(disk.read(7).unwrap() & 9, 0);
     drop(disk);
@@ -208,6 +212,7 @@ fn primary_disk_pio_persists_whole_sectors_and_rejects_an_out_of_range_batch() {
     let mut disk = super::ata::Disk::open(&dir, false).unwrap();
     address(&mut disk, 3, 2);
     disk.write(7, 0x20).unwrap();
+    assert_eq!(disk.activity(), (0, 0));
     for word in bytes.chunks_exact(2) {
         assert_eq!(&disk.read_data().unwrap(), word);
     }
@@ -220,6 +225,9 @@ fn primary_disk_pio_persists_whole_sectors_and_rejects_an_out_of_range_batch() {
     address(&mut disk, 0, 1);
     disk.write(7, 0x30).unwrap();
     assert_eq!((disk.read(7).unwrap() & 9, disk.read(1).unwrap()), (1, 4));
+    disk.write(8, 4).unwrap();
+    disk.write(8, 0).unwrap();
+    assert_eq!(disk.activity(), (2, 0));
     drop(disk);
     fs::remove_file(dir).unwrap();
 }
@@ -272,12 +280,14 @@ fn cmd646_dma_translates_each_fragment_and_checks_the_last_page_before_writing()
         status & 7
     };
     assert_eq!(command(&mut board, 0, 0xc9, 9), 6);
+    assert_eq!(board.ide_activity(), [(0, 0); 4]);
     assert_eq!(board.read_cacheable_xword(0x1003_3ff8).unwrap(), u64::MAX);
     board
         .write_cacheable_xword(table + 16, valid | 0x1005_0002)
         .unwrap();
     board.write_bypass_xword(pbm + 0x210, 0xc000_4000).unwrap();
     assert_eq!(command(&mut board, 0, 0xc9, 9), 4);
+    assert_eq!(board.ide_activity(), [(1, 0), (0, 0), (0, 0), (0, 0)]);
     assert_eq!(
         board
             .read_cacheable_xword(0x1003_3ff8)
@@ -293,6 +303,7 @@ fn cmd646_dma_translates_each_fragment_and_checks_the_last_page_before_writing()
         payload[8..16]
     );
     assert_eq!(command(&mut board, 1, 0xcb, 1), 4);
+    assert_eq!(board.ide_activity(), [(1, 1), (0, 0), (0, 0), (0, 0)]);
     drop(board);
     assert_eq!(&fs::read(&path).unwrap()[512..], payload);
     fs::remove_file(path).unwrap();

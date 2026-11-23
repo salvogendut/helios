@@ -531,6 +531,21 @@ impl Ultra5ResetBoard {
         Ok(())
     }
 
+    /// Cumulative media read/write activity for the primary master/slave and
+    /// secondary master/slave, in that order. Absent positions read as zero.
+    pub fn ide_activity(&self) -> [(u64, u64); 4] {
+        [
+            self.disk
+                .as_ref()
+                .map_or((0, 0), super::ata::Disk::activity),
+            (0, 0),
+            self.cdrom
+                .as_ref()
+                .map_or((0, 0), super::atapi::Cdrom::activity),
+            (0, 0),
+        ]
+    }
+
     /// Attach a read-only image at the secondary IDE master (OpenBoot unit 2).
     pub fn attach_cdrom(&mut self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
         if self.cdrom.is_some() {

@@ -34,6 +34,10 @@ and a separate 4 GiB writable raw disk on the CMD646 primary master.
 Sun OpenBoot calls the disk unit 0 and Solaris calls it `c0t0d0`.
 The install CD can be detached after the installer finishes and halts.
 
+Heliacal's activity bar shows the CMD646 disk on `IDE0M` (primary
+master) and the ATAPI CD-ROM on `IDE1M` (secondary master). The two
+slave positions, `IDE0S` and `IDE1S`, are empty on this machine.
+
 The local test machine has an installed disk, a dedicated NVRAM and a
 Heliacal configuration. From the Helios checkout, run
 

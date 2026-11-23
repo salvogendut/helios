@@ -81,6 +81,9 @@ impl Cdrom {
     pub(super) fn interrupt(&self) -> bool {
         self.irq && self.control & 6 == 0
     }
+    pub(super) fn activity(&self) -> (u64, u64) {
+        self.target.activity()
+    }
     pub(super) fn read(&mut self, reg: u8) -> Result<u8, String> {
         if self.device & 0x10 != 0 {
             return Ok(if matches!(reg, 1 | 7 | 8) { 0 } else { 0xff });

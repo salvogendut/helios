@@ -35,6 +35,8 @@ pub(super) struct Disk {
     lba: u32,
     pos: usize,
     data: [u8; 512],
+    reads: u64,
+    writes: u64,
 }
 
 impl Disk {
@@ -66,6 +68,8 @@ impl Disk {
             lba: 0,
             pos: 0,
             data: [0; 512],
+            reads: 0,
+            writes: 0,
         };
         disk.reset();
         Ok(disk)
@@ -87,6 +91,9 @@ impl Disk {
 
     pub(super) fn interrupt(&self) -> bool {
         self.irq && self.control & 6 == 0
+    }
+    pub(super) fn activity(&self) -> (u64, u64) {
+        (self.reads, self.writes)
     }
     pub(super) fn read(&mut self, reg: u8) -> Result<u8, String> {
         if self.head & 0x10 != 0 {
@@ -273,6 +280,11 @@ impl Disk {
     }
 
     fn advance(&mut self) {
+        match self.transfer {
+            Transfer::Read | Transfer::DmaRead => self.reads += 1,
+            Transfer::Write | Transfer::DmaWrite => self.writes += 1,
+            Transfer::Idle | Transfer::Identify => unreachable!("only media transfers advance LBA"),
+        }
         self.irq = self.transfer == Transfer::Write || self.count != 1;
         self.pos = 0;
         self.lba += 1;
