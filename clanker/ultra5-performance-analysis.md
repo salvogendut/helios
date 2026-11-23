@@ -101,3 +101,28 @@ Both builds included the 32 TLB hints. Each timing arm started from the same Sol
 The copy timings cover three fresh destinations per serial boot, pinned to host CPU 4. All six recursive comparisons succeeded. These are observed times for one baseline and one final boot per workload on this host. The core tests separately compare the combined boundary with single stepping at serial timeout, interrupt entry, tick compare in a delay slot, DMA-modified instructions, and a demapped instruction page. They also cover a zero budget, a synchronous trap and an unsupported instruction.
 
 Validation passed with 1,011 core test executions, four explicit local-ROM V9 TLB checks, all four demos, and 121 Heliacal tests. Both repositories passed formatting and strict Clippy. The rebuilt frontend passed the SDL smoke and displayed original Ultra 5 OBP output with the dummy video driver. Raw timings and harnesses are in ignored `local/ultra5-poll-2026-11-23/`.
+
+## Ultra 5 physical RAM lookup
+
+At `1f4bfb9`, a fresh profile of 150 million board outcomes after the Solaris 7 kernel banner collected 4,492 host CPU samples. The enclosing translation routine accounted for 22.7%. Sparse DRAM reads and writes accounted for 5.0% in this mixed kernel workload. Both CPU accesses and the IDE DMA engine searched the RAM backing tree, including one lookup per aligned eight-byte DMA transfer.
+
+Two translation experiments failed to produce a repeatable kernel improvement. Reusing the last instruction fetch subpage took 4.261 s versus 4.183 s baseline across three alternating pairs. Compact translation records and a cheaper alignment check took 4.532 s versus 4.521 s in a separate series, with a 6.754 s candidate outlier. The V9 implementation stays at the baseline. Each arm finished at the same PC/nPC with the same visible register values, IDE counters and board outcome counts.
+
+The RAM implementation now uses the canonical 4 KiB page number to index a group of 512 page pointers and then the page itself. Reads of unwritten memory return zero. A first nonzero write allocates the missing group and page. CPU and DMA accesses share that lookup after the existing DIMM rank and column decoding.
+
+The transfer microbenchmark called the IDE engine's DRAM transfer routine with 64 KiB buffers over 32 MiB of prefilled RAM. Each timed run moved 256 MiB, compared every buffer after readback and produced checksum 251240. Three alternating release pairs on host core 3 took a median of 0.6050 s with the tree and 0.1652 s with direct indexing (3.66× throughput). This measures the host RAM portion of DMA. Guest driver execution, IDE command processing and host file I/O have separate costs.
+
+In sequential cold boots on host core 2, Solaris 7 reached the Xsun login framebuffer in 174.388 s on the baseline and 169.914 s with direct indexing, a 4.475 s saving (2.6%) in one pair. Both reached PC `0x101179c4` on outcome 54,353,538,684, with 1,036,773 of 1,036,800 pixels matching the reference. Each boot used its own writable reflink of the same installed disk and identical OpenBoot NVRAM.
+
+In the serial single-user workload, Solaris created three fresh copies of `/kernel` and synced each one. Each timed guest ran alone on host core 4. All six destinations passed a subsequent recursive comparison.
+
+| Copy and sync | Baseline | Direct indexing |
+| --- | ---: | ---: |
+| First | 2.618 s | 2.153 s |
+| Second | 2.120 s | 1.628 s |
+| Third | 2.105 s | 1.628 s |
+| Median | 2.120 s | 1.628 s |
+
+The median fell 23.2% for this workload. The first candidate timing session was interrupted by the host runner after reporting its first copy. The candidate column uses a complete rerun from a fresh clone of the frozen seed. A separate initial copy pair overlapped compilation and is excluded from the table.
+
+Validation passed with 1,014 core test executions, four explicit original-ROM tests, all four demos, formatting, strict core Clippy, 122 Heliacal release tests and the SDL smoke. The source disks were preserved. The raw results, exact drivers and measurement instructions are in ignored `local/ultra5-dram-speed-2026-11-23/`.

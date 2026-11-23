@@ -1,6 +1,6 @@
 # Agent notes
 
-- [Ultra 5 performance compared with QEMU](ultra5-performance-analysis.md) — matched SPARC loop, Solaris 7 kernel CPU profile, and Xsun boot and file-copy measurements for the TLB and board-polling changes.
+- [Ultra 5 performance compared with QEMU](ultra5-performance-analysis.md) covers the SPARC loop comparison, Solaris kernel profiles, and Xsun boot, file-copy and IDE DMA measurements for the TLB, board polling and sparse RAM changes.
 
 - [Ultra 5 graphical console and Solaris 7](ultra5-graphical-console.md) — original OpenBoot, interactive CD, dedicated IDE disk, Mach64 FIFO status and the installed CDE desktop.
 

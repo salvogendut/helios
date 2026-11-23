@@ -332,7 +332,9 @@ two physical ranges are `0x10000000–0x1fffffff` and `0x30000000–0x3fffffff`.
 PA29 selects the rank. OBP first probes in 10-bit mode, then toggles
 Mem_Control0 bit 12 and compares locations that differ in PA14 to establish
 the column geometry. ASI `0x14` handles aligned cacheable physical xwords.
-The sparse backing keeps the same cells across both modes. Empty sockets
+CPU accesses and IDE DMA share the same sparse storage across both modes.
+Helios indexes it by physical cell, allocating 4 KiB pages on the first
+nonzero write and grouping their pointers in 2 MiB regions. Empty sockets
 return zero and discard writes. The zero read value is a fixture assumption.
 [Ultra 5 hardware memory probe](https://rob.com/sun/sun4u-ss5/) · [Sun IIi User’s Manual, §§6.2.1, 7.2–3, 18.2 and Appendix A.10](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
 

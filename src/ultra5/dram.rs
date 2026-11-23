@@ -1,17 +1,28 @@
 //! Ultra 5 reference population: two dual-rank 256 MiB DIMMs in pair 2.
 //! Sun UltraSPARC-IIi User's Manual §§6.2.1, 7.2–3 and Appendix A.10.
 
-use std::collections::BTreeMap;
+// Installed storage has 2^17 canonical 4 KiB pages. Allocate each group
+// of 512 page pointers on its first nonzero write.
+const PAGES_PER_GROUP: usize = 512;
+type Page = [u64; 512];
+type PageGroup = [Option<Box<Page>>; PAGES_PER_GROUP];
 
-#[derive(Default)]
 pub(super) struct Dram {
     // The canonical key is a page of installed storage, independent of the
     // current column configuration. Untouched storage reads zero.
-    pages: BTreeMap<u32, Box<[u64; 512]>>,
+    groups: [Option<Box<PageGroup>>; 256],
+}
+
+impl Default for Dram {
+    fn default() -> Self {
+        Self {
+            groups: std::array::from_fn(|_| None),
+        }
+    }
 }
 
 impl Dram {
-    fn location(pa: u64, control: u32) -> Result<Option<(u32, usize)>, String> {
+    fn location(pa: u64, control: u32) -> Result<Option<(usize, usize)>, String> {
         if pa > u64::from(u32::MAX) || pa & 7 != 0 {
             return Err(format!("unsupported Ultra 5 cacheable xword at {pa:#x}"));
         }
@@ -35,7 +46,10 @@ impl Dram {
             (row << 15) | (pa & 0x7fff)
         };
         let installed = (rank << 28) | cell;
-        Ok(Some((installed >> 12, ((installed & 4095) >> 3) as usize)))
+        Ok(Some((
+            (installed >> 12) as usize,
+            ((installed & 4095) >> 3) as usize,
+        )))
     }
 
     pub(super) fn dma_bytes(
@@ -67,19 +81,28 @@ impl Dram {
         Ok(())
     }
     pub(super) fn read(&self, pa: u64, control: u32) -> Result<u64, String> {
-        Ok(Self::location(pa, control)?
-            .and_then(|(page, index)| self.pages.get(&page).map(|words| words[index]))
-            .unwrap_or(0))
+        let Some((page, index)) = Self::location(pa, control)? else {
+            return Ok(0);
+        };
+        let group = &self.groups[page / PAGES_PER_GROUP];
+        Ok(group
+            .as_ref()
+            .and_then(|pages| pages[page % PAGES_PER_GROUP].as_ref())
+            .map_or(0, |words| words[index]))
     }
 
     pub(super) fn write(&mut self, pa: u64, control: u32, value: u64) -> Result<(), String> {
         if let Some((page, index)) = Self::location(pa, control)? {
-            if let Some(words) = self.pages.get_mut(&page) {
+            let group = &mut self.groups[page / PAGES_PER_GROUP];
+            let entry = page % PAGES_PER_GROUP;
+            if value == 0 {
+                if let Some(words) = group.as_mut().and_then(|pages| pages[entry].as_mut()) {
+                    words[index] = 0;
+                }
+            } else {
+                let pages = group.get_or_insert_with(|| Box::new(std::array::from_fn(|_| None)));
+                let words = pages[entry].get_or_insert_with(|| Box::new([0; 512]));
                 words[index] = value;
-            } else if value != 0 {
-                let mut words = Box::new([0; 512]);
-                words[index] = value;
-                self.pages.insert(page, words);
             }
         }
         Ok(())
@@ -89,6 +112,43 @@ impl Dram {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dma_crosses_page_groups_and_preserves_big_endian_lanes_and_aliases() {
+        let mut dram = Dram::default();
+        let boundary = 0x1020_0000;
+        dram.write(boundary - 8, 0x1000, 0x0102_0304_0506_0708)
+            .unwrap();
+        dram.write(boundary, 0x1000, 0x1112_1314_1516_1718).unwrap();
+        let mut bytes = [0xa1, 0xa2, 0xa3, 0xb1, 0xb2];
+        dram.dma_bytes(boundary - 3, 0x1000, &mut bytes, true)
+            .unwrap();
+        assert_eq!(
+            dram.read(boundary - 8, 0x1000).unwrap(),
+            0x0102_0304_05a1_a2a3
+        );
+        assert_eq!(dram.read(boundary, 0x1000).unwrap(), 0xb1b2_1314_1516_1718);
+        let mut readback = [0; 5];
+        dram.dma_bytes(boundary - 3 + 0xc000_0000, 0x1000, &mut readback, false)
+            .unwrap();
+        assert_eq!(readback, bytes);
+    }
+
+    #[test]
+    fn zero_accesses_leave_unpopulated_page_groups_sparse() {
+        let mut dram = Dram::default();
+        let last = 0x3fff_fff8;
+        assert_eq!(dram.read(last, 0x1000).unwrap(), 0);
+        dram.write(last, 0x1000, 0).unwrap();
+        assert!(dram.groups.iter().all(Option::is_none));
+        dram.write(last, 0x1000, 42).unwrap();
+        dram.write(last - 4096, 0x1000, 0).unwrap();
+        let group = dram.groups[255].as_ref().unwrap();
+        assert_eq!(group.iter().flatten().count(), 1);
+        assert_eq!(dram.read(last + 0xc000_0000, 0x1000).unwrap(), 42);
+        dram.write(last, 0x1000, 0).unwrap();
+        assert_eq!(dram.read(last, 0x1000).unwrap(), 0);
+    }
 
     #[test]
     fn pair_two_bounds_and_rank_selection_follow_the_column_mode() {
