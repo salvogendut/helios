@@ -78,3 +78,22 @@ The local evidence directory retains separate CD installer and installed
 login captures, the installer/halt transcript and the validation counts.
 Network connectivity, audio playback and 64-bit Solaris are outside this
 installation check.
+
+## Solaris 7 CDE session startup
+
+The original acceptance ended at the login manager and the multilingual
+welcome screen. A later desktop login reproduced a hang in Xsun. A process
+stack collected in the guest placed the server at `0xfeb437ac` in
+`m64PolyFillSGRAM1Rect+0x3e4` during a `ProcPolySegment` request.
+The loop reads `GUI_STAT` at offset `0x338` and waits for ten free command
+slots. Returning 32 let it issue the fill but reproduced a second wait at
+`0xfeb43cb8`, where the driver requires all 48 slots before checking
+the active bit. The synchronous Mach64 engine now reports 48 free slots
+and keeps the active bit set while awaiting host pixel data.
+
+A release Heliacal process on an isolated X11 display booted the original
+ROM and a writable clone of the user's Solaris 7 IDE disk. Keyboard entry
+at the greeter started a root session. The front panel, File Manager and
+Help Viewer appeared after the welcome screen. A host keyboard input
+changed the selected item in File Manager. Guest stack and framebuffer
+evidence are under ignored `local/ultra5-cde-debug-2026-11-23/evidence/`.

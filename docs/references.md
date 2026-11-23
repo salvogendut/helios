@@ -23,6 +23,13 @@ test rather than assuming either emulator defines the hardware.
   Solaris exercises both CPU-written framebuffer pixels and accelerated
   primitives in the same indexed display. [ATI mach64 register guide](https://bitsavers.computerhistory.org/components/ati/RRG-G02700_mach64_Register_Reference_Guide_ATI-264VT_and_3D_RAGE_1996.pdf)
 
+- On the Ultra 5's Rage II+, the Solaris 7 driver reads the free command
+  count from `GUI_STAT` bits 23:16. It waits for 48 free entries and then
+  checks `GUI_ACTIVE` when finishing an SGRAM fill. ATI's register guide
+  describes the 48-entry parameter FIFO on page 4-106, which also notes a
+  32-entry readback limit for an earlier 3D Rage implementation.
+  [ATI register reference, GUI_STAT](https://www.vgamuseum.info/images/doc/ati/mach64/rrg-g02700_mach64_register_reference_guide_jul96.pdf)
+
 - UltraSPARC-IIi PCI DMA writes snoop the instruction and data caches. The
   coherent read path invalidates physical instruction lines and matching
   data subblocks at either virtual cache index. See the UltraSPARC-IIi

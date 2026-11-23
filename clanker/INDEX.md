@@ -1,6 +1,8 @@
 # Agent notes
 
-- [Ultra 5 graphical console and Solaris 7](ultra5-graphical-console.md) — original OpenBoot, interactive CD, dedicated IDE disk and installed Xsun login.
+- [Ultra 5 performance compared with QEMU](ultra5-performance-analysis.md) — matched SPARC loop, Solaris 7 kernel CPU profile, and Xsun boot and file-copy measurements for the TLB and board-polling changes.
+
+- [Ultra 5 graphical console and Solaris 7](ultra5-graphical-console.md) — original OpenBoot, interactive CD, dedicated IDE disk, Mach64 FIFO status and the installed CDE desktop.
 
 - [Ultra 5 ATAPI CD-ROM and Solaris 7 boot](ultra5-atapi-cdrom.md) — original OpenBoot device identification, complete sector comparison and the reproducible LDSB stop.
 

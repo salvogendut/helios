@@ -1253,3 +1253,75 @@ fn a_verified_subpage_rechecks_write_privilege_and_overlapping_edits() {
     tlb.demap(0x14000, 3, 0).unwrap();
     assert!(tlb.lookup(0x14568, 3, true, Access::Read).is_err());
 }
+
+#[test]
+fn warm_subpages_recheck_duplicate_matches_after_an_insert_or_demap() {
+    let mut tlb = Tlb::default();
+    tlb.stage_tag(0x40000 | 3);
+    tlb.write_data(8, VALID | (1 << 61) | 0xa0000, false); // 64 KiB
+    let cold = tlb.clone();
+    for offset in [0x2000, 0x4000, 0xc000] {
+        let hit = tlb.lookup(0x40008 + offset, 3, true, Access::Read).unwrap();
+        assert_eq!((hit.slot, hit.pa), (Some(8), 0xa0008 + offset));
+    }
+    assert_eq!(tlb, cold);
+    assert_eq!(tlb.hints.0.iter().filter(|h| h.get().is_some()).count(), 3);
+
+    // Only the oldest warm subpage overlaps the new 8 KiB mapping.
+    tlb.stage_tag(0x42000 | 3);
+    tlb.insert(VALID | 0xc0000, false);
+    assert!(
+        String::from(tlb.lookup(0x42008, 3, true, Access::Read).unwrap_err()).contains("multiple")
+    );
+    assert_eq!(
+        tlb.lookup(0x44008, 3, true, Access::Read).unwrap().pa,
+        0xa4008
+    );
+    assert_eq!(
+        tlb.lookup(0x4c008, 3, true, Access::Read).unwrap().pa,
+        0xac008
+    );
+    // Page demap removes the entire large entry as well as the small one.
+    tlb.demap(0x42000, 3, 0).unwrap();
+    for va in [0x42008, 0x44008, 0x4c008] {
+        assert!(matches!(
+            tlb.lookup(va, 3, true, Access::Read),
+            Err(super::CpuFault::TlbMiss(_))
+        ));
+    }
+}
+
+#[test]
+fn colliding_subpages_and_contexts_keep_distinct_permissions_and_used_bits() {
+    let mut tlb = Tlb::default();
+    for (slot, va, context, tte) in [
+        (4, 0x20000, 3, VALID | 0xa0000 | 4),
+        (5, 0x20000, 35, VALID | 0xb0000 | 2),
+        (6, 0x60000, 3, VALID | 0xc0000 | 2),
+    ] {
+        tlb.stage_tag(va | context);
+        tlb.write_data(slot, tte, false);
+    }
+    for _ in 0..2 {
+        let user = tlb.lookup(0x20008, 35, false, Access::Write).unwrap();
+        assert_eq!((user.pa, user.slot), (0xb0008, Some(5)));
+        tlb.set_used(user.slot.unwrap(), true);
+        assert_eq!(
+            tlb.lookup(0x60008, 3, false, Access::Read).unwrap().pa,
+            0xc0008
+        );
+        assert_eq!(
+            tlb.lookup(0x20008, 3, true, Access::Read).unwrap().pa,
+            0xa0008
+        );
+        for (privileged, access) in [(false, Access::Read), (true, Access::Write)] {
+            assert!(matches!(
+                tlb.lookup(0x20008, 3, privileged, access),
+                Err(super::CpuFault::MmuProtection { .. })
+            ));
+        }
+    }
+    assert_eq!(tlb.read_data(4) & USED, 0);
+    assert_ne!(tlb.read_data(5) & USED, 0);
+    assert_eq!(tlb.read_data(6) & USED, 0);
+}

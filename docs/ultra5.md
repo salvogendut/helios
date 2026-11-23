@@ -43,7 +43,10 @@ Heliacal configuration. From the Helios checkout, run
 
 Press **Ctrl+P**, click the guest display, then type `boot disk` at the
 `ok` prompt. Wait for **Welcome to ultra5** and **Please enter your user
-name**. These appear in the installed CDE login manager running on Xsun.
+name**. Enter the local account name and password. The white Solaris CDE
+1.3 welcome screen appears while the session starts. On the verified
+installation, root login then opens the front panel, File Manager and
+Help Viewer.
 The installation image, firmware and local account credentials are kept
 under the ignored `local/` directory.
 
@@ -107,6 +110,13 @@ the counter, PC/nPC, tick, device time and interrupt boundary. Its step limit
 includes these retirements. SAB channel A exposes received bytes through the
 receive FIFO, polls interrupt status for short packets and recognizes BREAK.
 The example paces host input for the 9600-baud console.
+
+Heliacal uses `Ultra5ResetBoard::step_or_repeat` for each CPU boundary. It
+applies pending DMA cache snoops, samples device interrupts and checks the
+instruction translation once. A recognized countdown can advance to the
+nearest device deadline within the caller's budget. The usual single step
+uses the same translation if the instruction cannot be batched. Callers that
+need the individual trap or instruction record can use `step_outcome`.
 
 ## Attach a Solaris installation CD
 
@@ -298,6 +308,12 @@ and verifies every tag and data word after the loop. OBP later loads mappings
 through these same ports. Later its fast-miss handler inserts entries via
 the Data In port. The guest also demaps translations by page.
 [Sun UltraSPARC-IIi User’s Manual, §§15.2 and 15.9.8–9](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
+
+Helios remembers up to 32 verified subpage/context matches for each of the
+instruction and data TLBs. This avoids repeating a 64-entry search when
+Solaris alternates between resident pages. Each hit reads the guest TLB slot
+and checks its access permissions. Mapping writes and demaps clear the host
+lookup hints so the next access checks for missing or overlapping entries.
 
 To stop at the first DRAM read on a cold start, use the serial example with a
 budget of `30726251`. Serial A ends with `Probing Memory `. At this point OBP

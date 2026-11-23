@@ -27,8 +27,9 @@ below. See the
 [latest firmware checkpoint](docs/firmware.md#timer-and-ethernet-bring-up).
 
 The **Ultra 5** boots Solaris 7 11/99 from a dedicated 4 GiB IDE disk.
-Heliacal displays the installed system’s Xsun/CDE login on the onboard
-Mach64. The verified installation uses the 32-bit sun4u kernel, one
+Heliacal runs the installed system’s CDE desktop on the onboard Mach64.
+Root login reaches the front panel, File Manager and Help Viewer through
+Xsun. The verified installation uses the 32-bit sun4u kernel, one
 440 MHz UltraSPARC-IIi and 512 MiB of RAM.
 
 Original OpenBoot 3.31 also runs on serial A or the 1152×900 graphical

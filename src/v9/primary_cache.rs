@@ -58,19 +58,19 @@ impl V9Cpu {
     /// Retire resident integer countdowns without passing a timer, page or cache-line
     /// boundary. Both OBP's two-word loop and the Solaris microsecond delay have
     /// no data accesses. Leave the final exit to ordinary execution.
-    pub(crate) fn repeat_countdown(&mut self, budget: u64) -> u64 {
+    pub(crate) fn repeat_mapped_countdown(
+        &mut self,
+        fetch: Translation,
+        device_budget: impl FnOnce() -> u64,
+    ) -> u64 {
         if self.pc & 3 != 0
             || self.pc & 31 == 28
             || self.npc != self.pc.wrapping_add(4)
             || self.ccr != 0
             || self.lsu_control & LSU_IC == 0
-            || budget < 2
         {
             return 0;
         }
-        let Ok(fetch) = self.instruction_address() else {
-            return 0;
-        };
         let Some(tlb_slot) = fetch.slot.filter(|_| fetch.cacheable) else {
             return 0;
         };
@@ -104,7 +104,8 @@ impl V9Cpu {
         if !(2..=i32::MAX as u64).contains(&count) {
             return 0;
         }
-        let mut remaining = budget;
+        // Device deadlines only constrain a recognized loop.
+        let mut remaining = device_budget();
         if self.tick_compare & super::TICK_INT_DIS == 0 {
             let distance = self.tick_compare.wrapping_sub(self.tick) & !super::TICK_NPT;
             if distance != 0 {
@@ -260,6 +261,11 @@ mod tests {
         assert!(cpu == before);
     }
 
+    fn repeat(cpu: &mut V9Cpu, budget: u64) -> u64 {
+        let fetch = cpu.instruction_address().unwrap();
+        cpu.repeat_mapped_countdown(fetch, || budget)
+    }
+
     #[test]
     fn counted_delay_matches_retirement_and_stops_before_timer_or_exit() {
         let mut mem = V9Memory::new(32);
@@ -269,26 +275,26 @@ mod tests {
         cpu.step(&mut mem).unwrap();
         cpu.step(&mut mem).unwrap();
         let mut reference = cpu.clone();
-        assert_eq!(cpu.repeat_countdown(7), 6);
+        assert_eq!(repeat(&mut cpu, 7), 6);
         for _ in 0..6 {
             reference.step(&mut mem).unwrap();
         }
         assert!(reference == cpu);
         cpu.tick_compare =
             (cpu.tick & !super::super::TICK_NPT) + 4 * super::super::TICK_CYCLES_PER_OUTCOME;
-        assert_eq!(cpu.repeat_countdown(100), 2);
-        assert_eq!(cpu.repeat_countdown(100), 0);
+        assert_eq!(repeat(&mut cpu, 100), 2);
+        assert_eq!(repeat(&mut cpu, 100), 0);
         cpu.tick_compare = super::super::TICK_INT_DIS;
         let count = cpu.read_reg(17);
-        assert_eq!(cpu.repeat_countdown(u64::MAX), 2 * (count - 1));
+        assert_eq!(repeat(&mut cpu, u64::MAX), 2 * (count - 1));
         assert_eq!(cpu.read_reg(17), 1);
-        assert_eq!(cpu.repeat_countdown(u64::MAX), 0);
+        assert_eq!(repeat(&mut cpu, u64::MAX), 0);
         cpu.write_reg(17, 50);
         cpu.ccr = 4;
-        assert_eq!(cpu.repeat_countdown(4), 0);
+        assert_eq!(repeat(&mut cpu, 4), 0);
         cpu.ccr = 0;
         cpu.lsu_control &= !LSU_IC;
-        assert_eq!(cpu.repeat_countdown(4), 0);
+        assert_eq!(repeat(&mut cpu, 4), 0);
     }
 
     #[test]
@@ -315,7 +321,7 @@ mod tests {
         for budget in [1, 2, 3, 11, 12, 13, 18, 19, 20, 37, 38, 39, 64, 1000] {
             let mut fast = seed.clone();
             let mut slow = seed.clone();
-            let count = fast.repeat_countdown(budget);
+            let count = repeat(&mut fast, budget);
             assert!(count <= budget);
             if budget >= 19 {
                 assert!(count >= 19);

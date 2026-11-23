@@ -438,8 +438,10 @@ mod tests {
             write(&mut chip, i, v);
         }
         assert_eq!(chip.read::<1>(0x7fff38).unwrap(), [1]);
+        assert_eq!(chip.read::<4>(0x7fff38).unwrap(), [1, 0, 48, 0]);
         chip.write(0x7ffe00, [0xa1, 0x80, 0x49, 0]).unwrap();
         assert_eq!(chip.read::<1>(0x7fff38).unwrap(), [0]);
+        assert_eq!(chip.read::<4>(0x7fff38).unwrap(), [0, 0, 48, 0]);
         assert_eq!(chip.read::<8>(0).unwrap(), [0, 1, 6, 1, 1, 1, 1, 6]);
         assert_eq!(chip.read::<2>(8).unwrap(), [6, 0]);
         assert_eq!(chip.read::<8>(16).unwrap(), [0, 6, 1, 1, 6, 1, 1, 6]);

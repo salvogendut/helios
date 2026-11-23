@@ -3,6 +3,8 @@
 mod engine;
 mod raster;
 
+const COMMAND_FIFO_ENTRIES: u8 = 48;
+
 pub(super) struct Mach64 {
     registers: [u8; 1024],
     pll: [u8; 64],
@@ -157,6 +159,10 @@ impl Mach64 {
         Ok(std::array::from_fn(|k| {
             if i + k == 0x338 {
                 u8::from(self.host.is_some())
+            } else if i + k == 0x33a {
+                // GUI_STAT.FIFO_CNT. The synchronous engine consumes every
+                // command write immediately, including incoming host data.
+                COMMAND_FIFO_ENTRIES
             } else if i + k == 0x92 {
                 self.pll[usize::from(self.registers[0x91] >> 2)]
             } else if i + k == 0xc1 {
@@ -225,7 +231,7 @@ impl Mach64 {
                         self.registers[0xc0] = self.registers[0xc0].wrapping_add(1);
                     }
                 }
-                0xe0..=0xe7 => {}
+                0xe0..=0xe7 | 0x338..=0x33b => {}
                 0x92 if self.registers[0x91] & 2 != 0 => {
                     self.pll[usize::from(self.registers[0x91] >> 2)] = b
                 }
@@ -241,6 +247,20 @@ impl Mach64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_gui_reports_free_fifo_entries_for_solaris_rectangle_fills() {
+        let mut chip = Mach64::default();
+        const STATUS: u32 = 0x7fff38;
+        chip.write(STATUS, [0xff; 4]).unwrap();
+        let status = u32::from_le_bytes(chip.read(STATUS).unwrap());
+        // Xsun requests ten entries to start a fill, then all 48 before returning.
+        assert!(status >= 10 << 16);
+        assert_eq!(status, 48 << 16);
+        assert_eq!(chip.read::<2>(STATUS + 2).unwrap(), [48, 0]);
+        assert_eq!(chip.read::<1>(STATUS + 2).unwrap(), [48]);
+    }
+
     #[test]
     fn big_endian_aperture_swaps_within_the_selected_pci_beat() {
         let mut chip = Mach64::default();

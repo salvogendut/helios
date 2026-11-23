@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod countdown_tests;
+
 use super::dram::Dram;
 use super::keyboard_uart::KeyboardUart;
 use super::pbm::{Pbm, PCI_CONFIG};
@@ -127,6 +130,7 @@ impl Ultra5ResetBoard {
             .filter(|&offset| offset < super::FLASH_SIZE as u64)
             .ok_or_else(|| format!("Ultra 5 instruction outside flash at {flash_pa:#x}"))?
             as usize;
+        self.snoop_dma_writes(cpu);
         let fetch = self.step_at(cpu, mapping)?;
         Ok(FlashFetch {
             pc,
@@ -139,6 +143,7 @@ impl Ultra5ResetBoard {
 
     pub fn step_mapped(&mut self, cpu: &mut V9Cpu) -> Result<BoardInstruction, String> {
         let mapping = cpu.instruction_address()?;
+        self.snoop_dma_writes(cpu);
         Ok(self.step_at(cpu, mapping)?)
     }
 
@@ -146,11 +151,17 @@ impl Ultra5ResetBoard {
     /// remaining instruction budget. The CPU stops short of its next timer event.
     pub fn repeat_countdown(&mut self, cpu: &mut V9Cpu, budget: u64) -> u64 {
         self.snoop_dma_writes(cpu);
-        self.sample_interrupts();
-        if cpu.can_take_vector() && self.pbm.pending_vector().is_some() {
+        if self.sample_vector(cpu).is_some() || budget < 2 {
             return 0;
         }
-        let budget = [
+        let Ok(fetch) = cpu.instruction_address() else {
+            return 0;
+        };
+        self.repeat_at(cpu, fetch, budget)
+    }
+
+    fn countdown_budget(&self, budget: u64) -> u64 {
+        [
             self.serial.next_timeout(),
             Some(self.display.raster_deadline()),
             self.keyboard.next_event(self.elapsed_ns),
@@ -165,32 +176,85 @@ impl Ultra5ResetBoard {
                     .saturating_sub(self.elapsed_ns)
                     .div_ceil(crate::machine::STEP_NS),
             )
-        });
-        let retired = cpu.repeat_countdown(budget);
-        self.elapsed_ns = self
-            .elapsed_ns
-            .saturating_add(retired * crate::machine::STEP_NS);
+        })
+    }
+
+    fn repeat_at(&mut self, cpu: &mut V9Cpu, fetch: Translation, budget: u64) -> u64 {
+        let retired = cpu.repeat_mapped_countdown(fetch, || self.countdown_budget(budget));
+        if retired != 0 {
+            self.elapsed_ns = self
+                .elapsed_ns
+                .saturating_add(retired.saturating_mul(crate::machine::STEP_NS));
+        }
         retired
+    }
+
+    /// Service one instruction boundary. Returns one for an ordinary retirement
+    /// or trap entry, or the number of retirements in a resident countdown.
+    /// A zero budget leaves the CPU and devices untouched.
+    pub fn step_or_repeat(&mut self, cpu: &mut V9Cpu, budget: u64) -> Result<u64, String> {
+        if budget == 0 {
+            return Ok(0);
+        }
+        self.snoop_dma_writes(cpu);
+        if self.take_vector(cpu)?.is_some() {
+            return Ok(1);
+        }
+        let mapping = cpu.instruction_address();
+        if let Ok(fetch) = mapping {
+            if budget >= 2 {
+                let count = self.repeat_at(cpu, fetch, budget);
+                if count != 0 {
+                    return Ok(count);
+                }
+            }
+        }
+        self.step_translated(cpu, mapping).map(|_| 1)
     }
 
     /// Run one retirement, supported synchronous trap or eligible software interrupt.
     /// The retirement-only step_mapped API stops before trap or interrupt entry.
     pub fn step_outcome(&mut self, cpu: &mut V9Cpu) -> Result<BoardStep, String> {
-        let fault_pc = cpu.pc();
-        self.sample_interrupts();
-        if cpu.can_take_vector() {
-            if let Some(ino) = self.pbm.pending_vector() {
-                cpu.enter_vector(ino)?;
-                self.pbm.sent_vector(ino);
-                self.elapsed_ns = self.elapsed_ns.saturating_add(crate::machine::STEP_NS);
-                return Ok(BoardStep::TrapTaken {
-                    fault_pc,
-                    tt: 0x60,
-                    vector: cpu.pc(),
-                });
-            }
+        if let Some(event) = self.take_vector(cpu)? {
+            return Ok(event);
         }
         let mapping = cpu.instruction_address();
+        if mapping.is_ok() {
+            self.snoop_dma_writes(cpu);
+        }
+        self.step_translated(cpu, mapping)
+    }
+
+    fn sample_vector(&mut self, cpu: &V9Cpu) -> Option<u8> {
+        self.sample_interrupts();
+        if cpu.can_take_vector() {
+            self.pbm.pending_vector()
+        } else {
+            None
+        }
+    }
+
+    fn take_vector(&mut self, cpu: &mut V9Cpu) -> Result<Option<BoardStep>, String> {
+        let Some(ino) = self.sample_vector(cpu) else {
+            return Ok(None);
+        };
+        let fault_pc = cpu.pc();
+        cpu.enter_vector(ino)?;
+        self.pbm.sent_vector(ino);
+        self.elapsed_ns = self.elapsed_ns.saturating_add(crate::machine::STEP_NS);
+        Ok(Some(BoardStep::TrapTaken {
+            fault_pc,
+            tt: 0x60,
+            vector: cpu.pc(),
+        }))
+    }
+
+    fn step_translated(
+        &mut self,
+        cpu: &mut V9Cpu,
+        mapping: Result<Translation, CpuFault>,
+    ) -> Result<BoardStep, String> {
+        let fault_pc = cpu.pc();
         let fetch = mapping.as_ref().ok().copied();
         let result = match mapping {
             Ok(fetch) => self.step_at(cpu, fetch),
@@ -292,7 +356,6 @@ impl Ultra5ResetBoard {
         cpu: &mut V9Cpu,
         mapping: Translation,
     ) -> Result<BoardInstruction, CpuFault> {
-        self.snoop_dma_writes(cpu);
         let instruction = if mapping.cacheable {
             cpu.retire_ram_instruction(mapping, self)?
         } else {

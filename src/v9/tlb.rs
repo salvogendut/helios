@@ -6,6 +6,7 @@ mod miss_tests;
 mod tests;
 
 use super::{CpuFault, TlbMiss, PHYSICAL_ADDRESS_MASK};
+use std::cell::Cell;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Access {
@@ -42,22 +43,31 @@ impl Entry {
     }
 }
 
-/// Only a previously verified, uniquely matching 8 KiB subpage may bypass the CAM scan.
+/// Cache unique CAM matches by 8 KiB subpage and context. Each hit still reads
+/// the architectural slot for its current permissions and page attributes.
 #[derive(Clone, Debug, Default)]
-struct LookupHint(std::cell::Cell<Option<(u64, usize)>>);
+struct LookupHints([Cell<Option<(u64, usize)>>; 32]);
 
-impl PartialEq for LookupHint {
+impl LookupHints {
+    fn clear(&self) {
+        for hint in &self.0 {
+            hint.set(None);
+        }
+    }
+}
+
+impl PartialEq for LookupHints {
     fn eq(&self, _other: &Self) -> bool {
         true
     } // derived execution state
 }
-impl Eq for LookupHint {}
+impl Eq for LookupHints {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Tlb {
     tag_access: u64,
     entries: [Entry; 64],
-    last_hit: LookupHint,
+    hints: LookupHints,
 }
 
 impl Default for Tlb {
@@ -65,7 +75,7 @@ impl Default for Tlb {
         Self {
             tag_access: 0,
             entries: [Entry::default(); 64],
-            last_hit: Default::default(),
+            hints: LookupHints::default(),
         }
     }
 }
@@ -79,7 +89,9 @@ impl Tlb {
         access: Access,
     ) -> Result<Translation, CpuFault> {
         let key = (va & !0x1fff) | u64::from(context);
-        let slot = if let Some((_, slot)) = self.last_hit.0.get().filter(|(tag, _)| *tag == key) {
+        let index = ((va >> 13) ^ u64::from(context)) as usize & (self.hints.0.len() - 1);
+        let hint = &self.hints.0[index];
+        let slot = if let Some((_, slot)) = hint.get().filter(|(tag, _)| *tag == key) {
             slot
         } else {
             let mut matches = self
@@ -95,7 +107,7 @@ impl Tlb {
             if matches.next().is_some() {
                 return Err(format!("multiple IIi TLB matches for {access:?} VA={va:#x}").into());
             }
-            self.last_hit.0.set(Some((key, slot)));
+            hint.set(Some((key, slot)));
             slot
         };
         let data = self.entries[slot].data;
@@ -175,7 +187,7 @@ impl Tlb {
             2 => 0,
             _ => return Ok(()),
         };
-        self.last_hit.0.set(None);
+        self.hints.clear();
         for entry in &mut self.entries {
             let remove = if address & 0x40 == 0 {
                 entry.matches_page(address, context)
@@ -225,7 +237,7 @@ impl Tlb {
         if instruction {
             data &= !((1 << 60) | (1 << 59) | 0x1a); // NFO, IE, CV, E, W
         }
-        self.last_hit.0.set(None);
+        self.hints.clear();
         self.entries[index] = Entry {
             tag: self.tag_access,
             data,
