@@ -26,6 +26,18 @@ pub(super) struct KeyboardUart {
 
 const KEY_BYTE_NS: u64 = 8_333_334; // 1200 baud, 8N1, rounded up to nanoseconds.
 impl KeyboardUart {
+    pub(super) fn bus_reset(&mut self, now: u64) {
+        let keyboard = self.keyboard.is_some();
+        let mouse = self.mouse.is_some();
+        *self = Self::default();
+        if keyboard {
+            self.attach(now);
+        }
+        if mouse {
+            self.attach_mouse();
+        }
+    }
+
     pub(super) fn attach(&mut self, now: u64) {
         if self.keyboard.is_none() {
             self.keyboard = Some(Keyboard::default());

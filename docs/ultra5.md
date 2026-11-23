@@ -109,6 +109,21 @@ The firmware enumerates EBus, Ethernet, Mach64 and CMD646 IDE on Simba B and
 reports empty slots on Simba A. Ethernet supports the MIF probe. Mach64
 supports firmware register and video-memory accesses.
 
+At the `ok` prompt, use `show-devs` to list the firmware device tree or
+`probe-ide` to inspect the IDE drives. You can then enter `boot` to start
+the installed system.
+
+Running `probe-all` a second time in OpenBoot 3.31 creates duplicate IDE,
+Mach64 and Ethernet nodes. On the graphical console, `install-console`
+restores the prompt after the framebuffer moves. It leaves both sets of
+nodes in the tree. **Reset before booting Solaris after a full reprobe.**
+At `ok`, enter `reset-all` (or use Heliacal's **F5** cold reset).
+With `auto-boot?` false, enter `boot` at the fresh prompt. Both this
+sequence and `probe-ide` followed by `boot` reached the Solaris 7 CDE login
+on the installed disk. Booting the stale tree made Solaris read the old IDE
+bus-master status port and panic with a privileged bus error. Its automatic
+reboot then reached the same login screen. [Sun OpenBoot 3.x Command Reference](https://docs.oracle.com/cd/E19455-01/806-1377-10/806-1377-10.pdf)
+
 The example batches iterations of a resident SPARC delay loop while preserving
 the counter, PC/nPC, tick, device time and interrupt boundary. Its step limit
 includes these retirements. SAB channel A exposes received bytes through the
@@ -513,6 +528,16 @@ It assumes that window is open at reset so the CPU can fetch OBP. Other
 reset straps, timed retries, downstream I/O-port devices and asynchronous
 error generation remain unverified. [Sun Ultra 5 Service Manual, table C-13 and §C.3.2.2](https://docs.oracle.com/cd/E19127-01/ultra5.ws/805-7763-12/805-7763-12.pdf) · [Linux SPARC PCI window decoding](https://github.com/torvalds/linux/blob/v6.12/arch/sparc/kernel/pci.c#L385)
 
+When Simba B forwards a PCI memory or I/O data cycle and no enabled endpoint
+claims it, secondary status latches Received Master Abort (bit 13, write
+one to clear). With Bridge Control bit 5 clear, reads return all ones and
+writes are discarded. This applies to accesses to the old framebuffer
+address after a reprobe. With bit 5 set, an unclaimed read signals target
+abort on the primary bus. The IIi records a bus error and its physical
+address and delivers a deferred data-access trap if enabled. Reporting-mode
+writes remain unsupported.
+[PCI-to-PCI bridge, Bridge Control register](https://www.ti.com/lit/ds/symlink/pci2250.pdf)
+
 The next operation is an eight-byte read at VA `0xfffc4200`, mapped to the
 IIi IOMMU control register at PA `0x01fe00000200`. To stop immediately
 before the read at PC `0xf0009018`, run the serial example with an outcome
@@ -620,7 +645,10 @@ oscillator calibration are still open. [ST M48T59 register map, table 5 and §§
 
 After printing the reset cause, OBP writes one to the POR bit in the
 IIi Reset Control register. Readback changes from `0x80000000` to zero.
-Software reset requests use separate bits and currently stop explicitly.
+Setting SOFT_POR (bit 30) resets the CPU and PCI devices after the store
+retires. The drive images stay attached, DRAM refresh continues and the RTC
+keeps time. Firmware can read the software-reset cause and clear it by
+writing zero. SOFT_XIR (bit 29) remains unsupported.
 OBP clears the CPU data-buffer error registers through ASI `0x77` and
 acknowledges the PCI programmed-I/O, DMA uncorrectable and DMA correctable
 fault registers. The CPU and bus registers support flag acknowledgement

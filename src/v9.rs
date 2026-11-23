@@ -218,6 +218,12 @@ impl IntegerWidth {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PciReadAbort {
+    Master,
+    Target,
+}
+
 /// Data accesses are independent of the instruction source. A reset-time
 /// peripheral may implement physical bypass reads without mapping virtual RAM.
 pub(crate) trait V9DataBus {
@@ -231,8 +237,8 @@ pub(crate) trait V9DataBus {
             "unmapped V9 cacheable physical xword write at {pa:#x}"
         ))
     }
-    fn pci_read_aborted(&mut self, _pa: u64) -> bool {
-        false
+    fn pci_read_abort(&mut self, _pa: u64, _width: IntegerWidth) -> Option<PciReadAbort> {
+        None
     }
     fn read_integer(
         &mut self,
@@ -1821,7 +1827,7 @@ impl V9Cpu {
         self.prepare_normal_trap(None)?;
         self.data_error_pending = false;
         self.lsu_control &= !(LSU_DC | LSU_IC);
-        // IIi §16.2.1 leaves TNPC undefined on a deferred timeout. Preserve
+        // IIi §16.2.1 leaves TNPC undefined on a deferred access error. Preserve
         // the *first unretired* instruction as the DONE continuation. In
         // particular OBP probes from Forth without a following MEMBAR, and
         // its handler uses DONE without rewriting TNPC. A bracketed peek
@@ -1839,16 +1845,25 @@ impl V9Cpu {
         width: IntegerWidth,
     ) -> Result<u64, String> {
         match memory.read_integer(pa, width, false) {
-            Err(_) if memory.pci_read_aborted(pa) => {
-                // IIi §§16.2.1, 16.4.6: nonresponding configuration cycle.
-                // The load completes with undefined data; deliver the deferred
-                // error at the next instruction boundary, before MEMBAR #Sync.
-                if self.async_fault_status & (1 << 27) != 0 {
+            Err(error) => {
+                let Some(abort) = memory.pci_read_abort(pa, width) else {
+                    return Err(error);
+                };
+                // IIi §§16.4.6, 16.4.8 and 16.7.1. Timeout and bus error
+                // share one AFAR priority class. ME counts a repeated cause.
+                const TO: u64 = 1 << 27;
+                const BERR: u64 = 1 << 26;
+                let cause = match abort {
+                    PciReadAbort::Master => TO,
+                    PciReadAbort::Target => BERR,
+                };
+                if self.async_fault_status & cause != 0 {
                     self.async_fault_status |= 1 << 32;
-                } else {
+                }
+                if self.async_fault_status & (TO | BERR) == 0 {
                     self.async_fault_address = pa & !7;
                 }
-                self.async_fault_status |= 1 << 27;
+                self.async_fault_status |= cause;
                 if self.pstate & PSTATE_PRIV != 0 {
                     self.async_fault_status |= 1 << 31;
                 }
@@ -2401,8 +2416,8 @@ mod tests {
     fn config_timeout_preserves_first_address_and_enters_deferred_trap_only_when_enabled() {
         struct Absent;
         impl V9DataBus for Absent {
-            fn pci_read_aborted(&mut self, _: u64) -> bool {
-                true
+            fn pci_read_abort(&mut self, _: u64, _: IntegerWidth) -> Option<PciReadAbort> {
+                Some(PciReadAbort::Master)
             }
         }
         let mut cpu = V9Cpu::new(0x40);
@@ -2431,6 +2446,44 @@ mod tests {
             (0x32, 0x40, 0x40)
         );
         assert!(!cpu.data_error_pending);
+    }
+
+    #[test]
+    fn pci_target_abort_sets_berr_and_shares_the_first_fault_address_with_timeout() {
+        struct Bus(PciReadAbort);
+        impl V9DataBus for Bus {
+            fn pci_read_abort(&mut self, _: u64, _: IntegerWidth) -> Option<PciReadAbort> {
+                Some(self.0)
+            }
+        }
+        let mut cpu = V9Cpu::new(0x40);
+        let mut bus = Bus(PciReadAbort::Target);
+        cpu.pstate = PSTATE_PRIV;
+        cpu.estate_error_enable = 2;
+        let port = 0x01fe_02c0_0022;
+        assert_eq!(
+            cpu.uncached_read(&mut bus, port, IntegerWidth::Byte)
+                .unwrap(),
+            0xff
+        );
+        assert_eq!(cpu.async_fault_address, port & !7);
+        assert_eq!(cpu.async_fault_status, (1 << 31) | (1 << 26));
+        assert!(matches!(
+            cpu.instruction_address(),
+            Err(CpuFault::DataAccessError)
+        ));
+        cpu.enter_data_access_error().unwrap();
+        assert_eq!(cpu.traps[0].tt, 0x32);
+        bus.0 = PciReadAbort::Master;
+        cpu.uncached_read(&mut bus, 0x10824, IntegerWidth::Word)
+            .unwrap();
+        assert_eq!(cpu.async_fault_address, port & !7);
+        assert_eq!(cpu.async_fault_status, (1 << 31) | (1 << 27) | (1 << 26));
+        bus.0 = PciReadAbort::Target;
+        cpu.uncached_read(&mut bus, port + 16, IntegerWidth::Byte)
+            .unwrap();
+        assert_eq!(cpu.async_fault_address, port & !7);
+        assert_ne!(cpu.async_fault_status & (1 << 32), 0);
     }
 
     #[test]

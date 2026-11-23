@@ -104,10 +104,7 @@ impl ScsiBus {
 
     pub(crate) fn reset(&mut self) {
         for target in self.targets.iter_mut().flatten() {
-            target.unit_attention = true;
-            target.sense = [6, 0x29, 0];
-            target.block_size = target.kind.block_size();
-            target.removal_prevented = false;
+            target.reset();
         }
     }
 
@@ -127,6 +124,13 @@ impl ScsiBus {
 }
 
 impl ScsiTarget {
+    pub(crate) fn reset(&mut self) {
+        self.unit_attention = true;
+        self.sense = [6, 0x29, 0];
+        self.block_size = self.kind.block_size();
+        self.removal_prevented = false;
+    }
+
     pub(crate) fn open(path: &Path, kind: MediaKind, writable: bool) -> io::Result<Self> {
         let image = Media::open(path, kind, writable)?;
         let size = image.info().logical_bytes;

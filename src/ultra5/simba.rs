@@ -102,6 +102,23 @@ impl Simba {
         let selects = |port: &[u8; 256]| port[4] & 2 != 0 && port[0xdf] & window != 0;
         selects(&self.config[1]) && !selects(&self.config[0])
     }
+
+    pub(super) fn signal_onboard_target_abort(&mut self) -> bool {
+        let port = &mut self.config[1];
+        if port[0x3e] & 0x20 == 0 {
+            return false;
+        }
+        port[7] |= 0x08; // signaled target abort on primary
+        true
+    }
+
+    /// Latch Received Master Abort on secondary B. With Bridge Control[5]
+    /// clear the primary transaction completes with all ones or a dropped write.
+    pub(super) fn complete_onboard_master_abort(&mut self) -> bool {
+        let port = &mut self.config[1];
+        port[0x1f] |= 0x20;
+        port[0x3e] & 0x20 == 0
+    }
 }
 
 #[cfg(test)]

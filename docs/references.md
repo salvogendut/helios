@@ -225,6 +225,16 @@ seven-bit trap number for Tcc. The original Ultra 5 firmware uses STW,
   IIi §9.2.4 and §§19.3.1.11–12 specify the fixed primary bus 0 and the
   two software bus-number registers. [IIi manual](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
   [Themis APB register table](https://www.artisantg.com/info/Themis_USPIIe_cPCI_Software_Manual.pdf) · [Sun System Handbook, Simba registers](https://dogemicrosystems.ca/pub/Sun/System_Handbook/Sun_syshbk_V3.4/collections/TECHNICALINSTRUCTIONSURE/1-71-1010580.1-1.html)
+- The PCI-to-PCI bridge register description specifies Received Master Abort
+  in Secondary Status and the response to a missing downstream target when
+  Master Abort Mode is clear. OBP 3.31 exercises this mode on Simba B while
+  reassigning the Mach64 framebuffer. Sun's OpenBoot startup sequence runs
+  `probe-all` before `install-console`. [TI PCI2250 Secondary Status and Bridge Control registers](https://www.ti.com/lit/ds/symlink/pci2250.pdf) · [Sun OpenBoot 3.x Command Reference](https://docs.oracle.com/cd/E19455-01/806-1377-10/806-1377-10.pdf)
+- For a target-aborted PIO read, the IIi sets Received Target Abort in the
+  host PCI header and BERR in the CPU AFSR. Sections 16.4.8 and 16.7.1
+  describe BERR and its shared address-capture priority with timeouts.
+  Sections 17.2.6–7 distinguish software POR, which resets PCI devices
+  and preserves memory refresh, from software XIR. [Sun UltraSPARC-IIi User's Manual](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf)
 - Sun Ultra 5 table C-13 and §C.3.2.2 place PCIO and boot flash on bus B.
   Linux decodes the 2 MiB I/O and 512 MiB memory windows. QEMU's Simba
   initialization describes the memory-enable boot strap. OBP 3.31.0 supplies

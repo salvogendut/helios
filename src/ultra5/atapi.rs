@@ -62,6 +62,12 @@ impl Cdrom {
         Ok(cd)
     }
 
+    pub(super) fn bus_reset(&mut self) {
+        self.control = 0;
+        self.target.reset();
+        self.reset();
+    }
+
     fn reset(&mut self) {
         self.irq = false;
         self.phase = Phase::Idle;

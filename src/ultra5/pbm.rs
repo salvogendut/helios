@@ -57,6 +57,10 @@ impl PciHeader {
         self.0[7] |= 0x20;
     }
 
+    pub(super) fn target_abort(&mut self) {
+        self.0[7] |= 0x10;
+    }
+
     fn offset<const N: usize>(pa: u64) -> Option<usize> {
         let offset = pa.checked_sub(PCI_CONFIG)?;
         (matches!(N, 1 | 2 | 4 | 8) && offset < 16 && offset % N as u64 == 0)

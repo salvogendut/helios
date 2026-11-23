@@ -48,6 +48,14 @@ struct Channel {
 }
 
 impl Serial {
+    pub(super) fn bus_reset(&mut self) {
+        let sent = self.take_output();
+        *self = Self::default();
+        for (ch, bytes) in self.channels.iter_mut().zip(sent) {
+            ch.transmitted = bytes;
+        }
+    }
+
     pub fn advance_to(&mut self, now: u64) {
         for ch in &mut self.channels {
             if ch.timeout_at.is_some_and(|deadline| deadline <= now) {

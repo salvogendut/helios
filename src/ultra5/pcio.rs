@@ -52,6 +52,15 @@ impl PciFunction {
         u32::from_le_bytes(self.header[at..at + 4].try_into().unwrap()) & self.bar_masks[index]
     }
 
+    pub(super) fn claims_memory(&self, address: u32) -> bool {
+        self.memory_enabled()
+            && self.bar_masks.iter().enumerate().any(|(i, &mask)| {
+                mask != 0
+                    && self.header[0x10 + 4 * i] & 1 == 0
+                    && address & mask == self.bar_address(i)
+            })
+    }
+
     pub(super) fn ata_port(&self, addr: u32) -> Option<(usize, u8)> {
         if self.header[4] & 1 == 0 {
             return None;

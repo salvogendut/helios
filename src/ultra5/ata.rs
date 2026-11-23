@@ -75,6 +75,13 @@ impl Disk {
         Ok(disk)
     }
 
+    pub(super) fn bus_reset(&mut self) {
+        self.control = 0;
+        self.heads = 16;
+        self.track = 63;
+        self.reset();
+    }
+
     fn reset(&mut self) {
         self.irq = false;
         self.head = 0xa0;

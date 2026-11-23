@@ -108,7 +108,7 @@ fn probe_select_reset_and_identify_packet_device() {
     assert_eq!(&id[54..60], b"EHILSO");
     assert_eq!(b.read_bypass_byte(CONTROL).unwrap() & 9, 0);
     b.write_bypass_byte(IDE + 4, 0).unwrap();
-    assert!(b.read_bypass_byte(TASK + 7).is_err());
+    assert_eq!(b.read_bypass_byte(TASK + 7).unwrap(), 0xff);
 }
 
 #[test]
