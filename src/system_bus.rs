@@ -557,6 +557,7 @@ pub struct SystemBus {
     memory: MemoryBus,
     devices: Option<Sun4mDevices>,
     dram: Option<Ss5Dram>,
+    direct_dram_end: u64,
     context: AccessContext,
     configured_processors: u8,
     prom_cycles: Option<u64>,
@@ -589,6 +590,7 @@ impl SystemBus {
             memory: MemoryBus::default(),
             devices: None,
             dram: None,
+            direct_dram_end: 0,
             context: AccessContext::default(),
             configured_processors: 0x01, // hardware processor 0 / MID 8 boot CPU
             prom_cycles: None,
@@ -978,6 +980,16 @@ impl SystemBus {
         if self.dram.is_some() || self.memory.overlaps(0, dram.aperture_bytes()) {
             return Err(MapError::Overlap);
         }
+        // Only the standard boards have a known uninterrupted low RAM decode.
+        // SS-5 I/O begins at 256 MiB even if a caller installs SS-20 geometry.
+        // Fixed SX, MXCC and fw_cfg windows all lie above the SS-20 aperture.
+        self.direct_dram_end = if self.layout == Sun4mLayout::ss5() {
+            dram.aperture_bytes().min(IO_CONTROL_BASE)
+        } else if self.layout == Sun4mLayout::ss20() {
+            dram.aperture_bytes()
+        } else {
+            0
+        };
         self.dram = Some(dram);
         Ok(())
     }
@@ -1018,6 +1030,15 @@ impl SystemBus {
             .as_ref()
             .is_some_and(|dram| dram.contains_storage(address, size))
             && !self.sx_video_overlaps(address, size)
+    }
+
+    #[inline]
+    fn low_dram(&mut self, address: u64) -> Option<&mut Ss5Dram> {
+        if address < self.direct_dram_end {
+            self.dram.as_mut()
+        } else {
+            None
+        }
     }
 
     fn dram_at(&mut self, address: u64) -> Option<&mut Ss5Dram> {
@@ -1568,77 +1589,8 @@ impl SystemBus {
     }
 }
 
-impl Bus for SystemBus {
-    fn firmware_mmio_page(&self, page: u64) -> bool {
-        self.openbios.is_some() && page == crate::firmware::FW_CFG_PAGE
-    }
-    fn access_context(&self) -> AccessContext {
-        self.context
-    }
-
-    fn set_access_context(&mut self, context: AccessContext) {
-        self.context = context;
-    }
-
-    fn dma_table_in_dram(&self, address: u64) -> bool {
-        self.dram_contains_storage(address, 4)
-    }
-
-    fn observe_memory_request(&mut self, address: u64, request: MemoryRequest) {
-        let dram_aperture = self
-            .dram
-            .as_ref()
-            .map_or(APERTURE_BYTES, Ss5Dram::aperture_bytes);
-        if address < dram_aperture {
-            if let Some(devices) = &mut self.devices {
-                devices
-                    .io_control
-                    .memory_request(address, request, self.context.supervisor);
-            }
-        }
-    }
-
-    fn capture_sbus_write_error(&mut self, error: BusError, bytes: u8) -> bool {
-        if !matches!(
-            error.kind,
-            BusErrorKind::SBusTimeout | BusErrorKind::SBusError
-        ) || !matches!(bytes, 1 | 2 | 4)
-        {
-            return false;
-        }
-        let standalone = !self.layout.ncr_windows;
-        if let Some(devices) = &mut self.devices {
-            devices.io_control.sbus_write_error(
-                error,
-                bytes,
-                self.context.supervisor,
-                self.context.initiator,
-            );
-            if standalone {
-                devices.interrupts.set_source(Source::MToS, true);
-            } else {
-                devices.interrupts.latch_module_error();
-            }
-            true
-        } else {
-            false
-        }
-    }
-    fn take_io_tlb_flush(&mut self) -> Option<IoTlbFlush> {
-        if !self.layout.ncr_windows {
-            return None;
-        }
-        self.devices.as_mut()?.io_control.take_flush()
-    }
-
-    fn take_standalone_io_tlb_flush(&mut self) -> Option<IoTlbFlush> {
-        if self.layout.ncr_windows {
-            return None;
-        }
-        self.devices.as_mut()?.io_control.take_flush()
-    }
-
-    fn read8(&mut self, address: u64) -> Result<u8, BusError> {
+impl SystemBus {
+    fn read8_mapped(&mut self, address: u64) -> Result<u8, BusError> {
         if let Some(result) = self.firmware_access(address, 1, None) {
             return result.map(|v| v as u8);
         }
@@ -1733,8 +1685,8 @@ impl Bus for SystemBus {
         }
         result.map_err(|error| self.physical_error(error))
     }
-    fn write8(&mut self, address: u64, value: u8) -> Result<(), BusError> {
-        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+
+    fn write8_mapped(&mut self, address: u64, value: u8) -> Result<(), BusError> {
         if let Some(result) = self.firmware_access(address, 1, Some(u32::from(value))) {
             return result.map(|_| ());
         }
@@ -1844,7 +1796,8 @@ impl Bus for SystemBus {
             .write8(address, value)
             .map_err(|error| self.physical_error(error))
     }
-    fn read16(&mut self, address: u64) -> Result<u16, BusError> {
+
+    fn read16_mapped(&mut self, address: u64) -> Result<u16, BusError> {
         if let Some(result) = self.firmware_access(address, 2, None) {
             return result.map(|v| v as u16);
         }
@@ -1918,8 +1871,8 @@ impl Bus for SystemBus {
         }
         result.map_err(|error| self.physical_error(error))
     }
-    fn write16(&mut self, address: u64, value: u16) -> Result<(), BusError> {
-        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+
+    fn write16_mapped(&mut self, address: u64, value: u16) -> Result<(), BusError> {
         if let Some(result) = self.firmware_access(address, 2, Some(u32::from(value))) {
             return result.map(|_| ());
         }
@@ -2006,7 +1959,8 @@ impl Bus for SystemBus {
             .write16(address, value)
             .map_err(|error| self.physical_error(error))
     }
-    fn read32(&mut self, address: u64) -> Result<u32, BusError> {
+
+    fn read32_mapped(&mut self, address: u64) -> Result<u32, BusError> {
         if let Some(result) = self.firmware_access(address, 4, None) {
             return result;
         }
@@ -2100,8 +2054,13 @@ impl Bus for SystemBus {
         }
         result.map_err(|error| self.physical_error(error))
     }
-    fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError> {
-        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+
+    fn write32_masked_mapped(
+        &mut self,
+        address: u64,
+        value: u32,
+        mask: u32,
+    ) -> Result<(), BusError> {
         if let Some(result) = self.firmware_access(address, 4, Some(value)) {
             return result.map(|_| ());
         }
@@ -2263,6 +2222,129 @@ impl Bus for SystemBus {
             .write32_masked(address, value, mask)
             .map_err(|error| self.physical_error(error))
     }
+}
+
+impl Bus for SystemBus {
+    fn firmware_mmio_page(&self, page: u64) -> bool {
+        self.openbios.is_some() && page == crate::firmware::FW_CFG_PAGE
+    }
+    fn access_context(&self) -> AccessContext {
+        self.context
+    }
+
+    fn set_access_context(&mut self, context: AccessContext) {
+        self.context = context;
+    }
+
+    fn dma_table_in_dram(&self, address: u64) -> bool {
+        self.dram_contains_storage(address, 4)
+    }
+
+    fn observe_memory_request(&mut self, address: u64, request: MemoryRequest) {
+        let dram_aperture = self
+            .dram
+            .as_ref()
+            .map_or(APERTURE_BYTES, Ss5Dram::aperture_bytes);
+        if address < dram_aperture {
+            if let Some(devices) = &mut self.devices {
+                devices
+                    .io_control
+                    .memory_request(address, request, self.context.supervisor);
+            }
+        }
+    }
+
+    fn capture_sbus_write_error(&mut self, error: BusError, bytes: u8) -> bool {
+        if !matches!(
+            error.kind,
+            BusErrorKind::SBusTimeout | BusErrorKind::SBusError
+        ) || !matches!(bytes, 1 | 2 | 4)
+        {
+            return false;
+        }
+        let standalone = !self.layout.ncr_windows;
+        if let Some(devices) = &mut self.devices {
+            devices.io_control.sbus_write_error(
+                error,
+                bytes,
+                self.context.supervisor,
+                self.context.initiator,
+            );
+            if standalone {
+                devices.interrupts.set_source(Source::MToS, true);
+            } else {
+                devices.interrupts.latch_module_error();
+            }
+            true
+        } else {
+            false
+        }
+    }
+    fn take_io_tlb_flush(&mut self) -> Option<IoTlbFlush> {
+        if !self.layout.ncr_windows {
+            return None;
+        }
+        self.devices.as_mut()?.io_control.take_flush()
+    }
+
+    fn take_standalone_io_tlb_flush(&mut self) -> Option<IoTlbFlush> {
+        if self.layout.ncr_windows {
+            return None;
+        }
+        self.devices.as_mut()?.io_control.take_flush()
+    }
+
+    #[inline]
+    fn read8(&mut self, address: u64) -> Result<u8, BusError> {
+        if let Some(dram) = self.low_dram(address) {
+            return dram.read8(address);
+        }
+        self.read8_mapped(address)
+    }
+
+    #[inline]
+    fn write8(&mut self, address: u64, value: u8) -> Result<(), BusError> {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+        if let Some(dram) = self.low_dram(address) {
+            return dram.write8(address, value);
+        }
+        self.write8_mapped(address, value)
+    }
+
+    #[inline]
+    fn read16(&mut self, address: u64) -> Result<u16, BusError> {
+        if let Some(dram) = self.low_dram(address) {
+            return dram.read16(address);
+        }
+        self.read16_mapped(address)
+    }
+
+    #[inline]
+    fn write16(&mut self, address: u64, value: u16) -> Result<(), BusError> {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+        if let Some(dram) = self.low_dram(address) {
+            return dram.write16(address, value);
+        }
+        self.write16_mapped(address, value)
+    }
+
+    #[inline]
+    fn read32(&mut self, address: u64) -> Result<u32, BusError> {
+        if let Some(dram) = self.low_dram(address) {
+            return dram.read32(address);
+        }
+        self.read32_mapped(address)
+    }
+
+    #[inline]
+    fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError> {
+        self.mutation_epoch = self.mutation_epoch.wrapping_add(1);
+        if let Some(dram) = self.low_dram(address) {
+            return dram.write32_masked(address, value, mask);
+        }
+        self.write32_masked_mapped(address, value, mask)
+    }
+
     fn read_doubleword(&mut self, address: u64) -> Result<[u32; 2], BusError> {
         if self.firmware_mmio_page(address & !0xfff) {
             return Err(BusError {

@@ -1,5 +1,7 @@
 # Agent notes
 
+- [SS-5, SS-20 and Axil RAM access performance](sun4m-dram-performance.md) covers direct DSIMM lookup, Solaris kernel and filesystem comparisons, and the ESP/DMA control.
+
 - [Ultra 5 performance compared with QEMU](ultra5-performance-analysis.md) covers the SPARC loop comparison, Solaris kernel profiles, and Xsun boot, file-copy and IDE DMA measurements for the TLB, board polling and sparse RAM changes.
 
 - [Ultra 5 graphical console and Solaris 7](ultra5-graphical-console.md) — original OpenBoot, interactive CD, dedicated IDE disk, Mach64 FIFO status, the CDE desktop and the Solaris VIS framebuffer block-store fix.

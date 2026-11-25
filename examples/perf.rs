@@ -3,7 +3,7 @@
 use helios::{
     bus::Bus,
     cpu::Step,
-    machine::{Machine, SchedulerError},
+    machine::{Machine, MachineProfile, SchedulerError},
 };
 use std::time::Instant;
 
@@ -325,9 +325,60 @@ fn compare(mode: &str, iterations: u32) {
     );
 }
 
+/// Measure physical RAM through the workstation bus. Rotate between four
+/// 32 MiB ranges and check every touched word outside the timed loop.
+fn dram(profile: MachineProfile) {
+    const ITERATIONS: u32 = 12_000_000;
+    let mut machine =
+        Machine::with_profile(profile, 128 << 20, &[1, 0, 0, 0], profile.default_nvram()).unwrap();
+    let address = |index: usize| (((index % 4) << 25) + (index / 4) * 4) as u64;
+    let mut expected = [0u32; 1024];
+    let mut checksum = 0u32;
+    let start = Instant::now();
+    for i in 0..ITERATIONS {
+        let addr = address(i as usize % expected.len());
+        let value = machine
+            .bus
+            .read32(std::hint::black_box(addr))
+            .unwrap()
+            .rotate_left(3)
+            ^ i;
+        machine
+            .bus
+            .write32(std::hint::black_box(addr), value)
+            .unwrap();
+        checksum = checksum.wrapping_add(value);
+    }
+    let elapsed = start.elapsed().as_secs_f64();
+    let mut expected_checksum = 0u32;
+    for i in 0..ITERATIONS {
+        let index = i as usize % expected.len();
+        let word = &mut expected[index];
+        *word = word.rotate_left(3) ^ i;
+        expected_checksum = expected_checksum.wrapping_add(*word);
+    }
+    assert_eq!(checksum, expected_checksum);
+    for (i, word) in expected.into_iter().enumerate() {
+        assert_eq!(machine.bus.read32(address(i)).unwrap(), word);
+    }
+    println!("workload=dram profile={profile:?} iterations={ITERATIONS} wall_s={elapsed:.6} checksum={checksum:08x}");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
+        Some("dram") => {
+            let profile = match args.get(2).map(String::as_str) {
+                Some("ss5") => MachineProfile::Ss5,
+                Some("ss20") => MachineProfile::Ss20,
+                Some("axil") => MachineProfile::Axil320,
+                _ => {
+                    eprintln!("dram requires ss5, ss20 or axil");
+                    std::process::exit(2);
+                }
+            };
+            dram(profile);
+        }
         Some("compare") => {
             let mode = args.get(2).map(String::as_str).unwrap_or("alu");
             let iterations = match args.get(3) {
@@ -366,6 +417,7 @@ fn main() {
             eprintln!(
                 "usage: perf fixed <alu|memory> [iterations] [cache|jit|jit-native]\n\
                  perf compare <alu|memory> [iterations]\n\
+                 perf dram <ss5|ss20|axil>\n\
                  Guest boot/scanout workloads use the supplied ROM, NVRAM and disk media."
             );
             std::process::exit(2);

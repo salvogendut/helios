@@ -190,24 +190,47 @@ impl DramLayout {
 
     fn allocate(self) -> Result<Ss5Dram, MapError> {
         let mut memory = MemoryBus::default();
+        let mut windows = vec![None; self.aperture_bytes() as usize / WINDOW_BYTES];
         for (slot, &size) in self.sizes.iter().enumerate() {
-            if self.bank_bytes == SS20_BANK_BYTES && size == SS20_MID_BANK_BYTES {
-                // A 32 MiB SS-20 DSIMM has two 16 MiB regions selected by
-                // PA25, with PA24 mirrored. Original OBP publishes these
-                // separately in /memory/reg, at bank+0 and bank+32 MiB.
-                let base = (slot * self.bank_bytes) as u64;
-                memory.map_ram(base, SS20_SMALL_BANK_BYTES)?;
-                memory.map_ram(base + SS20_MID_BANK_BYTES as u64, SS20_SMALL_BANK_BYTES)?;
-            } else if size != 0 {
-                memory.map_ram((slot * self.bank_bytes) as u64, size)?;
+            if size == 0 {
+                continue;
+            }
+            // On a 32 MiB SS-20 module, PA25 selects the rank and PA24
+            // mirrors it. All other modules mirror a single rank.
+            let ranks = if self.bank_bytes == SS20_BANK_BYTES && size == SS20_MID_BANK_BYTES {
+                2
+            } else {
+                1
+            };
+            let rank_size = size / ranks;
+            let rank_span = self.bank_bytes / ranks;
+            for rank in 0..ranks {
+                let base = slot * self.bank_bytes + rank * rank_span;
+                let region = memory.map_indexed_ram(base as u64, rank_size)?;
+                for offset in (0..rank_span).step_by(WINDOW_BYTES) {
+                    windows[(base + offset) / WINDOW_BYTES] = Some(DramWindow {
+                        region,
+                        first_word: (offset % rank_size) / 4,
+                    });
+                }
             }
         }
         Ok(Ss5Dram {
             sizes: self.sizes,
             bank_bytes: self.bank_bytes,
             memory,
+            windows,
         })
     }
+}
+
+// The smallest supported module determines the physical lookup granularity.
+const WINDOW_BYTES: usize = SMALL_BANK_BYTES;
+
+#[derive(Clone, Copy, Debug)]
+struct DramWindow {
+    region: usize,
+    first_word: usize,
 }
 
 #[derive(Debug)]
@@ -215,6 +238,7 @@ pub struct Ss5Dram {
     sizes: [usize; 8],
     bank_bytes: usize,
     memory: MemoryBus,
+    windows: Vec<Option<DramWindow>>,
 }
 
 impl Ss5Dram {
@@ -292,7 +316,14 @@ impl Ss5Dram {
         self.sizes[first..=last].iter().all(|&bank| bank != 0)
     }
 
-    fn decode(&self, address: u64, alignment: u64) -> Result<Option<u64>, BusError> {
+    /// Resolve the containing word. Aligned doublewords always stay in the
+    /// same window. Check the full physical address before narrowing to usize.
+    #[inline]
+    fn word_location(
+        &self,
+        address: u64,
+        alignment: u64,
+    ) -> Result<Option<(usize, usize)>, BusError> {
         if address % alignment != 0 {
             return Err(BusError {
                 address,
@@ -305,18 +336,9 @@ impl Ss5Dram {
                 kind: BusErrorKind::Unmapped,
             });
         }
-        let slot = address as usize / self.bank_bytes;
-        let size = self.sizes[slot];
-        Ok(if size == 0 {
-            None
-        } else {
-            let mask = if self.bank_bytes == SS20_BANK_BYTES && size == SS20_MID_BANK_BYTES {
-                (SS20_BANK_BYTES - SS20_SMALL_BANK_BYTES - 1) as u64
-            } else {
-                size as u64 - 1
-            };
-            Some((slot * self.bank_bytes) as u64 | (address & mask))
-        })
+        let byte = address as usize;
+        Ok(self.windows[byte / WINDOW_BYTES]
+            .map(|window| (window.region, window.first_word + (byte % WINDOW_BYTES) / 4)))
     }
 
     /// Image imports target real storage within one bank, never mirrors or holes.
@@ -326,57 +348,62 @@ impl Ss5Dram {
 
     /// Read-only word peek for parking-token proof validation.
     pub(crate) fn peek32(&self, address: u64) -> Result<u32, BusError> {
-        match self.decode(address, 4)? {
-            Some(physical) => self.memory.peek32(physical).ok_or(BusError {
-                address,
-                kind: BusErrorKind::Unmapped,
-            }),
-            None => Ok(0),
-        }
+        Ok(match self.word_location(address, 4)? {
+            Some((region, word)) => self.memory.ram_words(region)[word],
+            None => 0,
+        })
     }
 }
 
 impl Bus for Ss5Dram {
     fn read32(&mut self, address: u64) -> Result<u32, BusError> {
-        match self.decode(address, 4)? {
-            Some(physical) => self.memory.read32(physical),
-            None => Ok(0),
-        }
+        self.peek32(address)
     }
 
     fn write32_masked(&mut self, address: u64, value: u32, mask: u32) -> Result<(), BusError> {
-        match self.decode(address, 4)? {
-            Some(physical) => self.memory.write32_masked(physical, value, mask),
-            None => Ok(()),
+        if let Some((region, word)) = self.word_location(address, 4)? {
+            let dest = &mut self.memory.ram_words_mut(region)[word];
+            *dest = (*dest & !mask) | (value & mask);
         }
+        Ok(())
     }
 
     fn read_doubleword(&mut self, address: u64) -> Result<[u32; 2], BusError> {
-        match self.decode(address, 8)? {
-            Some(physical) => self.memory.read_doubleword(physical),
-            None => Ok([0; 2]),
-        }
+        Ok(match self.word_location(address, 8)? {
+            Some((region, word)) => {
+                let words = self.memory.ram_words(region);
+                [words[word], words[word + 1]]
+            }
+            None => [0; 2],
+        })
     }
 
-    fn write_doubleword(&mut self, address: u64, words: [u32; 2]) -> Result<(), BusError> {
-        // Aligned doublewords cannot cross a bank or a mirror boundary.
-        match self.decode(address, 8)? {
-            Some(physical) => self.memory.write_doubleword(physical, words),
-            None => Ok(()),
+    fn write_doubleword(&mut self, address: u64, value: [u32; 2]) -> Result<(), BusError> {
+        if let Some((region, word)) = self.word_location(address, 8)? {
+            self.memory.ram_words_mut(region)[word..word + 2].copy_from_slice(&value);
         }
+        Ok(())
     }
 
     fn swap32(&mut self, address: u64, value: u32) -> Result<u32, BusError> {
-        match self.decode(address, 4)? {
-            Some(physical) => self.memory.swap32(physical, value),
-            None => Ok(0),
-        }
+        Ok(match self.word_location(address, 4)? {
+            Some((region, word)) => {
+                std::mem::replace(&mut self.memory.ram_words_mut(region)[word], value)
+            }
+            None => 0,
+        })
     }
 
     fn ldstub8(&mut self, address: u64) -> Result<u8, BusError> {
-        match self.decode(address, 1)? {
-            Some(physical) => self.memory.ldstub8(physical),
-            None => Ok(0),
-        }
+        Ok(match self.word_location(address, 1)? {
+            Some((region, word)) => {
+                let dest = &mut self.memory.ram_words_mut(region)[word];
+                let shift = (3 - (address & 3)) * 8;
+                let old = (*dest >> shift) as u8;
+                *dest |= 0xff << shift;
+                old
+            }
+            None => 0,
+        })
     }
 }

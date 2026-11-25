@@ -53,6 +53,12 @@ range onto the first and corrupts guest memory. CPU lanes, doublewords, atomics,
 IOMMU tables and DMA all use the same split mapping. Raw imports may address
 either real region but cannot cross into a mirror.
 
+At power-on, Helios resolves each physical 8 MiB window to its backing RAM
+region and word offset. CPU and DMA accesses share these mappings. On the
+standard boards, ordinary byte, halfword and word accesses to low DRAM go
+directly to the bank decoder. Custom bus layouts use the full device decoder
+so a relocated peripheral can still take precedence over RAM.
+
 An 8 MiB module mirrors four times within its aperture. All normal widths,
 doublewords and atomic exchanges use the same underlying words. Empty-bank
 accesses complete: reads return zero, writes have no storage to modify. Zero is

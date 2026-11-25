@@ -316,18 +316,27 @@ impl MemoryBus {
         digest.finish()
     }
 
-    /// Read-only word peek used by parking-token proof validation.
-    pub(crate) fn peek32(&self, address: u64) -> Option<u32> {
-        let region = self
-            .regions
-            .iter()
-            .find(|region| (region.base..region.end).contains(&address))?;
-        Some(region.words[((address - region.base) / 4) as usize])
-    }
-
     pub fn map_ram(&mut self, base: u64, size: usize) -> Result<(), MapError> {
         self.map(base, size, false)
     }
+
+    /// DSIMM geometry fixes each RAM region's location at construction.
+    /// Map once and keep its index for the board's physical address decoder.
+    pub(crate) fn map_indexed_ram(&mut self, base: u64, size: usize) -> Result<usize, MapError> {
+        self.map_ram(base, size)?;
+        Ok(self.regions.len() - 1)
+    }
+
+    pub(crate) fn ram_words(&self, index: usize) -> &[u32] {
+        &self.regions[index].words
+    }
+
+    pub(crate) fn ram_words_mut(&mut self, index: usize) -> &mut [u32] {
+        let region = &mut self.regions[index];
+        assert!(!region.read_only);
+        &mut region.words
+    }
+
     #[cfg(feature = "jit")]
     pub(crate) fn is_writable_range(&self, address: u64, len: u64) -> bool {
         let Some(end) = address.checked_add(len) else {

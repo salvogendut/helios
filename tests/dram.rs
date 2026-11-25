@@ -229,3 +229,69 @@ fn ss5_cpu_probes_empty_banks_and_reset_preserves_populated_storage() {
         BusErrorKind::Unmapped
     );
 }
+
+#[test]
+fn indexed_windows_cover_distinct_words_across_ranks_banks_and_holes() {
+    let mib = MIB as u64;
+    let mut dram = Ss5Dram::ss20([0, 32 * MIB, 0, 16 * MIB, 0, 0, 0, 64 * MIB]).unwrap();
+    // Sources are the canonical ranges that OBP publishes. Initialize each
+    // 8 MiB window independently, including both ends of the highest bank.
+    let canonical = [
+        64, 72, 96, 104, 192, 200, 448, 456, 464, 472, 480, 488, 496, 504,
+    ];
+    for &start in &canonical {
+        for offset in [0, 8 * mib - 4] {
+            let address = start * mib + offset;
+            dram.load_image(address, &(address as u32).to_be_bytes())
+                .unwrap();
+        }
+    }
+    for window in 0..64 {
+        let start = window * 8;
+        let source = match start {
+            64..=127 => Some(start & !16),
+            192..=255 => Some(192 + (start - 192) % 16),
+            448..=511 => Some(start),
+            _ => None,
+        };
+        for offset in [0, 8 * mib - 4] {
+            let address = start * mib + offset;
+            assert_eq!(
+                dram.read32(address).unwrap(),
+                source.map_or(0, |s| (s * mib + offset) as u32)
+            );
+        }
+    }
+    let end = 512 * mib;
+    for (address, kind) in [
+        (end, BusErrorKind::Unmapped),
+        (1 << 40, BusErrorKind::Unmapped),
+        (end - 4, BusErrorKind::Misaligned),
+    ] {
+        assert_eq!(
+            dram.write_doubleword(address, [0, 0]).unwrap_err().kind,
+            kind
+        );
+    }
+    assert_eq!(dram.read32(end - 4).unwrap(), (end - 4) as u32);
+}
+
+#[test]
+fn low_cgsix_on_a_custom_bus_keeps_priority_over_dram() {
+    use helios::devices::cgsix::Cgsix;
+    use helios::system_bus::Sun4mLayout;
+    let mut layout = Sun4mLayout::ss5();
+    layout.cgsix = 0;
+    let mut bus = SystemBus::with_layout(layout);
+    let mut ram = Ss5Dram::from_total(8 * MIB).unwrap();
+    ram.write32(0, 0xaabb_ccdd).unwrap();
+    bus.install_ss5_dram(ram).unwrap();
+    let mut rom = [0; 32 * 1024];
+    rom[..4].copy_from_slice(&[0x12, 0x34, 0x56, 0x78]);
+    bus.install_cgsix(Cgsix::new(&rom).unwrap()).unwrap();
+    assert_eq!(bus.read8(1).unwrap(), 0x34);
+    assert_eq!(bus.read16(2).unwrap(), 0x5678);
+    assert_eq!(bus.read32(0).unwrap(), 0x1234_5678);
+    assert!(bus.write32(0, 0).is_err());
+    assert_eq!(bus.read32(0).unwrap(), 0x1234_5678);
+}
