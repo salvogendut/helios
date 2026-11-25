@@ -81,6 +81,11 @@ impl Hme {
     pub fn write(&mut self, off: u32, value: u32) -> bool {
         match off {
             0 => {
+                if value & 3 == 3 {
+                    // The shared external interface leaves loopback when OBP
+                    // resets both engines between self-test and network use.
+                    self.registers.remove(&0x6000);
+                }
                 if value & 1 != 0 {
                     self.tx_index = 0;
                     self.assembling = None;
@@ -136,6 +141,13 @@ impl Hme {
                 let high = value & 1 != 0;
                 if high && !self.clock {
                     self.rising_edge();
+                } else if !high && self.clock {
+                    // Present the PHY bit during MDC low and hold it through
+                    // the sampling edge. Re-reading the pin cannot shift it.
+                    self.mdi = self
+                        .remaining
+                        .checked_sub(1)
+                        .map(|bit| self.response >> bit & 1 != 0);
                 }
                 self.clock = high;
             }
@@ -199,17 +211,16 @@ impl Hme {
     }
 
     fn rising_edge(&mut self) {
+        // Turnaround and data occupy 18 clocks after REGAD even if the
+        // station keeps output-enable asserted during the turnaround.
+        if self.remaining != 0 {
+            self.remaining -= 1;
+            return;
+        }
         if !self.drive {
-            self.mdi = if self.remaining > 0 {
-                self.remaining -= 1;
-                Some((self.response >> self.remaining) & 1 != 0)
-            } else {
-                None
-            };
             self.bits = 0;
             return;
         }
-        self.mdi = None;
         if self.bits == 0 && self.data {
             return; // idle/preamble
         }
@@ -224,6 +235,7 @@ impl Hme {
                 0x3ffff
             };
             self.remaining = 18; // Z, driven turnaround zero, sixteen data bits
+            self.bits = 0;
         }
         if self.bits == 32 {
             if self.shift >> 28 == 5 && self.shift >> 23 & 31 == 1 && self.config & 1 == 0 {
@@ -237,14 +249,19 @@ impl Hme {
 #[cfg(test)]
 mod tests {
     use super::Hme;
-    fn read_phy(mif: &mut Hme, addr: u8, reg: u8) -> u32 {
-        mif.write(0x7008, 1);
-        let header = 0x1800 | (u32::from(addr) << 5) | u32::from(reg);
-        for bit in (0..14).rev() {
-            mif.write(0x7004, (header >> bit) & 1);
+    fn send_bits(mif: &mut Hme, value: u32, count: u8) {
+        for bit in (0..count).rev() {
+            mif.write(0x7004, (value >> bit) & 1);
             mif.write(0x7000, 0);
             mif.write(0x7000, 1);
         }
+    }
+    fn read_header(mif: &mut Hme, addr: u8, reg: u8) {
+        mif.write(0x7008, 1);
+        send_bits(mif, 0x1800 | (u32::from(addr) << 5) | u32::from(reg), 14);
+    }
+    fn read_phy(mif: &mut Hme, addr: u8, reg: u8) -> u32 {
+        read_header(mif, addr, reg);
         mif.write(0x7008, 0);
         let mut data = 0;
         for _ in 0..18 {
@@ -254,6 +271,56 @@ mod tests {
         }
         data
     }
+
+    fn obp_read(mif: &mut Hme, addr: u8, reg: u8) -> u16 {
+        read_header(mif, addr, reg);
+        // The original ROM clocks both turnaround bits with output enabled.
+        for _ in 0..2 {
+            mif.write(0x7000, 0);
+            mif.write(0x7000, 1);
+        }
+        mif.write(0x7008, 0);
+        let mut word = 0;
+        for _ in 0..16 {
+            mif.write(0x7000, 0);
+            let pin = mif.read(0x7010).unwrap() & 0x100;
+            assert_eq!(mif.read(0x7010).unwrap() & 0x100, pin);
+            word = (word << 1) | u16::from(pin != 0);
+            mif.write(0x7000, 1);
+        }
+        mif.write(0x7000, 0);
+        assert_ne!(mif.read(0x7010).unwrap() & 0x100, 0); // idle pull-up
+        word
+    }
+
+    #[test]
+    fn obp_bitbang_reads_phy_ids_and_reset_without_turnaround_bits_in_data() {
+        let mut mif = Hme::default();
+        mif.write(0x7010, 4);
+        assert_eq!(obp_read(&mut mif, 1, 2), 0x2000);
+        assert_eq!(obp_read(&mut mif, 1, 3), 0x5c00);
+        assert_eq!(obp_read(&mut mif, 2, 2), 0xffff);
+        mif.write(0x7008, 1);
+        send_bits(&mut mif, 0x5082_1400, 32); // write BMCR, PHY 1
+        assert_eq!(obp_read(&mut mif, 1, 0), 0x1400);
+        mif.write(0x7008, 1);
+        send_bits(&mut mif, 0x5082_8000, 32);
+        assert_eq!(obp_read(&mut mif, 1, 0), 0);
+        assert_eq!(obp_read(&mut mif, 1, 4), 0x01e1); // includes a set low bit
+    }
+
+    #[test]
+    fn combined_engine_reset_clears_shared_xif_loopback() {
+        let mut h = Hme::default();
+        h.write(0x6000, 3);
+        h.write(0, 1);
+        assert_eq!(h.read(0x6000), Some(3));
+        h.write(0, 2);
+        assert_eq!(h.read(0x6000), Some(3));
+        h.write(0, 3);
+        assert_eq!(h.read(0x6000), Some(0));
+    }
+
     #[test]
     fn mii_frame_and_bitbang_share_phy_state_and_dma_resets_are_independent() {
         let mut h = Hme::default();

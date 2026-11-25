@@ -98,5 +98,6 @@ Cold and soft-reset runs reach the same entry with diagnostics enabled or disabl
 | Graphical login | Heliacal displays the installed Solaris CDE greeter on the Mach64 with a username field and a working Sun keyboard. |
 | Onboard Ethernet | Installed Solaris 7 brings up `hme0` on the Ultra 5. In Heliacal it receives three replies from the NAT gateway at `192.168.0.1` with zero packet loss. |
 | Guest network transfers | Solaris 7 obtains a DHCP lease, resolves a controlled DNS name through the gateway, and downloads the same 1 MiB file over TFTP and outbound HTTP. Both copies match the host checksum. |
+| Diskless firmware network boot | Original OpenBoot 3.31 passes HME loopback, obtains an address by RARP and downloads a Forth payload by TFTP. The payload prints its marker on serial A and returns to the prompt. [Reproduce the check](ultra5.md#firmware-network-boot) |
 
 [Boot the installed Ultra 5](ultra5.md#boot-the-installed-solaris-7-system)

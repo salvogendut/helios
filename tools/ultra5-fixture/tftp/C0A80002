@@ -1,0 +1,2 @@
+\ Ultra 5 OpenBoot network load test
+cr ." HELIOS-ULTRA5-NETBOOT-" decimal 6 7 * . cr hex

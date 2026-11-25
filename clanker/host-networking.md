@@ -53,3 +53,25 @@ tests (ARP, RARP, DHCP offer/ack, BOOTP file naming, ICMP, UDP NAT, DNS source
 rewrite, TFTP lock-step and traversal, TFTP retransmit). Full suite, Clippy,
 demos and UI checks were run after integration. OBP reached its `ok` prompt;
 no executable kernel was supplied, so no network OS boot is claimed.
+
+## Ultra 5 OBP 3.31 diskless check, 2026-11-25
+
+The first failing read showed PHY IDs `c400/cb80` for registers containing
+`2000/5c00`. The MIF trace showed two turnaround clocks with output enabled,
+then two pin reads during each low clock phase. The old implementation started
+shifting after output enable cleared and returned the old bit on the first
+low-phase sample.
+
+With the pin timing fixed, OBP next sent an EtherType `ff00` frame to its own
+MAC address with XIF configuration 3, RX MAC 1 and PHY control 0. Internal
+loopback returned the packet through RX DMA. Leaving XIF set across the
+following combined reset also looped back the first RARP request. Clearing
+the shared XIF configuration on that reset let OBP reopen it in normal mode.
+
+The accepted manual run emitted the RARP request, TFTP RRQ for `C0A80002`
+and ACK for block 1. The NAT returned the address reply and 90-byte payload.
+The serial marker appeared after `boot net` and before the returned prompt.
+The tracked release test independently executed the payload from factory
+NVRAM. A disk-booted Solaris 7 clone received all three gateway ping replies
+and halted at OpenBoot. Serial output, wire capture and selected register
+traces are under `local/ultra5-obp-netboot-2026-11-25/fixed/`.

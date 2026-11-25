@@ -144,6 +144,26 @@ nearest device deadline within the caller's budget. The usual single step
 uses the same translation if the instruction cannot be batched. Callers that
 need the individual trap or instruction record can use `step_outcome`.
 
+## Firmware network boot
+
+On a diskless Ultra 5 with the HME link up, original OBP 3.31 can execute a
+Forth file from the Helios TFTP server. The PROM requests its IPv4 address
+in uppercase hexadecimal as the filename. For the default guest address
+`192.168.0.2`, the tracked TFTP root contains `C0A80002`.
+
+To reproduce the check with the local original flash, run this from the
+Helios root. The test creates fresh NVRAM in memory and uses the firmware's
+factory network boot path.
+
+```sh
+cargo test --release --locked --offline --test ultra5_first_serial_access \
+  original_obp_executes_a_diskless_tftp_payload -- --ignored --exact
+```
+
+A manual `boot net` also prints `HELIOS-ULTRA5-NETBOOT-42` after the TFTP
+transfer. The fixture ends there. Network installation of Solaris would
+require a separate bootloader and operating-system services.
+
 ## Ethernet in Solaris
 
 The onboard PCI Happy Meal Ethernet controller appears as `hme0`.

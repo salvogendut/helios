@@ -182,8 +182,16 @@ See [Ultra 5 graphical console](ultra5.md#graphical-console-in-heliacal).
 `tests/net.rs` covers ARP, RARP, DHCP offer/ack, BOOTP boot-file naming, ICMP
 echo, UDP NAT against a local socket, DNS relay source-address rewriting, TFTP
 block/ACK lock-step, path traversal rejection and retransmission. The engine
-also has frame-level tests for header checksum acceptance. Firmware network
-boot through the NAT remains to be recorded.
+also has frame-level tests for header checksum acceptance.
+
+With no disk or CD attached, original Ultra 5 OpenBoot 3.31 passes its
+internal HME loopback test. At `boot net`, it obtains `192.168.0.2` via
+RARP and requests `C0A80002` in TFTP octet mode from `192.168.0.1`.
+The capture contains the RARP request and reply, TFTP request, one DATA block
+and its ACK. The downloaded Forth fixture prints `HELIOS-ULTRA5-NETBOOT-42`
+on TTYA. OBP then reports that the file does not appear executable and
+returns to `ok`. This validates a firmware payload through the Helios NAT.
+[Diskless firmware regression](ultra5.md#firmware-network-boot)
 
 Relay unit tests cover reply matching, deadlines, request limits and bounded
 polling. The explicit Linux test exercises real kernel echo with concurrent

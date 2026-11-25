@@ -289,6 +289,17 @@ seven-bit trap number for Tcc. The original Ultra 5 firmware uses STW,
   CMD646 native-channel configuration. ATI describes the two 8 MiB apertures,
   clock indexing and register-block locations.
   [Ultra 5 device tree](https://rob.com/sun/sun4u-ss5/) · [NetBSD HME registers](https://github.com/NetBSD/src/blob/trunk/sys/dev/ic/hmereg.h) · [NetBSD CMD646 registers](https://github.com/NetBSD/src/blob/trunk/sys/dev/pci/pciide_cmd_reg.h) · [ATI mach64 Register Reference Guide, chapter 2](https://bitsavers.computerhistory.org/components/ati/RRG-G02700_mach64_Register_Reference_Guide_ATI-264VT_and_3D_RAGE_1996.pdf)
+- National Semiconductor's DP83840A data sheet §3.2.1, figure 2 and table I
+  define the two turnaround clocks and sixteen data bits on a management read.
+  OBP 3.31 clocks turnaround before releasing the HME output driver, then
+  samples the PHY pin with MDC low. Helios models the pin value at the sampling
+  boundary. [DP83840A data sheet](https://www.ic-components.cz/files/69/DP83840AVCE.pdf)
+- The HME MAC XIF configuration bit 1 selects internal loopback. OBP sets
+  XIF to 3 for its self-addressed frame and resets both engines together
+  before reopening the interface for RARP. Helios clears the shared XIF
+  configuration on this combined reset, as inferred from the ROM sequence.
+  Pinned QEMU clears the engine reset request bits without modeling this
+  transition. [NetBSD HME definitions](https://github.com/NetBSD/src/blob/trunk/sys/dev/ic/hmereg.h) · [QEMU HME reset](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/net/sunhme.c#L184-L195)
 - Siemens specifies SAB ASYNC receive-pool release, four-frame receive timeout,
   BRK/BRKT and masked-status visibility (IPC.VIS). NetBSD's SPARC64 baud table
   gives the divisors for 9600 baud on this board.

@@ -16,6 +16,7 @@ const SENT_FRAME: u32 = 1 << 8;
 const GOT_FRAME: u32 = 1;
 const TX_ERROR: u32 = 1 << 26;
 const RX_ERROR: u32 = 1 << 18;
+const XIF_LOOPBACK: u32 = 1 << 1;
 
 impl Ultra5ResetBoard {
     /// Connect the internal PHY to a virtual Ethernet segment.
@@ -136,7 +137,9 @@ impl Ultra5ResetBoard {
             self.hme.tx_index = (self.hme.tx_index + 1) % count;
             self.hme.status |= HOST_TO_TX;
             if flags & EOP != 0 {
-                if self.hme.carrier() && self.hme.outgoing.len() < 256 {
+                if self.hme.reg(0x6000) & XIF_LOOPBACK != 0 {
+                    self.hme_accept_rx(&frame);
+                } else if self.hme.carrier() && self.hme.outgoing.len() < 256 {
                     frame.resize(frame.len().max(60), 0);
                     self.hme.outgoing.push_back(frame);
                 }
@@ -151,8 +154,11 @@ impl Ultra5ResetBoard {
 
     /// Offer one wire frame (without its FCS) to the guest receive DMA engine.
     pub fn receive_ethernet_frame(&mut self, frame: &[u8]) -> bool {
-        if !self.hme.carrier()
-            || !self.pci_functions[1].master_enabled()
+        self.hme.carrier() && self.hme.reg(0x6000) & XIF_LOOPBACK == 0 && self.hme_accept_rx(frame)
+    }
+
+    fn hme_accept_rx(&mut self, frame: &[u8]) -> bool {
+        if !self.pci_functions[1].master_enabled()
             || self.hme.reg(0x4000) & 1 == 0
             || self.hme.reg(0x630c) & 1 == 0
             || frame.len() < 14
@@ -277,6 +283,52 @@ mod tests {
         assert_eq!(f.len(), 60);
         assert_eq!(read::<4>(&mut b, RING), 0x2000_0002u32.to_le_bytes());
         assert_eq!(b.hme.tx_index, 1);
+    }
+
+    #[test]
+    fn xif_loopback_routes_completed_tx_to_rx_even_with_the_link_unplugged() {
+        let mut b = fixture();
+        let rx_ring = RING + 0x800;
+        let rx_buffer = BUFFER + 0x800;
+        for (off, value) in [
+            (0x2004, 1),
+            (0x2008, RING),
+            (0x4000, 0x201),
+            (0x4004, rx_ring),
+            (0x6000, 3),
+            (0x620c, 0x401),
+            (0x630c, 1),
+        ] {
+            assert!(b.hme.write(off, value));
+        }
+        let mut frame = [0x5a; 60];
+        frame[..6].fill(0xff);
+        b.dram
+            .dma_bytes(u64::from(BUFFER), b.mem_control0, &mut frame, true)
+            .unwrap();
+        descriptor(&mut b, (rx_ring - RING) / 8, OWN | (64 << 16), rx_buffer);
+        assert!(!b.receive_ethernet_frame(&frame));
+        b.set_ethernet_link(false);
+        descriptor(&mut b, 0, OWN | SOP | 24, BUFFER);
+        b.hme_transmit();
+        assert_eq!(b.hme.rx_index, 0);
+        descriptor(&mut b, 1, OWN | EOP | 36, BUFFER + 24);
+        b.hme_transmit();
+        assert_eq!(b.hme.rx_index, 1);
+        assert_eq!(u32::from_le_bytes(read(&mut b, rx_ring)) >> 16, 60);
+        assert_eq!(read::<60>(&mut b, rx_buffer), frame);
+        assert_eq!(
+            b.hme.status,
+            RX_TO_HOST | GOT_FRAME | HOST_TO_TX | TX_ALL | SENT_FRAME
+        );
+        assert!(b.take_ethernet_frame().is_none());
+
+        b.set_ethernet_link(true);
+        b.hme.write(0x6000, 1);
+        descriptor(&mut b, 2, OWN | SOP | EOP | 60, BUFFER);
+        b.hme_transmit();
+        assert_eq!(b.take_ethernet_frame().as_deref(), Some(frame.as_slice()));
+        assert_eq!(b.hme.rx_index, 1);
     }
 
     #[test]

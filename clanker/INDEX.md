@@ -102,7 +102,7 @@
 - [Writable disk installation](solaris-install-rw.md): explicit writable raw disks, durable SCSI writes and the ongoing Solaris 7 installation attempt.
 - [Installed disk boot](installed-disk-boot.md): Solaris 7/2.6 installed-disk boots, SELATNS and CS4231 fixes, and the SS10/20 ASI 47 report.
 - [Loopback telnet serial](serial-tcp.md): IRIS-style nonblocking TCP serial consoles, CLI port flags and telnet filtering.
-- [User-mode NAT stage one](host-networking.md): ARP/RARP, DHCP, ICMP, UDP, DNS relay and TFTP ownership/subset decisions.
+- [Host networking](host-networking.md) covers the initial NAT implementation and the Ultra 5 OpenBoot RARP/TFTP regression.
 - [SPARCstation 20 and Axil 320](ss20-axil.md): high sun4m map, reference-MMU/IDPROM profiles, original-firmware `ok` bring-up and remaining POST diagnostics.
 - [x-windows.md](x-windows.md) — Solaris 2.6 X rendering: indexed FBC vertices, polygon coverage, trace replay and live desktop evidence.
 - [performance.md](performance.md) — MMU translation caches, device-time coalescing and frontend/SCSI throughput measurements.

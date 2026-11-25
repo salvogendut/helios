@@ -239,18 +239,21 @@ fn original_power_on_diagnostics_are_transmitted_only_when_enabled() {
     }
 }
 
-#[test]
-#[ignore = "requires original Ultra 5 OBP and a release build for the full boot"]
-fn original_obp_accepts_a_serial_command_after_the_normal_banner() {
-    // New battery-backed configuration. OBP restores its factory defaults,
-    // which select diagnostic net boot. BREAK after the banner enters the monitor.
+fn board_with_factory_net_boot() -> Ultra5ResetBoard {
+    // OBP restores the factory configuration and selects diagnostic net boot.
     let mut seed = vec![0; RESET_NVRAM_SIZE];
     seed[1] = 1;
     seed[0x10..0x18].copy_from_slice(b"soft-rst");
     seed[0x1fd8..0x1fe8].copy_from_slice(&[
         1, 0x80, 8, 0, 0x20, 0xc0, 0xff, 0xee, 0, 0, 0, 0, 0xc0, 0xff, 0xee, 0xa9,
     ]);
-    let mut board = Ultra5ResetBoard::new(original_flash(), ResetNvram::new(seed).unwrap());
+    Ultra5ResetBoard::new(original_flash(), ResetNvram::new(seed).unwrap())
+}
+
+#[test]
+#[ignore = "requires original Ultra 5 OBP and a release build for the full boot"]
+fn original_obp_accepts_a_serial_command_after_the_normal_banner() {
+    let mut board = board_with_factory_net_boot();
     let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
     let mut out = Vec::new();
     let mut steps = 0u64;
@@ -300,4 +303,55 @@ fn original_obp_accepts_a_serial_command_after_the_normal_banner() {
         "no completed ttya exchange after {steps} outcomes: {}",
         String::from_utf8_lossy(&out)
     );
+}
+
+#[test]
+#[ignore = "requires original Ultra 5 OBP and a release build for the full boot"]
+fn original_obp_executes_a_diskless_tftp_payload() {
+    use helios::net::{packet::EthernetFrame, NatConfig, NatEngine};
+    use std::{path::Path, time::Instant};
+
+    let mut board = board_with_factory_net_boot();
+    board.set_ethernet_link(true);
+    let mut cpu = V9Cpu::from(PowerOnReset::ultra_sparc_ii());
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/ultra5-fixture/tftp");
+    let mut nat = NatEngine::new(NatConfig {
+        tftp_dir: Some(root),
+        ..NatConfig::default()
+    });
+    let mut serial = Vec::new();
+    let mut final_ack = false;
+    let mut steps = 0;
+    while steps < 25_000_000_000 {
+        let end = steps + 2048;
+        while steps < end {
+            steps += board.step_or_repeat(&mut cpu, end - steps).unwrap();
+        }
+        let now = Instant::now();
+        while let Some(frame) = board.take_ethernet_frame() {
+            if let Some(udp) = EthernetFrame::parse(&frame)
+                .and_then(|eth| eth.ipv4())
+                .and_then(|ip| ip.udp())
+            {
+                final_ack |= udp.destination_port == 69 && udp.payload() == [0, 4, 0, 1];
+            }
+            nat.input(&frame, now);
+        }
+        nat.poll(now);
+        while let Some(frame) = nat.output() {
+            assert!(board.receive_ethernet_frame(&frame));
+        }
+        let [output, _] = board.take_serial_output();
+        if !output.is_empty() {
+            serial.extend(output);
+            if serial.ends_with(b"\nok ") {
+                break;
+            }
+        }
+    }
+    let text = String::from_utf8_lossy(&serial);
+    assert!(text.contains("\r\nHELIOS-ULTRA5-NETBOOT-42 \r\n"), "{text}");
+    assert!(text.ends_with("\nok "));
+    assert!(final_ack);
+    assert!(nat.stats().rarp_requests >= 1);
 }
