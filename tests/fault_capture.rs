@@ -411,6 +411,30 @@ fn cacheability_and_actual_cpu_mode_are_captured_independently_of_alternate_spac
 }
 
 #[test]
+fn user_fetch_and_load_capture_the_cpu_pin_inside_a_supervisor_host_context() {
+    let mut m = fixture();
+    m.cpu = Cpu::new(0);
+    m.bus.write32(0, 0x8188_2000).unwrap(); // wr %g0, 0, %psr
+    m.bus.write32(4, 0x0100_0000).unwrap(); // nop (fetch only)
+    m.bus.write32(8, 0xc400_6000).unwrap(); // ld [%g1], %g2
+    m.bus.write32(0x8000, 0x1357_9bdf).unwrap();
+    m.cpu.write_reg(1, 0x8000);
+    let caller = AccessContext::default();
+    assert!(caller.supervisor);
+    m.bus.set_access_context(caller);
+
+    m.step().unwrap();
+    assert_eq!(m.cpu.psr() & PSR_S, 0);
+    for expected_address in [4, 0x8000] {
+        m.step().unwrap();
+        assert_eq!(m.bus.read32(MFAR).unwrap(), expected_address);
+        assert_eq!(m.bus.read32(MFSR).unwrap() & 0x0180_0000, 0x0080_0000);
+        assert_eq!(m.bus.access_context(), caller);
+    }
+    assert_eq!(m.cpu.read_reg(2), 0x1357_9bdf);
+}
+
+#[test]
 fn table_walks_and_dma_requests_update_memory_capture_with_their_physical_addresses() {
     let mut m = fixture();
     mapping(&mut m, 0); // invalid L3 PTE

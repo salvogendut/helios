@@ -525,7 +525,7 @@ impl Cpu {
             }
         }
         let asi = if self.psr_control & PSR_S != 0 { 9 } else { 8 };
-        let instruction = match self.mmu.load(bus, self.pc, asi, Width::Word) {
+        let instruction = match self.mmu.load_in_context(bus, self.pc, asi, Width::Word) {
             Ok(word) => word,
             Err(error) => return self.handle_fault(None, Self::memory_fault(error, true)),
         };
@@ -702,7 +702,7 @@ impl Cpu {
             0x20 | 0x21 => {
                 let value = self
                     .mmu
-                    .load(bus, address, asi, Width::Word)
+                    .load_in_context(bus, address, asi, Width::Word)
                     .map_err(|error| Self::memory_fault(error, false))?;
                 let value = if little { value.swap_bytes() } else { value };
                 if op3 == 0x21 {
@@ -1215,7 +1215,7 @@ impl Cpu {
                 } else {
                     let value = self
                         .mmu
-                        .load(bus, address, asi, width)
+                        .load_in_context(bus, address, asi, width)
                         .map_err(|error| Self::memory_fault(error, false))?;
                     let value = if little {
                         match width {

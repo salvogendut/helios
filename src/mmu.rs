@@ -888,10 +888,14 @@ impl Srmmu {
         asi: u8,
         width: Width,
     ) -> Result<u32, MemoryError> {
-        self.scoped(bus, |this, bus| this.load_inner(bus, address, asi, width))
+        self.scoped(bus, |this, bus| {
+            this.load_in_context(bus, address, asi, width)
+        })
     }
 
-    fn load_inner(
+    /// The caller has installed this MMU's initiator and the supervisor pin on
+    /// the bus. A CPU step owns that context across its fetch and operand read.
+    pub(crate) fn load_in_context(
         &mut self,
         bus: &mut impl Bus,
         address: u32,

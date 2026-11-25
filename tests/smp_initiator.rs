@@ -1,4 +1,5 @@
-use helios::bus::{AccessContext, Bus, BusErrorKind, Initiator};
+use helios::bus::{AccessContext, Bus, BusError, BusErrorKind, Initiator};
+use helios::cpu::FaultKind;
 use helios::devices::nvram::Nvram;
 use helios::machine::{Machine, MachineProfile, ProcessorModuleState};
 use helios::mmu::Width;
@@ -42,6 +43,41 @@ fn mid_register(bus: &mut SystemBus, initiator: &mut ProcessorModuleState) -> u3
         .mmu
         .load(bus, MID_VA, 0x2f, Width::Word)
         .unwrap()
+}
+
+#[test]
+fn guest_scalar_load_uses_its_module_and_restores_the_caller_on_fault() {
+    let (mut cpu0, mut cpu2, mut bus) = pair(MachineProfile::Ss20);
+    let lda_mid = 0xc480_45e0; // lda [%g1] ASI 0x2f, %g2
+    bus.write32(0, lda_mid).unwrap();
+    bus.write32(4, lda_mid).unwrap();
+    let caller = AccessContext::dma(5);
+    bus.set_access_context(caller);
+
+    for (module, expected_mid) in [(&mut cpu0, 8), (&mut cpu2, 10)] {
+        let cpu = &mut module.cpu;
+        cpu.mmu.store(&mut bus, 0, 4, Width::Word, 0).unwrap(); // fetch from RAM
+        cpu.write_reg(1, MID_VA);
+        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.read_reg(2), expected_mid);
+        assert_eq!(bus.access_context(), caller);
+
+        cpu.write_reg(1, MID_VA + 1);
+        let fault = cpu.step(&mut bus).unwrap_err();
+        assert_eq!(
+            (fault.pc, fault.npc, fault.instruction),
+            (4, 8, Some(lda_mid))
+        );
+        assert_eq!(
+            fault.kind,
+            FaultKind::DataAccess(BusError {
+                kind: BusErrorKind::Misaligned,
+                address: u64::from(MID_VA + 1),
+            })
+        );
+        assert_eq!(cpu.read_reg(2), expected_mid);
+        assert_eq!(bus.access_context(), caller);
+    }
 }
 
 #[test]

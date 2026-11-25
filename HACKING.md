@@ -127,8 +127,11 @@ bus remains responsible only for physical mappings and device access.
 Every bus access carries an `AccessContext`: an `Initiator` (`Cpu` with the
 actual `ProcessorModule`, `Dma { master }`, or `Host`) and the actual supervisor
 pin. CPU steps and DMA transfers save the previous context, set their own for
-the complete top-level operation and restore it on success or error. MMU page
-walks, fault capture and nested MXCC stream transfers inherit that context, so
+the complete top-level operation and restore it on success or error. The V8
+interpreter reuses its step context for instruction fetches and scalar operand
+loads. When called directly, `Srmmu::load` installs the MMU's initiator and
+preserves the caller's supervisor pin. MMU page walks, fault capture and
+nested MXCC stream transfers inherit that context, so
 identity/privilege cannot leak between CPU-0, CPU-2, DMA and debug accesses.
 `Srmmu` stores its owning module identity; `Cpu::reset_sun4m` and
 `use_mmu_config` preserve it. Direct `Bus` calls outside a scoped operation use

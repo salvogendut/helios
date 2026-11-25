@@ -46,14 +46,39 @@ were identified from the disassembly of the measured executable. Its MMU
 wrapper symbols also contain inlined memory operations. Counting the whole
 wrappers would attribute 14.32% to context management.
 
-The next experiment is to let instruction fetches and ordinary CPU loads
-enter the existing scalar load implementation directly when the enclosing
-CPU step has already installed its bus context. Keep
-standalone MMU entry points scoped and check CPU 0/2 identity, supervisor
-state, faults and context restoration across nested MXCC and DMA accesses.
-Repeat the paired SS-20 512-byte read measurement before accepting the
-change. Any wall-time gain needs a paired measurement.
-
 The local harness, phase timings, final comparisons, profile, executable
 hashes and instruction-range attribution are under
 `local/sun4m-integration-2026-11-25-XvSmtPP4/`.
+
+## Reusing the CPU step's bus context
+
+The V8 interpreter already installs the issuing CPU's identity and supervisor
+pin for the entire instruction. Instruction fetches and scalar operand loads
+can enter the existing MMU load implementation under that context. Direct
+calls to `Srmmu::load` still establish their own scope. Tests execute a
+guest load of the MID register on CPUs 0 and 2, check restoration of an
+enclosing DMA context on success and misalignment, and use SS-5 memory
+capture registers to verify the supervisor pin on a user fetch and load.
+
+Two fresh release builds compared `02bc759` with the context change on
+the same single-CPU SS-20/SX and Solaris 2.6 workload described above.
+
+| SS-20 workload | Main | Reused context | Wall time saved |
+| --- | ---: | ---: | ---: |
+| Kernel banner to root shell, one boot per build | 64.645 s | 54.308 s | 16.0% |
+| 2 MiB raw read, 512 B requests, four-run median | 4.298 s | 3.743 s | 12.9% |
+| 2 MiB raw read, 8 KiB requests, four-run median | 0.614 s | 0.531 s | 13.4% |
+
+The small reads used 4.285 s and 3.725 s median worker CPU time. All four
+paired wall times improved at each read size, including both execution
+orders. Both guests reached the root shell and synced and halted at OBP
+after 1,463,350,000 outcomes. All checkpoint counters, virtual time and
+PC/nPC matched. The serial transcripts, NVRAM and final diagnostic snapshots
+also matched after sorting the two diagnostic maps for comparison.
+The measurements cover the SS-20. The change also applies to the SS-5
+and Axil interpreter paths. Validation passed 1,039 default and 1,042
+`perf-counters` test executions, including the isolated MXCC child run.
+Each configuration had 23 ignored tests. Formatting, both all-target Clippy
+checks with warnings denied, and all four demos passed. Build hashes, phase
+records and validation logs are in
+`local/sun4m-load-context-2026-11-25-jkXNFb0c/`.

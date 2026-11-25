@@ -1,6 +1,6 @@
 # Agent notes
 
-- [Combined sun4m performance on Solaris](sun4m-integrated-performance.md) compares the four interpreter changes with the previous main and profiles small SS-20 disk reads.
+- [Combined sun4m performance on Solaris](sun4m-integrated-performance.md) covers the four merged changes, the SS-20 small-read profile and the measured effect of reusing the CPU step's bus context.
 
 - [sun4m interrupt and timer bank lookup](sun4m-processor-bank-performance.md) records the Solaris and SCSI comparisons for direct processor-bank indexing.
 
