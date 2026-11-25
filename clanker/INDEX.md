@@ -1,5 +1,7 @@
 # Agent notes
 
+- [Combined sun4m performance on Solaris](sun4m-integrated-performance.md) compares the four interpreter changes with the previous main and profiles small SS-20 disk reads.
+
 - [sun4m interrupt and timer bank lookup](sun4m-processor-bank-performance.md) records the Solaris and SCSI comparisons for direct processor-bank indexing.
 
 - [SS-5 sparse TLB lookup](ss5-tlb-search.md) records the Solaris boot and disk-read comparison, locked-slot tests and dense-table controls.
