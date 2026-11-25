@@ -593,3 +593,34 @@ fn temp_dir(tag: &str) -> PathBuf {
     fs::create_dir_all(&path).unwrap();
     path
 }
+
+#[test]
+fn tcp_to_gateway_reports_the_compiled_relay_policy() {
+    use helios::net::packet::{pseudo_checksum, PROTO_TCP};
+    let mut syn = [0u8; 20];
+    syn[..2].copy_from_slice(&4100u16.to_be_bytes());
+    syn[2..4].copy_from_slice(&80u16.to_be_bytes());
+    syn[4..8].copy_from_slice(&10u32.to_be_bytes());
+    syn[12] = 0x50;
+    syn[13] = 0x02;
+    let sum = pseudo_checksum(GUEST_IP, GATEWAY_IP, PROTO_TCP, &syn);
+    syn[16..18].copy_from_slice(&sum.to_be_bytes());
+    let mut net = NatEngine::new(config());
+    net.input(
+        &guest_ip_frame(GUEST_IP, GATEWAY_IP, PROTO_TCP, &syn, GATEWAY_MAC),
+        Instant::now(),
+    );
+    let frame = net.output().unwrap();
+    let reply = EthernetFrame::parse(&frame).unwrap().ipv4().unwrap();
+    assert_eq!((reply.source, reply.destination), (GATEWAY_IP, GUEST_IP));
+    if cfg!(feature = "host-tcp") {
+        assert_eq!(reply.protocol, PROTO_TCP);
+        assert_eq!(reply.payload()[13], 0x14);
+        assert_eq!(&reply.payload()[8..12], &11u32.to_be_bytes());
+        assert_eq!(net.stats().tcp_segments, 1);
+    } else {
+        assert_eq!(reply.protocol, PROTO_ICMP);
+        assert_eq!(&reply.payload()[..2], &[3, 2]);
+        assert_eq!(net.stats().unsupported_tcp, 1);
+    }
+}

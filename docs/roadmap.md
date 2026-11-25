@@ -97,5 +97,6 @@ Cold and soft-reset runs reach the same entry with diagnostics enabled or disabl
 | Installed Solaris 7 | The installer writes the disk label, filesystems, packages and boot blocks. After a clean halt, OpenBoot starts the installed kernel from IDE unit 0 with the CD removed. |
 | Graphical login | Heliacal displays the installed Solaris CDE greeter on the Mach64 with a username field and a working Sun keyboard. |
 | Onboard Ethernet | Installed Solaris 7 brings up `hme0` on the Ultra 5. In Heliacal it receives three replies from the NAT gateway at `192.168.0.1` with zero packet loss. |
+| Guest network transfers | Solaris 7 obtains a DHCP lease, resolves a controlled DNS name through the gateway, and downloads the same 1 MiB file over TFTP and outbound HTTP. Both copies match the host checksum. |
 
 [Boot the installed Ultra 5](ultra5.md#boot-the-installed-solaris-7-system)

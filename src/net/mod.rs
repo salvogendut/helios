@@ -4,17 +4,18 @@
 //! frontend hands it guest frames, calls `poll` with host time, and injects the
 //! returned frames into the controller. The engine implements ARP
 //! and RARP, BOOTP/DHCP, ICMP echo, UDP NAT with DNS relaying, and a
-//! read-only TFTP server. TCP NAT and host port forwards are explicit later
-//! stages; TCP packets are counted and dropped.
+//! read-only TFTP server. The optional host-tcp feature relays outbound TCP.
 
 mod icmp;
 pub mod packet;
+#[cfg(feature = "host-tcp")]
+mod tcp;
 mod tftp;
 
 use crate::net::packet::{
-    arp_packet, ether_frame, icmp_echo_reply, icmp_echo_request_valid, icmp_protocol_unreachable,
-    ipv4_packet, ipv4_udp_fragments, EthernetFrame, Ipv4, MacAddr, Udp, BROADCAST_MAC,
-    ETHERTYPE_ARP, ETHERTYPE_IPV4, ETHERTYPE_RARP, PROTO_ICMP, PROTO_TCP, PROTO_UDP,
+    arp_packet, ether_frame, icmp_echo_reply, icmp_echo_request_valid, ipv4_packet,
+    ipv4_udp_fragments, EthernetFrame, Ipv4, MacAddr, Udp, BROADCAST_MAC, ETHERTYPE_ARP,
+    ETHERTYPE_IPV4, ETHERTYPE_RARP, PROTO_ICMP, PROTO_TCP, PROTO_UDP,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -98,7 +99,9 @@ pub struct NatStats {
     pub dns_queries: u64,
     pub tftp_datagrams: u64,
     pub dropped: u64,
-    /// IPv4 TCP packets: TCP NAT is a later stage.
+    /// Guest TCP segments handled by the outbound relay.
+    pub tcp_segments: u64,
+    /// TCP packets rejected by builds without the host-tcp feature.
     pub unsupported_tcp: u64,
     /// Fragmented guest IPv4 packets: reassembly is not implemented.
     pub unsupported_fragments: u64,
@@ -140,6 +143,8 @@ pub struct NatEngine {
     udp: HashMap<UdpKey, UdpFlow>,
     dns: HashMap<DnsKey, DnsFlow>,
     icmp: icmp::Relay,
+    #[cfg(feature = "host-tcp")]
+    tcp: tcp::Relay,
     tftp: Option<TftpServer>,
     output: std::collections::VecDeque<Vec<u8>>,
     ip_id: u16,
@@ -157,6 +162,8 @@ impl NatEngine {
             udp: HashMap::new(),
             dns: HashMap::new(),
             icmp: icmp::Relay::default(),
+            #[cfg(feature = "host-tcp")]
+            tcp: tcp::Relay::default(),
             output: std::collections::VecDeque::new(),
             ip_id: 0,
             stats: NatStats::default(),
@@ -214,6 +221,12 @@ impl NatEngine {
         for echo in echoes.replies {
             self.reply_ipv4(echo.mac, echo.remote, echo.guest, PROTO_ICMP, &echo.payload);
             self.stats.icmp_replies += 1;
+        }
+        #[cfg(feature = "host-tcp")]
+        {
+            let mut replies = Vec::new();
+            self.tcp.poll(now, &mut replies);
+            self.emit_tcp(replies);
         }
         self.poll_udp(now);
         self.poll_dns(now);
@@ -338,9 +351,27 @@ impl NatEngine {
                 self.handle_udp(ethernet, &ip, &udp, now);
             }
             PROTO_ICMP => self.handle_icmp(ethernet, &ip, now),
+            #[cfg(feature = "host-tcp")]
+            PROTO_TCP => {
+                let mut replies = Vec::new();
+                if self.tcp.input(
+                    ethernet.source(),
+                    &ip,
+                    ethernet.payload(),
+                    self.config.gateway_ip,
+                    now,
+                    &mut replies,
+                ) {
+                    self.stats.tcp_segments += 1;
+                } else {
+                    self.stats.dropped += 1;
+                }
+                self.emit_tcp(replies);
+            }
+            #[cfg(not(feature = "host-tcp"))]
             PROTO_TCP => {
                 self.stats.unsupported_tcp += 1;
-                let unreachable = icmp_protocol_unreachable(ethernet.payload());
+                let unreachable = packet::icmp_protocol_unreachable(ethernet.payload());
                 self.reply_ipv4(
                     ethernet.source(),
                     self.config.gateway_ip,
@@ -350,6 +381,18 @@ impl NatEngine {
                 );
             }
             _ => {}
+        }
+    }
+
+    #[cfg(feature = "host-tcp")]
+    fn emit_tcp(&mut self, replies: Vec<(MacAddr, Vec<u8>)>) {
+        for (mac, packet) in replies {
+            self.emit(ether_frame(
+                mac,
+                self.config.gateway_mac,
+                ETHERTYPE_IPV4,
+                &packet,
+            ));
         }
     }
 

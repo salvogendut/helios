@@ -33,6 +33,11 @@ server and implies `--net`. The chosen addresses and TFTP root are printed to
 stderr, and a frame/request summary is printed when the step budget ends the
 run. `--serial-in` and telnet serial consoles are independent.
 
+Heliacal enables outbound IPv4 TCP for both `le0` and `hme0`. In the
+headless CLI, build with `--features host-tcp` and pass `--net`. The guest
+uses the remote server's real IPv4 address and port and a default route
+through the gateway. The host must also have a route to the server.
+
 Gateway ping works in every build. External IPv4 echo also needs a Linux host
 and the optional `host-icmp` feature (enabled by Heliacal):
 
@@ -100,14 +105,21 @@ These are guest configuration steps; Heliacal does not rewrite guest files.
   configured root (`/name` is relative to the root, `..` and symlink escapes
   are rejected). BOOTP names a requested boot file only if it exists under that
   root.
-- Replies larger than one Ethernet MTU are fragmented at 8-byte boundaries.
+- UDP replies larger than one Ethernet MTU are fragmented at 8-byte boundaries.
   Ethernet frames are padded to the 60-byte minimum.
+- Outbound TCP uses a nonblocking host stream per connection. Once the host
+  connects, smoltcp accepts the guest handshake and handles segmentation,
+  retransmission, window updates and half-closes. The proxy allows 32
+  pending and established connections combined. Each established flow has
+  16 KiB of buffering in each direction. Connects time out after eight host
+  seconds and idle flows expire after five host minutes.
 
 ## Explicit limits
 
-- TCP NAT and host-to-guest port forwards are later stages. TCP packets are
-  counted, dropped, and answered with ICMP protocol-unreachable so guest
-  connection attempts fail instead of hanging.
+- TCP accepts guest-initiated connections to remote unicast addresses.
+  Host loopback, services on the virtual gateway and inbound port forwards
+  are outside the relay. Builds without `host-tcp` answer TCP with ICMP
+  protocol-unreachable.
 - External ICMP support is IPv4 echo only. ICMP error translation, traceroute,
   IPv6 and guest fragment reassembly are not implemented. Echo data is limited
   to 1472 bytes (the 1500-byte Ethernet MTU minus IP/ICMP headers). External
@@ -119,10 +131,21 @@ These are guest configuration steps; Heliacal does not rewrite guest files.
 - Only one guest identity is configured. TFTP transfer memory is bounded by a
   32 MiB file limit; a slow or stalled transfer expires after five unanswered
   retransmissions.
-- NAT is functional, not a security boundary. It opens host UDP and, when
-  enabled, ICMP sockets to destinations the guest requests.
+- The NAT uses the host's networking permissions for UDP and for enabled
+  TCP and ICMP sockets.
 
 ## Validation
+
+On an Ultra 5 running installed Solaris 7, `ifconfig hme0 auto-dhcp status`
+reported `BOUND`, and `nslookup netcheck.test 192.168.0.1` returned the
+controlled DNS answer. In single-user mode the initial 40-second DHCP
+command timed out before the lease status was checked. The routing table
+had no default route, so the HTTP check added `192.168.0.1` as the router.
+Solaris downloaded a 1 MiB binary by TFTP and by
+HTTP/1.0 from a server on an isolated host network. Both guest files had
+the host's POSIX `cksum` of `3038018214 1048576`.
+An independent download through Heliacal's graphical Solaris console produced
+the same checksum on a fresh disk clone and halted cleanly.
 
 `tests/net.rs` covers ARP, RARP, DHCP offer/ack, BOOTP boot-file naming, ICMP
 echo, UDP NAT against a local socket, DNS relay source-address rewriting, TFTP
@@ -140,6 +163,10 @@ cargo test --features host-icmp --test net host_icmp_loopback -- --ignored
 ```
 
 ## Sources
+
+- The guest TCP endpoint uses smoltcp 0.11. Closed connections follow the
+  reset sequence rules in RFC 9293 §3.10.7.1.
+  [smoltcp TCP socket](https://docs.rs/smoltcp/0.11.0/smoltcp/socket/tcp/struct.Socket.html) · [RFC 9293](https://www.rfc-editor.org/rfc/rfc9293.html#section-3.10.7.1)
 
 - [RFC 792](https://www.rfc-editor.org/rfc/rfc792.html): echo request/reply fields,
   payload preservation and checksums.

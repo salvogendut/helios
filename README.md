@@ -96,8 +96,8 @@ the earlier serial boot's timecounter-backwards warning remains unresolved.
 
 The implemented foundation includes:
 
-- A Rust library and headless CLI, dependency-free by default; optional CHD
-  storage and Linux host ICMP echo.
+- A Rust library and headless CLI, dependency-free by default, with optional
+  CHD storage, outbound IPv4 TCP and Linux host ICMP echo.
 - An optional native framebuffer window, CGsix indexed VRAM/palette/cursor,
   SS-20 SX/CG14 scanout and an SX instruction subset, console drawing operations
   and a Sun keyboard/mouse on the second SCC.
@@ -305,9 +305,9 @@ banks are rejected. SS-20/CGsix Solaris console boot also requires excluding
 the unimplemented DBRI slot with `setenv sbus-probe-list f0123` in OBP. See
 [machine configuration](docs/machines.md#ss-20-cgsix-console-configuration).
 
-For external IPv4 ping, build on Linux with `--features host-icmp`; Heliacal
-enables this feature. Gateway ping needs no optional feature. TCP NAT and host
-port forwards are not implemented yet. See
+For outbound IPv4 TCP, build the CLI with `--features host-tcp` and enable
+`--net`. External IPv4 ping on Linux uses `host-icmp`. Heliacal builds in
+both features and uses its existing **Host networking** setting. See
 [host networking](docs/networking.md).
 
 `boot` installs the SS-5 bank layout and a read-only 1 MiB PROM aperture at `0x70000000`, starts

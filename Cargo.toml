@@ -14,13 +14,16 @@ jit = []
 jit-native = ["jit", "dep:helios-jit-native"]
 chd = ["dep:libchdman-rs"]
 host-icmp = ["dep:socket2"]
+host-tcp = ["dep:smoltcp", "dep:socket2", "dep:libc"]
 
 [dependencies]
 libchdman-rs = { version = "=0.289.5", optional = true }
 helios-jit-native = { path = "jit-native", optional = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
+smoltcp = { version = "=0.11.0", optional = true, default-features = false, features = ["std", "medium-ip", "proto-ipv4", "socket-tcp"] }
 socket2 = { version = "=0.6.5", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }
 
 [lints.rust]
 unsafe_code = "forbid"

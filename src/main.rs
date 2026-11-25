@@ -82,7 +82,7 @@ unpartitioned disk without overwriting files; --size-mib is a positive integer.
 mask 255.255.255.0, DHCP/RARP, DNS relay and UDP). --net-gateway, --net-client,
 --net-mask and --net-dns override its addresses. --tftp-dir adds the read-only
 TFTP server for network boot. External IPv4 echo uses Linux unprivileged ping
-sockets when built with --features host-icmp. TCP NAT is not implemented yet.
+sockets when built with --features host-icmp. Outbound IPv4 TCP requires --features host-tcp.
 Fast clocks are the default: 100 ns per completed step (10 MHz functional
 timebase), reducing interpreted work during guest timer waits. --accurate-clocks
 selects profile rates: SS-5 85 MHz, SS-20/Axil 75 MHz per CPU, with fractional
@@ -357,7 +357,7 @@ fn execute(
     if let Some(net) = network {
         let stats = net.stats();
         eprintln!(
-            "Host NAT: {} guest frames, {} host frames, {} ARP, {} RARP, {} BOOTP, {} local ICMP, {}/{}/{} relayed ICMP sent/replies/errors, {} ICMP timeouts, {} UDP, {} DNS, {} TFTP, {} dropped, {} unsupported TCP",
+            "Host NAT: {} guest frames, {} host frames, {} ARP, {} RARP, {} BOOTP, {} local ICMP, {}/{}/{} relayed ICMP sent/replies/errors, {} ICMP timeouts, {} UDP, {} DNS, {} TFTP, {} TCP segments, {} dropped, {} unsupported TCP",
             stats.guest_frames,
             stats.host_frames,
             stats.arp_requests,
@@ -371,6 +371,7 @@ fn execute(
             stats.udp_requests,
             stats.dns_queries,
             stats.tftp_datagrams,
+            stats.tcp_segments,
             stats.dropped,
             stats.unsupported_tcp
         );
@@ -574,7 +575,7 @@ fn execute_scheduled(
     if let Some(net) = network {
         let stats = net.stats();
         eprintln!(
-            "Host NAT: {} guest frames, {} host frames, {} ARP, {} RARP, {} BOOTP, {} local ICMP, {}/{}/{} relayed ICMP sent/replies/errors, {} ICMP timeouts, {} UDP, {} DNS, {} TFTP, {} dropped, {} unsupported TCP",
+            "Host NAT: {} guest frames, {} host frames, {} ARP, {} RARP, {} BOOTP, {} local ICMP, {}/{}/{} relayed ICMP sent/replies/errors, {} ICMP timeouts, {} UDP, {} DNS, {} TFTP, {} TCP segments, {} dropped, {} unsupported TCP",
             stats.guest_frames,
             stats.host_frames,
             stats.arp_requests,
@@ -588,6 +589,7 @@ fn execute_scheduled(
             stats.udp_requests,
             stats.dns_queries,
             stats.tftp_datagrams,
+            stats.tcp_segments,
             stats.dropped,
             stats.unsupported_tcp
         );
