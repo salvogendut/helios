@@ -191,7 +191,7 @@ impl Pbm {
 
     pub(super) fn pending_vector(&self) -> Option<u8> {
         // The serial and keyboard sources outrank the IDE interrupt.
-        [0x2b, 0x29, 0x2a, 0x27, 0x20]
+        [0x2b, 0x29, 0x2a, 0x27, 0x21, 0x20]
             .into_iter()
             .find(|&ino| {
                 self.enabled & (1u64 << ino) != 0

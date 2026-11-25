@@ -42,9 +42,10 @@ test rather than assuming either emulator defines the hardware.
 - The hardware cursor uses two bits per pixel, a 16-byte row stride and an
   origin measured in eight-byte units. The driver advances the base for rows
   clipped above the display. [Linux ATI cursor driver](https://github.com/torvalds/linux/blob/v6.12/drivers/video/fbdev/aty/mach64_cursor.c)
-- The HME global reset, transmit/receive configuration, MIF frame interface
-  and Clause 22 PHY registers support Solaris device discovery with the link
-  down. [Sun HME register definitions](https://github.com/torvalds/linux/blob/v6.12/drivers/net/ethernet/sun/sunhme.h)
+- The PCI HME uses little-endian descriptor words, wire-order packet bytes,
+  separate transmit and receive rings, and an active-low interrupt mask.
+  The Ultra 5 device tree routes its interrupt to onboard INO `0x21`.
+  [Linux HME register definitions](https://github.com/torvalds/linux/blob/v6.12/drivers/net/ethernet/sun/sunhme.h) · [NetBSD descriptor handling](https://github.com/NetBSD/src/blob/trunk/sys/dev/ic/hme.c) · [QEMU HME](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/hw/net/sunhme.c) · [Ultra 5 device tree](https://rob.com/sun/sun4u-ss5/)
 
 ## Ultra 5 optical drive
 

@@ -106,7 +106,7 @@ cargo test --release --locked --offline --test ultra5_first_serial_access \
 ```
 
 The firmware enumerates EBus, Ethernet, Mach64 and CMD646 IDE on Simba B and
-reports empty slots on Simba A. Ethernet supports the MIF probe. Mach64
+reports empty slots on Simba A. OpenBoot probes the onboard HME PHY. Mach64
 supports firmware register and video-memory accesses.
 
 At the `ok` prompt, use `show-devs` to list the firmware device tree or
@@ -136,6 +136,24 @@ instruction translation once. A recognized countdown can advance to the
 nearest device deadline within the caller's budget. The usual single step
 uses the same translation if the instruction cannot be batched. Callers that
 need the individual trap or instruction record can use `step_outcome`.
+
+## Ethernet in Solaris
+
+The onboard PCI Happy Meal Ethernet controller appears as `hme0`.
+Heliacal connects it to its user-mode NAT when **F9 → Network → Host
+networking** is on. Save the setting and cold-reset the machine with **F5**
+if it was already running. To configure a fresh interface as root:
+
+```sh
+/usr/sbin/ifconfig hme0 plumb
+/usr/sbin/ifconfig hme0 192.168.0.2 netmask 255.255.255.0 up
+/usr/sbin/ping -s -n 192.168.0.1 56 3
+```
+
+Skip the first command if `ifconfig -a` already lists `hme0`. The gateway
+answers locally. To reach addresses outside the subnet, add a default route
+with `/usr/sbin/route add default 192.168.0.1` if one is needed.
+[Host networking](networking.md) describes the available protocols.
 
 ## Attach a Solaris installation CD
 

@@ -1,8 +1,8 @@
-//! Host-side user-mode NAT for the SS5 Ethernet endpoint.
+//! Host-side user-mode NAT for the sun4m and Ultra 5 Ethernet controllers.
 //!
 //! The engine owns no emulation state and runs on the frontend's thread: the
 //! frontend hands it guest frames, calls `poll` with host time, and injects the
-//! returned frames through `Ethernet::receive_frame`. Stage one implements ARP
+//! returned frames into the controller. The engine implements ARP
 //! and RARP, BOOTP/DHCP, ICMP echo, UDP NAT with DNS relaying, and a
 //! read-only TFTP server. TCP NAT and host port forwards are explicit later
 //! stages; TCP packets are counted and dropped.

@@ -30,7 +30,8 @@ The **Ultra 5** boots Solaris 7 11/99 from a dedicated 4 GiB IDE disk.
 Heliacal runs the installed system’s CDE desktop on the onboard Mach64.
 Root login reaches the front panel, File Manager and Help Viewer through
 Xsun. The verified installation uses the 32-bit sun4u kernel, one
-440 MHz UltraSPARC-IIi and 512 MiB of RAM.
+440 MHz UltraSPARC-IIi and 512 MiB of RAM. Heliacal connects the onboard
+Happy Meal Ethernet controller to its NAT gateway. [Configure Solaris `hme0`](docs/ultra5.md#ethernet-in-solaris)
 
 Original OpenBoot 3.31 also runs on serial A or the 1152×900 graphical
 console. With `auto-boot?` disabled, the firmware enters `ok` directly.

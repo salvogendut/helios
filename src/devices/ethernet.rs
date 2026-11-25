@@ -437,7 +437,7 @@ impl Ethernet {
 
 // Ethernet's reflected CRC, before the final complement. The same CRC
 // feeds the multicast hash and the FCS appended at the packet boundary.
-fn crc(bytes: &[u8]) -> u32 {
+pub(crate) fn crc(bytes: &[u8]) -> u32 {
     let mut value = u32::MAX;
     for byte in bytes {
         value ^= u32::from(*byte);

@@ -124,6 +124,9 @@ impl PciFunction {
         self.header[0x72] &= !1;
         self.header[0x72] |= 4 | (u8::from(failed) << 1);
     }
+    pub(super) fn master_enabled(&self) -> bool {
+        self.header[4] & 4 != 0
+    }
     pub(super) fn memory_enabled(&self) -> bool {
         self.header[4] & 2 != 0
     }

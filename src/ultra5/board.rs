@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod countdown_tests;
+mod hme_dma;
 
 use super::dram::Dram;
 use super::keyboard_uart::KeyboardUart;
@@ -56,7 +57,7 @@ pub struct Ultra5ResetBoard {
     disk: Option<super::ata::Disk>,
     dma_writes: Vec<(u64, usize)>,
     cdrom: Option<super::atapi::Cdrom>,
-    hme: super::hme::Mif,
+    hme: super::hme::Hme,
     display: super::mach64::Mach64,
     audio: crate::devices::cs4231::Cs4231,
     floppy_aux: u32,
@@ -341,6 +342,9 @@ impl Ultra5ResetBoard {
         if self.mouse_uart.interrupt(self.elapsed_ns) {
             self.pbm.assert_onboard(0x2a);
         }
+        if self.hme.interrupt() {
+            self.pbm.assert_onboard(0x21);
+        }
         if self.serial.interrupt() {
             self.pbm.assert_onboard(0x2b);
         }
@@ -398,7 +402,9 @@ impl Ultra5ResetBoard {
         if let Some(drive) = &mut self.cdrom {
             drive.bus_reset();
         }
+        let link = self.hme.link;
         self.hme = Default::default();
+        self.hme.link = link;
         let generation = self.display.generation.wrapping_add(1);
         self.display = Default::default();
         self.display.generation = generation;
@@ -1148,6 +1154,12 @@ impl V9DataBus for Ultra5ResetBoard {
                 .write_at(off, value.to_be_bytes(), self.elapsed_ns);
         }
         if let Some(off) = self.onboard_mem_offset(1, pa, 0x8000) {
+            if off == 0x2000 {
+                if value.swap_bytes() & 1 != 0 {
+                    self.hme_transmit();
+                }
+                return Ok(());
+            }
             return self
                 .hme
                 .write(off, value.swap_bytes())

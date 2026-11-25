@@ -1,10 +1,10 @@
 # Host networking
 
-Helios can attach a user-mode NAT to each machine's NCR92C990 Ethernet endpoint.
-The engine is host code outside the emulation core: the frontend drains guest
-frames with `Ethernet::take_frame`, calls `NatEngine::input`, polls host sockets
-with `NatEngine::poll`, and injects returned frames with
-`Ethernet::receive_frame`. The CLI does this after every completed CPU step.
+Heliacal connects user-mode NAT to the sun4m NCR92C990 (`le0`) or the
+Ultra 5 PCI HME (`hme0`). The frontend drains transmitted frames into
+`NatEngine::input`, polls host sockets with `NatEngine::poll`, and delivers
+replies to the controller's receive path. The sun4m CLI services its
+Ethernet endpoint after every completed CPU step.
 Host time is supplied by the caller; emulator device time does not depend on
 host scheduling or network activity.
 
