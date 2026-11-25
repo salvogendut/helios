@@ -1,5 +1,7 @@
 # Agent notes
 
+- [sun4m interrupt and timer bank lookup](sun4m-processor-bank-performance.md) records the Solaris and SCSI comparisons for direct processor-bank indexing.
+
 - [SS-5 sparse TLB lookup](ss5-tlb-search.md) records the Solaris boot and disk-read comparison, locked-slot tests and dense-table controls.
 
 - [SS-5, SS-20 and Axil RAM access performance](sun4m-dram-performance.md) covers direct DSIMM lookup, Solaris kernel and filesystem comparisons, and the ESP/DMA control.

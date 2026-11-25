@@ -13,6 +13,7 @@ pub mod keyboard;
 pub mod mouse;
 pub mod mxcc;
 pub mod nvram;
+mod processor_banks;
 pub mod reset;
 pub mod scsi;
 pub mod scsi_dma;

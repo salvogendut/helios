@@ -10,12 +10,11 @@ boot evidence and remaining gaps.
 
 The default SS-5 and SS-20/Axil machines install only the processor-0 bank.
 SS-20/Axil can install a second bank for hardware processor 2, which is the
-second MBus module. Hardware processor numbers are not compact vector indexes:
-processor 2 uses timer/interrupt offsets `+0x2000`, and its timer mode bit is
-bit 2. On SS-20/Axil, banks 1 and 3 remain absent zero windows. Production
-execution still uses one CPU. The explicit two-module scheduler feeds each CPU
-its own bank; each CPU has an independent deadline and the shared device clock
-advances to the earliest next eligible deadline, not once per CPU event.
+second MBus module. Each controller indexes its four possible banks by hardware
+processor number. Processor 2 uses timer/interrupt offsets `+0x2000` and timer
+mode bit 2. On SS-20/Axil, banks 1 and 3 read as zero. The two-module scheduler
+feeds each CPU its own bank and advances the shared device clock to the earliest
+eligible CPU deadline.
 Standalone timer/controller helpers accept hardware numbers 0–3; the machine
 installation API enforces the supported profile population.
 

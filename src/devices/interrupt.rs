@@ -1,13 +1,11 @@
 //! Per-processor NCR89C105 interrupt controller. See docs/interrupts-timers.md.
+use super::processor_banks::ProcessorBanks;
 use crate::bus::BusErrorKind;
-use std::collections::BTreeMap;
 
 pub const MASK_ALL: u32 = 1 << 31;
 pub const MASK_BITS: u32 = 0xf05d_ff80;
 const SOFT_BITS: u32 = 0xfffe_0000;
 pub const MODULE_ERROR: u32 = 1 << 30;
-// Sun-4M processor numbers occupy the two-bit TARGET field (§5.7.2).
-const MAX_HARDWARE_PROCESSOR: u8 = 3;
 
 /// Target-register policy selected by the machine profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,7 +54,7 @@ pub struct InterruptController {
     mask: u32,
     target: u8,
     policy: TargetPolicy,
-    banks: BTreeMap<u8, Bank>,
+    banks: ProcessorBanks<Bank>,
 }
 
 impl Default for InterruptController {
@@ -74,7 +72,7 @@ impl InterruptController {
             mask: MASK_BITS,
             target: 0,
             policy,
-            banks: BTreeMap::new(),
+            banks: ProcessorBanks::default(),
         };
         controller.install_processor(0);
         controller
@@ -99,28 +97,22 @@ impl InterruptController {
     /// The number is not a dense module-vector index: slot 1 uses MID 10 and
     /// hardware processor 2.
     pub fn install_processor(&mut self, processor: u8) -> bool {
-        if processor > MAX_HARDWARE_PROCESSOR || self.policy == TargetPolicy::Ncr && processor != 0
-        {
+        if self.policy == TargetPolicy::Ncr && processor != 0 {
             return false;
         }
-        let inserted = if let std::collections::btree_map::Entry::Vacant(entry) =
-            self.banks.entry(processor)
-        {
-            entry.insert(Bank::default());
-            true
-        } else {
-            false
-        };
-        self.refresh();
-        inserted
+        let installed = self.banks.install(processor);
+        if installed {
+            self.refresh();
+        }
+        installed
     }
 
     pub fn processors(&self) -> impl Iterator<Item = u8> + '_ {
-        self.banks.keys().copied()
+        self.banks.iter().map(|(processor, _)| processor)
     }
 
     pub fn contains_processor(&self, processor: u8) -> bool {
-        self.banks.contains_key(&processor)
+        self.banks.get(processor).is_some()
     }
 
     pub(crate) fn latch_module_error(&mut self) {
@@ -142,7 +134,7 @@ impl InterruptController {
                 self.sources |= MODULE_ERROR;
                 let capture = !self.is_mbus() || self.mask & MODULE_ERROR == 0;
                 if capture {
-                    for bank in self.banks.values_mut() {
+                    for (_, bank) in self.banks.iter_mut() {
                         bank.level15_sources |= MODULE_ERROR;
                     }
                 }
@@ -150,7 +142,7 @@ impl InterruptController {
         } else {
             self.sources &= !MODULE_ERROR;
             if !self.is_mbus() {
-                for bank in self.banks.values_mut() {
+                for (_, bank) in self.banks.iter_mut() {
                     bank.level15_sources &= !MODULE_ERROR;
                 }
             }
@@ -160,16 +152,16 @@ impl InterruptController {
 
     fn clear_level15(&mut self) {
         self.sources &= !MODULE_ERROR;
-        for bank in self.banks.values_mut() {
+        for (_, bank) in self.banks.iter_mut() {
             bank.level15_sources = 0;
         }
     }
 
     fn acknowledge_level15(&mut self, processor: u8) {
-        if let Some(bank) = self.banks.get_mut(&processor) {
+        if let Some(bank) = self.banks.get_mut(processor) {
             bank.level15_sources = 0;
         }
-        if !self.is_mbus() && !self.banks.values().any(|bank| bank.level15_sources != 0) {
+        if !self.is_mbus() && !self.banks.iter().any(|(_, bank)| bank.level15_sources != 0) {
             self.sources &= !MODULE_ERROR;
         }
     }
@@ -181,7 +173,7 @@ impl InterruptController {
                 self.sources |= bit;
                 let capture = !self.is_mbus() || self.mask & bit == 0;
                 if capture {
-                    for bank in self.banks.values_mut() {
+                    for (_, bank) in self.banks.iter_mut() {
                         bank.level15_sources |= bit;
                     }
                 }
@@ -189,7 +181,7 @@ impl InterruptController {
         } else {
             self.sources &= !bit;
             if !self.is_mbus() {
-                for bank in self.banks.values_mut() {
+                for (_, bank) in self.banks.iter_mut() {
                     bank.level15_sources &= !bit;
                 }
             }
@@ -201,7 +193,7 @@ impl InterruptController {
         self.sources = 0;
         self.mask = MASK_BITS;
         self.target = 0;
-        for bank in self.banks.values_mut() {
+        for (_, bank) in self.banks.iter_mut() {
             *bank = Bank::default();
         }
         self.refresh();
@@ -229,7 +221,7 @@ impl InterruptController {
     }
 
     pub fn set_processor_timer(&mut self, processor: u8, asserted: bool) {
-        if let Some(bank) = self.banks.get_mut(&processor) {
+        if let Some(bank) = self.banks.get_mut(processor) {
             if asserted != bank.cpu_timer {
                 bank.cpu_timer = asserted;
                 self.refresh();
@@ -261,7 +253,7 @@ impl InterruptController {
         let hard = Self::hardware_levels(self.sources & !self.mask & !MODULE_ERROR);
         let level15_enabled = self.is_mbus() || self.mask & MODULE_ERROR == 0;
         let target = self.target;
-        for (&processor, bank) in &mut self.banks {
+        for (processor, bank) in self.banks.iter_mut() {
             let mut levels = 0;
             if !mask_all {
                 if processor == target {
@@ -313,7 +305,7 @@ impl InterruptController {
     }
 
     pub fn levels_for(&self, processor: u8) -> u16 {
-        self.banks.get(&processor).map_or(0, |bank| bank.levels)
+        self.banks.get(processor).map_or(0, |bank| bank.levels)
     }
 
     pub fn read(&self, system: bool, offset: u64) -> Result<u32, BusErrorKind> {
@@ -336,7 +328,7 @@ impl InterruptController {
     }
 
     pub fn read_cpu(&self, processor: u8, offset: u64) -> Result<u32, BusErrorKind> {
-        let Some(bank) = self.banks.get(&processor) else {
+        let Some(bank) = self.banks.get(processor) else {
             return match offset {
                 0..=12 if offset & 3 == 0 => Ok(0),
                 _ => Err(BusErrorKind::Unsupported("interrupt register offset")),
@@ -397,7 +389,7 @@ impl InterruptController {
         value: u32,
     ) -> Result<(), BusErrorKind> {
         let mut acknowledge = false;
-        if let Some(bank) = self.banks.get_mut(&processor) {
+        if let Some(bank) = self.banks.get_mut(processor) {
             match offset {
                 4 => {
                     bank.soft &= !(value & SOFT_BITS);

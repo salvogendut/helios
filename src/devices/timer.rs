@@ -1,14 +1,12 @@
 //! NCR89C105 counters and 54-bit processor user timers, clocked every 500 ns.
 //! Counter arithmetic is bounded even for very large explicit time advances.
+use super::processor_banks::ProcessorBanks;
 use crate::bus::BusErrorKind;
-use std::collections::BTreeMap;
 
 const MODULUS: u128 = 1 << 22;
 const FIELD: u32 = 0x7fff_fe00;
 const USER_MODULUS: u128 = 1 << 54;
 pub const TICK_NS: u64 = 500;
-// Sun-4M has four processor slots; board profiles constrain populated slots.
-const MAX_HARDWARE_PROCESSOR: u8 = 3;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Counter {
@@ -125,7 +123,7 @@ struct ProcessorTimer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Timers {
     system: Counter,
-    processors: BTreeMap<u8, ProcessorTimer>,
+    processors: ProcessorBanks<ProcessorTimer>,
     phase_ns: u16,
 }
 
@@ -133,7 +131,7 @@ impl Default for Timers {
     fn default() -> Self {
         let mut timers = Self {
             system: Counter::default(),
-            processors: BTreeMap::new(),
+            processors: ProcessorBanks::default(),
             phase_ns: 0,
         };
         timers.install_processor(0);
@@ -145,24 +143,20 @@ impl Timers {
     /// Install the CPU-local counter/user-timer bank for a hardware processor
     /// number. The number is the hardware slot, not a compact vector index.
     pub fn install_processor(&mut self, processor: u8) -> bool {
-        if processor > MAX_HARDWARE_PROCESSOR || self.processors.contains_key(&processor) {
-            return false;
-        }
-        self.processors.insert(processor, ProcessorTimer::default());
-        true
+        self.processors.install(processor)
     }
 
     pub fn processors(&self) -> impl Iterator<Item = u8> + '_ {
-        self.processors.keys().copied()
+        self.processors.iter().map(|(processor, _)| processor)
     }
 
     pub fn contains_processor(&self, processor: u8) -> bool {
-        self.processors.contains_key(&processor)
+        self.processors.get(processor).is_some()
     }
 
     pub fn reset(&mut self) {
         self.system = Counter::default();
-        for bank in self.processors.values_mut() {
+        for (_, bank) in self.processors.iter_mut() {
             *bank = ProcessorTimer::default();
         }
         self.phase_ns = 0;
@@ -178,7 +172,7 @@ impl Timers {
 
     pub fn processor_irq_for(&self, processor: u8) -> bool {
         self.processors
-            .get(&processor)
+            .get(processor)
             .is_some_and(|bank| !bank.user_mode && bank.processor.pending)
     }
 
@@ -186,7 +180,7 @@ impl Timers {
     /// excluding the 500 ns tick phase. Queries do not clear pending bits.
     pub fn next_deadline_ticks(&self) -> Option<u64> {
         let mut earliest = self.system.ticks_until_pending();
-        for bank in self.processors.values() {
+        for (_, bank) in self.processors.iter() {
             let next = if bank.user_mode {
                 if !bank.user_run {
                     None
@@ -232,7 +226,7 @@ impl Timers {
             return;
         }
         self.system.advance(ticks);
-        for bank in self.processors.values_mut() {
+        for (_, bank) in self.processors.iter_mut() {
             if bank.user_mode {
                 if bank.user_run {
                     bank.user.advance(ticks);
@@ -260,7 +254,7 @@ impl Timers {
     }
 
     pub fn read_cpu(&mut self, processor: u8, offset: u64) -> Result<u32, BusErrorKind> {
-        let Some(bank) = self.processors.get_mut(&processor) else {
+        let Some(bank) = self.processors.get_mut(processor) else {
             return match offset {
                 0 | 4 | 8 | 12 => Ok(0),
                 _ => Err(BusErrorKind::Unsupported("timer register offset")),
@@ -286,7 +280,7 @@ impl Timers {
         match offset {
             12 => Ok(()),
             16 => {
-                for (&processor, bank) in &mut self.processors {
+                for (processor, bank) in self.processors.iter_mut() {
                     let user_mode = value & (1 << processor) != 0;
                     if user_mode != bank.user_mode {
                         // Mode-switch transfer state is not specified by NCR.
@@ -310,7 +304,7 @@ impl Timers {
         offset: u64,
         value: u32,
     ) -> Result<(), BusErrorKind> {
-        let Some(bank) = self.processors.get_mut(&processor) else {
+        let Some(bank) = self.processors.get_mut(processor) else {
             return match offset {
                 0 | 4 | 8 | 12 => Ok(()),
                 _ => Err(BusErrorKind::Unsupported("timer register offset")),
@@ -339,7 +333,7 @@ impl Timers {
         self.processors
             .iter()
             .filter(|(_, bank)| bank.user_mode)
-            .fold(0, |bits, (&processor, _)| bits | (1 << processor))
+            .fold(0, |bits, (processor, _)| bits | (1 << processor))
     }
 
     /// Only the processor count in user mode accepts two-word bursts. Sample
@@ -371,7 +365,7 @@ impl Timers {
 
     fn require_user_mode(&self, processor: u8) -> Result<&ProcessorTimer, BusErrorKind> {
         self.processors
-            .get(&processor)
+            .get(processor)
             .filter(|bank| bank.user_mode)
             .ok_or(BusErrorKind::Unsupported(
                 "timer doubleword requires processor user mode",
@@ -383,7 +377,7 @@ impl Timers {
         processor: u8,
     ) -> Result<&mut ProcessorTimer, BusErrorKind> {
         self.processors
-            .get_mut(&processor)
+            .get_mut(processor)
             .filter(|bank| bank.user_mode)
             .ok_or(BusErrorKind::Unsupported(
                 "timer doubleword requires processor user mode",
