@@ -215,6 +215,29 @@ fn io_flushes_preserve_cpu_entries_and_cpu_entire_flush_clears_the_shared_tlb() 
 }
 
 #[test]
+fn shared_tlb_dma_checks_locked_high_slots_even_after_a_matching_page() {
+    let mut m = fixture();
+    put(&mut m, 0x1000, 4, 0);
+    let va = 0xff00_0000;
+    assert_eq!(m.dma_read(5, va, Width::Word), Ok(0x1234_5678));
+    assert_eq!(get(&mut m, 0x300, 6), va | 8);
+
+    // The second matching I/O tag wins. A malformed high tag takes precedence
+    // over the otherwise successful lookup, even for a different page.
+    put(&mut m, 0xfc, 6, 0x906);
+    put(&mut m, 0x1fc, 6, 4);
+    put(&mut m, 0x3fc, 6, va | 8);
+    assert_eq!(m.dma_read(5, va, Width::Word), Ok(0xabcd_ef01));
+    put(&mut m, 0x3fc, 6, (va + 0x1000) | 9);
+    assert_eq!(
+        m.dma_read(5, va, Width::Word),
+        Err(DmaError::Unsupported("non-page I/O TLB diagnostic entry"))
+    );
+    put(&mut m, 0x3fc, 6, va);
+    assert_eq!(m.dma_read(5, va, Width::Word), Ok(0x1234_5678));
+}
+
+#[test]
 fn base_and_enable_writes_retain_cached_io_mappings_until_an_explicit_flush() {
     let mut m = fixture();
     m.bus.write32(0x10000, 0xf800_08ff).unwrap(); // reserved IOPTE bits ignored

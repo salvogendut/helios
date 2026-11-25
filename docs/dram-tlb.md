@@ -138,6 +138,12 @@ The model clamps the CPU wrap point to 47 with IL set and reduces out-of-range
 counter values modulo the eligible range. These are deterministic choices for
 inconsistent guest configurations; software should set compatible values.
 
+The CPU checks slot zero directly when all higher slots are invalid. As soon
+as a higher slot can hold a valid tag it uses the full CPU lookup. The
+integrated I/O search skips slots above the highest potentially valid tag.
+A diagnostic write can install a valid tag in slot 63 even with WP=0, so
+both lookups track populated slots independently of the replacement counter.
+
 The real counter advances on CPU clocks; this emulator does not provide that
 timing. Reset selects WP=63, TLBRC=0 and other fields zero as a functional
 baseline. Speed fields are latches with no clock effect. VP is retained, but

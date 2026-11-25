@@ -1,5 +1,7 @@
 # Agent notes
 
+- [SS-5 sparse TLB lookup](ss5-tlb-search.md) records the Solaris boot and disk-read comparison, locked-slot tests and dense-table controls.
+
 - [SS-5, SS-20 and Axil RAM access performance](sun4m-dram-performance.md) covers direct DSIMM lookup, Solaris kernel and filesystem comparisons, and the ESP/DMA control.
 
 - [Ultra 5 performance compared with QEMU](ultra5-performance-analysis.md) covers the SPARC loop comparison, Solaris kernel profiles, and Xsun boot, file-copy and IDE DMA measurements for the TLB, board polling and sparse RAM changes.

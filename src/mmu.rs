@@ -354,6 +354,9 @@ pub struct Srmmu {
     fault_status: u32,
     fault_address: u32,
     tlb: [Entry; TLB_ENTRIES],
+    // Every valid CPU or I/O tag lies below this bound, including locked slots.
+    // It is derived host state and does not participate in MMU equality.
+    tlb_search_len: usize,
     tlb_generation: u64,
     slot_generations: [u64; TLB_ENTRIES],
     tlb_diagnostic: Option<(u32, u32)>,
@@ -432,6 +435,7 @@ impl Default for Srmmu {
             fault_status: 0,
             fault_address: 0,
             tlb: [Entry::default(); TLB_ENTRIES],
+            tlb_search_len: 0,
             tlb_generation: 1,
             slot_generations: [1; TLB_ENTRIES],
             tlb_diagnostic: None,
@@ -697,6 +701,11 @@ impl Srmmu {
         }
     }
 
+    fn fill_slot(&mut self, index: usize, entry: Entry) {
+        self.tlb[index] = entry;
+        self.tlb_search_len = self.tlb_search_len.max(index + 1);
+    }
+
     fn insert(&mut self, entry: Entry) -> usize {
         let wrap = ((self.trcr >> 7) & 63) as usize;
         let limit = if self.trcr & (1 << 13) != 0 {
@@ -714,7 +723,7 @@ impl Srmmu {
         if index < 3 && self.trcr & (1 << (14 + index)) != 0 {
             index += 3;
         }
-        self.tlb[index] = entry;
+        self.fill_slot(index, entry);
         #[cfg(feature = "perf-counters")]
         {
             self.counters.replacements += 1;
@@ -778,6 +787,13 @@ impl Srmmu {
     fn refresh_tlb_diagnostic(&mut self) {
         self.tlb_generation = self.tlb_generation.wrapping_add(1);
         self.tlb_diagnostic = self.find_tlb_diagnostic();
+        // Flushes and raw diagnostic tag edits can invalidate the highest
+        // occupied slot or install a valid tag above the replacement limit.
+        self.tlb_search_len = self
+            .tlb
+            .iter()
+            .rposition(|entry| entry.upper & 8 != 0)
+            .map_or(0, |last| last + 1);
     }
 
     fn check_tlb_diagnostic(&self) -> Result<(), MemoryError> {
@@ -1432,7 +1448,7 @@ impl Srmmu {
             lower: permissions[acc] | u32::from(pte & 0x40 != 0),
             firmware_page: false,
         };
-        self.tlb[index] = entry;
+        self.fill_slot(index, entry);
     }
 
     /// Mirror normal TLB fills into the ASI 5/6 diagnostic view so the POST
@@ -1690,7 +1706,7 @@ impl Srmmu {
             IoMapping::PageTable(physical) => physical,
         };
         let mut hit = None;
-        for entry in &self.tlb {
+        for entry in &self.tlb[..self.tlb_search_len] {
             if entry.upper & 8 != 0 && entry.lower & 4 != 0 {
                 if entry.upper & 7 != 0 || entry.lower & 2 != 0 {
                     return Err(DmaError::Unsupported("non-page I/O TLB diagnostic entry"));
@@ -1820,20 +1836,26 @@ impl Srmmu {
                 return Ok(self.translation(access, entry));
             }
         }
-        let hit = self
-            .tlb
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| {
-                entry.matches(
-                    access.address,
-                    context,
-                    supervisor,
-                    self.config.context_mask,
-                )
-            })
-            .min_by_key(|(_, entry)| entry.offset_mask)
-            .map(|(index, _)| index);
+        let matches = |entry: &Entry| {
+            entry.matches(
+                access.address,
+                context,
+                supervisor,
+                self.config.context_mask,
+            )
+        };
+        // SS-5 firmware commonly leaves only slot zero populated. For a
+        // populated tail, keep the fixed-size scan and its page-size priority.
+        let hit = if self.tlb_search_len <= 1 {
+            matches(&self.tlb[0]).then_some(0)
+        } else {
+            self.tlb
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| matches(entry))
+                .min_by_key(|(_, entry)| entry.offset_mask)
+                .map(|(index, _)| index)
+        };
         let mut entry = if let Some(index) = hit {
             #[cfg(feature = "perf-counters")]
             {

@@ -186,6 +186,28 @@ fn wp_zero_limits_replacement_to_slot_zero() {
 }
 
 #[test]
+fn locked_duplicate_tags_survive_slot_zero_replacement_and_keep_slot_priority() {
+    let (mut m, mut b) = fixture();
+    put(&mut m, &mut b, 0x1000, 4, 0); // WP=0 restricts replacement only.
+    for (slot, pa, word) in [(23u32, 0x9000u32, 23), (63, 0xa000, 63)] {
+        b.write32(u64::from(pa), word).unwrap();
+        put(&mut m, &mut b, slot * 4, 6, (pa >> 4) | 2);
+        put(&mut m, &mut b, 0x100 + slot * 4, 6, 0x3f1);
+        put(&mut m, &mut b, 0x300 + slot * 4, 6, 0x8008);
+    }
+    assert_eq!(get(&mut m, &mut b, 0x4000, 11), 0x1234_5678);
+    put(&mut m, &mut b, 0x4000, 3, 0);
+    assert_eq!(get(&mut m, &mut b, 0x8000, 11), 23);
+    put(&mut m, &mut b, 0x300 + 23 * 4, 6, 0x8000);
+    assert_eq!(get(&mut m, &mut b, 0x8000, 11), 63);
+    put(&mut m, &mut b, 0x400, 3, 0);
+    assert!(matches!(
+        m.load(&mut b, 0x8000, 11, Width::Word),
+        Err(MemoryError::Translation(_))
+    ));
+}
+
+#[test]
 fn diagnostic_reserved_addresses_widths_and_unsupported_lookup_are_precise() {
     let (mut m, mut b) = fixture();
     put(&mut m, &mut b, 0, 4, PCR_EN | PCR_NF);
