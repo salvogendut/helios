@@ -20,7 +20,11 @@ and the separate card maps in the pinned MAME CGsix reference.
 
 ## Running
 
-From the repository root:
+For the desktop emulator, use Heliacal. It supports named machines, clipboard
+paste, the sun4m displays and the Ultra 5 Mach64. [Heliacal build and first boot](https://github.com/salvogendut/heliacal/blob/main/docs/building.md)
+
+The following commands and key bindings apply to the in-tree `helios-ui`
+CGsix viewer. Run them from the Helios repository root.
 
 ```sh
 python3 tools/fetch_firmware.py sun-ss5

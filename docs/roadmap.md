@@ -1,65 +1,43 @@
 # Development milestones
 
-The first full-system target is SPARCstation 5 / sun4m with an 85 MHz microSPARC-II,
-128 MiB RAM, CGsix graphics, SCSI disk/CD-ROM, Ethernet and TTYA/TTYB. Each milestone needs
-observable acceptance criteria before its status can advance.
+## Verified workstation configurations
 
-| Milestone | Deliverable and acceptance | Status |
+The table records the furthest reproduced guest result for each configuration with
+its original OpenBoot PROM. Firmware choice, installed graphics and CPU count
+matter when reproducing a result.
+
+| Machine | Verified result | Setup and evidence |
 | --- | --- | --- |
-| 0 — Foundation | Library/CLI, integer subset, word bus, runnable bare-metal demo and regression tests | Implemented |
-| 1 — CPU baseline | Complete V8 integer/privileged behavior, PSR/WIM/TBR/Y, precise traps/RETT, ASI dispatch, multiply/divide and atomics; independently checked bare-metal tests | In progress: core integer instruction groups, privileged state, synchronous traps, ASIs, doublewords and atomics implemented; implementation-specific ASRs and broader illegal-opcode classification pending |
-| 2 — Memory system | microSPARC-II reset/boot behavior and SRMMU, permissions, contexts, faults, TLB invalidation and required cache controls; translation/fault tests | In progress: translation, TLB flush/probe and cache diagnostic storage/invalidation implemented; DRAM banks and live TLB diagnostics implemented; injected PTP walks, M-bit rewalks and cache hits/fills pending |
-| 3 — Serial firmware | Original Sun OBP loading, NVRAM/IDPROM, Z8530, interrupt controller and timers; reproducible OBP prompt transcript | Device enumeration and 128 MiB RAM test complete; timer diagnostic and Ethernet loopback pass; serial BREAK returns from RARP retry to verified prompt/Forth response; parallel-port POST fault remains |
-| 4 — Storage and kernel | IOMMU, DMA, ESP SCSI, disk/CD-ROM targets and safe image writes; installer/kernel reaches serial userspace | In progress: Solaris 2.6 and 7 reach the serial installer. ESP/DMA2 transfers, opt-in durable raw disk writes, CD modes/media locking, SCC interrupts and DMA setup registers implemented; broader commands and installation validation remain pending |
-| 5 — Usable workstation | Required FPU behavior, LANCE networking, CGsix/TurboGX framebuffer, keyboard/mouse and host frontend; documented guest compatibility matrix | FPU state/transfers/comparisons/division/addition/subtraction/multiplication/integer-single-double conversions/branches and deferred IEEE exceptions implemented; other arithmetic and remaining devices pending |
-| 6 — Performance and tooling | Profiling-driven optimization, optional JIT checked against interpreter, monitor/GDB, snapshots and automated guest runs | Planned |
+| SPARCstation 5 | Solaris 2.6 and Solaris 7 install from SCSI CD and boot from separate disks to a root shell. Solaris 2.6 runs with CGsix and 256 MiB. | [Disk boot](firmware.md#installed-solaris-disk-boot) · [RAM and display](machines.md) |
+| SPARCstation 20 | Solaris 2.6 boots with one or two CPUs. Native SX runs Xsun, olwm and xterm. NetBSD 11.1 installs to CHD and boots on one CPU to both serial and SX framebuffer consoles. | [Solaris graphics](graphics.md#ss-20-built-in-sxvsimm) · [NetBSD installation](scsi.md#netbsd-111-installation-checkpoint) |
+| Axil 320 | Solaris 2.6 boots with one or two CPUs. The two-CPU CGsix CDE session passed keyboard, window and disk-persistence checks. | [Machine checks](machines.md#evidence-and-limits) · [Migrating an SS-5 disk](scsi.md#moving-an-installed-solaris-26-disk-from-ss-5-to-ss-20axil) |
+| Ultra 5 | Solaris 7 11/99 installs onto the primary IDE disk, boots its 32-bit sun4u kernel and reaches an interactive CDE desktop on Mach64. The onboard HME supports DHCP and outbound file transfers. | [Install and boot](ultra5.md#boot-the-installed-solaris-7-system) · [Network checks](networking.md#guest-checks) |
 
-FPU implementation can move earlier when firmware or a selected guest requires
-it. Use instruction and device evidence to adjust ordering; a milestone label
-does not justify faking successful hardware behavior.
+The separately built SPARC32 OpenBIOS port reaches Forth on serial and TurboGX
+on all three sun4m machines. Guest checks include a NetBSD 11.1 single-user disk
+boot on SS-20 and a Solaris 2.6 single-user CD boot on two-CPU Axil.
+[Replacement firmware and configuration limits](firmware.md#nvram-and-current-compatibility-limits)
 
-Architectural trap entry and privileged CPU state now have a runnable guest
-demonstration and focused regressions. Missing instructions remain host stops.
-ASI dispatch and the initial SRMMU/reset/PROM harness now have translation,
-fault-recovery and synthetic PROM regressions. Multiply/divide, tagged arithmetic,
-MULScc, doubleword transfers, atomic exchanges and FLUSH now have focused tests.
-NVRAM/IDPROM and the Z8530 polled console now have a synthetic reset-PROM demo,
-device boundary tests and file persistence. Interrupt entry, source masking,
-software requests and system/processor counter timers now have a guest demo
-and deterministic timing tests. Original Sun OBP is the primary development
-baseline; OpenBIOS remains a separate compatibility test until proved working.
-System reset/status, guest software reset, watchdog status latching and both
-SCC register blocks now support early OBP initialization. Processor user time
-and doubleword access let it pass timed keyboard polling. The SBus/IOMMU
-configuration subset now handles MID/arbitration setup at `0x10002000`.
-Cache diagnostic storage and indexed invalidation now let OBP pass tag setup.
-The hardware DRAM bank model now handles the earlier out-of-RAM probe, and
-live TLB diagnostic entries plus replacement controls handle the following
-initialization/tests. IOMMU page translation, selective I/O flushes, shared TLB
-replacement and RAM DMA transfers now have focused tests. SBus timeout versus
-slave-error classification, asynchronous CPU store capture and module interrupts,
-and memory-request capture now have regressions. Original OBP exercises
-single/double arithmetic and deferred exception recovery, then software interrupt
-levels 1–15. Documented PROM service time, skip-zero counter overflow and
-limit-flag acknowledgement now let its processor-timer diagnostic pass. MACIO
-SCSI register tests, Ethernet initialization and internal loopback complete.
-The remaining POST fault is a read of parallel-port DMA CSR `0x7c800000`.
-OBP continues through enumeration and the full 128 MiB memory test, transmits
-RARP requests and retries when no server replies. A decoded serial BREAK
-returns to `ok`; a Forth command returns `3` and another prompt. Clean POST,
-The CGsix/keyboard console and SCSI target-discovery milestones are complete.
-Installed-system boot, broader SCSI commands and a host network backend remain unfinished.
-Widening multiplication, square roots, quad conversions
-and quad/unfinished FPU traps also remain pending.
-Ordinary cache hits/fills, injected PTP walks and diagnostic M-bit rewalks
-remain explicit gaps; diagnostic storage alone is not a complete cache model.
-[Firmware records](firmware.md) capture the images and bounded probes.
-Automatic partial CPU watchdog recovery, memory parity/error generation,
-SBus late errors and doubleword store fault completion remain explicit gaps.
+## Remaining work and limits
 
-SunOS/Solaris, BSD and Linux versions will be recorded individually once tested.
-No guest release is currently supported. Additional sun4c, sun4m and sun4u
-machines should become explicit profiles; SPARC V9 is a separate CPU milestone.
+- **Keyboard-free sun4m startup.** Heliacal keeps a keyboard attached in headless
+  mode so original OBP can use abbreviated startup on the MBus machines. Removing
+  it exposes SS-5 and SS-20 POST diagnostics. The Ultra 5 already reaches its
+  serial prompt with the keyboard absent. [Helios issue #7](https://github.com/salvogendut/helios/issues/7)
+- **CPU and devices.** Four-CPU MBus configurations, full SX instruction coverage,
+  ordinary microSPARC-II cache fills, audio streaming and a floppy media engine
+  remain open. NetBSD X11 and SMP have no verified configuration here.
+  [Machine limits](machines.md#evidence-and-limits) · [Cache diagnostics](cache.md) · [Floppy controller](devices.md#ncr82077-floppy-initialization-and-positioning)
+- **Network boot.** Ultra 5 OpenBoot executes a Forth payload fetched by RARP/TFTP.
+  Network installation of an OS is a separate milestone. [Reproduce the firmware boot](ultra5.md#firmware-network-boot)
+- **Performance.** The interpreter runs the verified workstations. The optional
+  x86-64 Unix native backend on main accelerates a limited set of bare-metal V8
+  instructions. The workstation JIT and interpreter I/O experiments are parked.
+  Heliacal offers opt-in idle parking for a proven single-CPU SS-20 Solaris loop.
+  [Execution and profiling](../HACKING.md#execution-and-profiling)
+
+The [sun4m firmware records](firmware.md#historical-bring-up-checkpoints) and
+the Ultra 5 sequence below preserve earlier bring-up results.
 
 ## Ultra 5 serial console
 
@@ -95,7 +73,7 @@ Cold and soft-reset runs reach the same entry with diagnostics enabled or disabl
 | Primary ATA disk | OpenBoot enumerates device 0. Sector writes persist through PIO and CMD646 bus-master DMA. |
 | Solaris 7 installation CD | The 11/99 SPARC kernel mounts the installation CD, attaches the primary disk and enters Solaris Interactive Installation. |
 | Installed Solaris 7 | The installer writes the disk label, filesystems, packages and boot blocks. After a clean halt, OpenBoot starts the installed kernel from IDE unit 0 with the CD removed. |
-| Graphical login | Heliacal displays the installed Solaris CDE greeter on the Mach64 with a username field and a working Sun keyboard. |
+| Graphical login | Heliacal reaches the Solaris CDE greeter. Root login opens the CDE front panel, File Manager and Help Viewer on Mach64. |
 | Onboard Ethernet | Installed Solaris 7 brings up `hme0` on the Ultra 5. In Heliacal it receives three replies from the NAT gateway at `192.168.0.1` with zero packet loss. |
 | Guest network transfers | Solaris 7 obtains a DHCP lease, resolves a controlled DNS name through the gateway, and downloads the same 1 MiB file over TFTP and outbound HTTP. Both copies match the host checksum. |
 | Diskless firmware network boot | Original OpenBoot 3.31 passes HME loopback, obtains an address by RARP and downloads a Forth payload by TFTP. The payload prints its marker on serial A and returns to the prompt. [Reproduce the check](ultra5.md#firmware-network-boot) |

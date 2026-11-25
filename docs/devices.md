@@ -191,9 +191,10 @@ Regressions exercise guest TX/RX, MMU-translated byte accesses, unsupported
 widths without destructive reads, backpressure/retry, channel reset, clock
 latches and calendar boundaries, identity checksums and CLI file behavior.
 CPU interrupt delivery and counter timers have a separate synthetic PROM demo.
-Serial interrupt generation remains pending. Original OBP now has a responsive
-[serial recovery prompt](firmware.md#serial-ok-prompt); OpenBIOS and OS boot
-have not been demonstrated.
+Both SCCs deliver receive, transmit and BREAK interrupts at PIL 12.
+Original OBP accepts serial Forth commands, and installed Solaris boots to
+serial login. The OpenBIOS port also runs on TTYA.
+[Original OBP console](firmware.md#timer-and-ethernet-bring-up) · [Installed Solaris](firmware.md#installed-solaris-disk-boot) · [OpenBIOS console](firmware.md#automatic-openbios-fallback)
 
 ## NCR89C105 auxiliary ports
 

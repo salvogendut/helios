@@ -1,9 +1,12 @@
-# Ultra 5/10 OpenBoot consoles
+# Ultra 5 workstation
 
 Original Sun OpenBoot 3.31.0 reaches a responsive `ok` prompt on serial
 port A in the headless Ultra 5. The firmware reports a 440 MHz UltraSPARC-IIi,
 512 MiB of memory and no keyboard. It initializes both Simba PCI buses and
 enumerates EBus, Ethernet, graphics and IDE before printing the banner.
+With a writable IDE disk and Heliacal, Solaris 7 11/99 installs, boots its
+32-bit sun4u kernel and reaches a CDE desktop with keyboard and mouse.
+[Boot the installed system](#boot-the-installed-solaris-7-system) · [Attach installation media](#attach-a-solaris-installation-cd) · [Prepare the original firmware](#reconstruct-and-test-the-original-firmware)
 
 ## Graphical console in Heliacal
 

@@ -7,10 +7,11 @@ must not redefine the SS-5 model. A successful isolated probe is not a firmware
 compatibility claim. Original OBP now reaches responsive serial and graphical
 monitors, with keyboard-entered Forth commands on the TurboGX console.
 The separately built OpenBIOS port reaches interactive serial and TurboGX
-graphical prompts on all three profiles; its limits are described below. The [graphical OBP checkpoint](#graphical-obp-console)
-and [serial/timer/Ethernet checkpoint](#timer-and-ethernet-bring-up) distinguish
-this from full hardware compatibility or OS boot. Earlier checkpoints below
-are retained as historical evidence.
+graphical prompts on SS-5, SS-20 and Axil 320. For verified guest boots, see
+[installed Solaris on SS-5](#installed-solaris-disk-boot), [SS-20 and Axil](machines.md#evidence-and-limits)
+and [OpenBIOS guest checks](#nvram-and-current-compatibility-limits). The
+sun4u Ultra 5 uses its own [original OpenBoot flash](ultra5.md#reconstruct-and-test-the-original-firmware).
+Earlier sun4m probes below are retained as historical evidence.
 
 The selected machine is an SS5/85: 85 MHz microSPARC-II, 128 MiB RAM, CGsix,
 SCSI disk/CD-ROM, Ethernet and serial. Pending devices remain absent; the
@@ -18,8 +19,8 @@ implemented subset and timing convention are documented separately.
 
 ## Automatic OpenBIOS fallback
 
-`helios boot` with no positional PROM and Heliacal with `prom = ""` select
-OpenBIOS. A configured PROM always wins: a missing, unreadable or invalid
+For sun4m machines, `helios boot` with no positional PROM and Heliacal with
+`prom = ""` select OpenBIOS. A configured PROM always wins: a missing, unreadable or invalid
 configured file reports an error instead of selecting another image. Raw Sun
 PROMs retain the existing size-based loading rules; arbitrary raw ROM contents
 cannot be authenticated by the loader. OpenBIOS ELF files are validated as
@@ -38,9 +39,13 @@ GPL-2.0 source and resulting firmware remain outside version control.
 # Requires git, make, host gcc, xsltproc, toke (fcode-utils), and a SPARC cross compiler.
 # Fedora packages: gcc-sparc64-linux-gnu binutils-sparc64-linux-gnu fcode-utils libxslt
 python3 tools/build_openbios.py --jobs 4
-# Start at an interactive Forth prompt, serial console on stdout:
-cargo run --release -- boot --machine ss20 --display none --steps 1200000000
+# Print the SS-20 serial Forth prompt to stdout with a bounded run.
+cargo run --release -- boot --machine ss20 --display none --ram-mib 64 --steps 160000000
 ```
+
+After the SBus probes and OpenBIOS banner, TTYA prints `0 >`. For interactive
+input, use Heliacal's serial console or the CLI's loopback telnet listener.
+[CLI serial options](devices.md#cli-and-validation)
 
 The helper refuses an existing build tree or differing output. Use a fresh
 `--work-dir`/`--output-dir` to rebuild. `--source-repository PATH` permits cloning
@@ -1094,7 +1099,8 @@ run the secondary through startup, and allow it to be parked at `ok`.
 Solaris 2.6 SMP boot now reaches a console shell on disposable SS-20 and Axil
 clones. `psrinfo -v` reports processors 0 and 2 online on both. `pbind`-bound
 guest loops drive both CPUs to 100% user in `mpstat`; `dd` disk I/O, checksum
-files, `sync` and clean halt/reboot persistence also pass. Four-CPU dual-module
-configurations, full POST/cache accuracy and complete SX/desktop SMP acceptance
-remain unresolved; no complete SuperSPARC CPU/MBus, DBRI or BPP claim is made.
-See [machine profiles](machines.md) and [the progress note](../clanker/smp-progress.md).
+files, `sync` and clean halt/reboot persistence also pass. Heliacal has since
+verified two-CPU terminal input and window dragging on SS-20/SX, and CDE
+window operations and reboot persistence on Axil/CGsix. Four-CPU configurations,
+full POST/cache accuracy, and the DBRI and BPP devices remain open.
+[Machine checks](machines.md#evidence-and-limits) · [SMP progress record](../clanker/smp-progress.md)

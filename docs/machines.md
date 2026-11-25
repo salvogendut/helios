@@ -3,7 +3,9 @@
 Helios builds every sun4m profile from the same device models and SPARC V8
 interpreter. A profile selects its physical address map, PROM aperture, IDPROM
 identity, MMU address width and DRAM bank layout. The default remains the
-SPARCstation 5.
+SPARCstation 5. The sun4u Ultra 5 has a separate V9 interpreter, IDE storage,
+Mach64 display and HME Ethernet. Its launch instructions are in the
+[Ultra 5 guide](ultra5.md).
 
 Named profiles use an 85 MHz microSPARC-II on SS-5 and a 75 MHz SuperSPARC-II
 per installed module on SS-20/Axil. By default `CpuClockMode::Fast` retains
@@ -21,7 +23,7 @@ selected oscillator. See [timers](interrupts-timers.md).
 | CLI name | Machine | PROM base | IDPROM type | Default identity |
 | --- | --- | --- | --- | --- |
 | `ss5` | SPARCstation 5 | `0x70000000` | `0x80` | MAC `08:00:20:c0:ff:ee`, hostid `80c0ffee` |
-| `ss20` | SPARCstation 20, one CPU | `0xff0000000` | `0x72` | MAC `08:00:20:c0:ff:ee`, hostid `72c0ffee` |
+| `ss20` | SPARCstation 20 | `0xff0000000` | `0x72` | MAC `08:00:20:c0:ff:ee`, hostid `72c0ffee` |
 | `axil320` | Axil 320 (SS-20 clone) | `0xff0000000` | `0x72` | MAC `00:00:3c:13:de:ad`, hostid `72c0ffee` |
 
 ```sh
@@ -309,9 +311,9 @@ custom-controller model. CG6/TurboGX cards can be attached through
 `0xe_2000_0000`, matching the Sun-4M slot map. The Axil 320 uses a CG6 as its
 usual framebuffer; Helios does not require the SS-5 AFX presence byte for it.
 Axil/SS-20 SCSI discovery now works through the standalone IOMMU: OBP
-`probe-scsi-all` lists an attached ID 3 disk. The key fix is honoring the
-sun4m Arbiter Enable Register at `+0x1008` and masking IOPTE PPN bits 26:8
-instead of the wider reference-MMU CPU PTE mask.
+`probe-scsi-all` lists an attached ID 3 disk. DMA uses the sun4m Arbiter
+Enable Register at `+0x1008` and the standalone IOMMU's 36-bit physical
+address format (IOPTE PPN bits 31:8). [I/O translation by profile](io-control.md)
 
 Both SS-20 and Axil have booted installed Solaris 2.6 disks to console login.
 Disks copied from SS-5 need their device links and `path_to_inst` migrated to

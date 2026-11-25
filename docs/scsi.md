@@ -17,7 +17,7 @@ The core CLI and legacy `helios-ui` frontend accept these optional arguments:
 ```sh
 cargo run --release --manifest-path helios-ui/Cargo.toml -- \
   local/firmware/sun-ss5.bin local/firmware/turbogx.bin \
-  --disk local/disk.raw --cdrom local/cdrom.iso
+  --disk local/disks/guest-scsi3.raw --cdrom local/cdrom.iso
 ```
 
 After entering the monitor with Stop-A (Pause+A), type `probe-scsi-all`.
@@ -32,7 +32,9 @@ Other attachments remain read-only and report write protection.
 
 ### CHD hard disks
 
-Build the core with `--features chd` (Heliacal enables it). For the legacy
+Build the core with `cargo build --locked --release --features chd`. Its codec
+dependency requires Rust 1.87 or later and a C++17 compiler. Heliacal enables
+CHD support by default. For the legacy
 `helios-ui` package, pass `--features helios/chd`. Supported images
 are CHD v5 hard disks with GDDD metadata, 512-byte units and sector-aligned
 hunks up to 4 MiB. Capacity comes from the logical byte count, not the host
@@ -71,6 +73,7 @@ Create a zero-filled, unpartitioned CHD or sparse raw disk explicitly:
 
 ```sh
 cargo build --release --features chd
+mkdir -p local/disks
 target/release/helios create-disk local/disks/new-scsi3.chd --format chd --size-mib 2048
 target/release/helios create-disk local/disks/new-scsi3.raw --format raw --size-mib 2048
 ```
@@ -251,7 +254,9 @@ then send `boot cdrom -v` through TTYA. Both load the Solaris kernel and mount
 CD driver; without it, root mounting fails after repeated CHECK CONDITION
 responses. Both continue to the installer's `Select a Language` prompt on TTYA;
 no installation choices are submitted. See the
-[kernel checkpoint](firmware.md#solaris-kernel-startup).
+[kernel checkpoint](firmware.md#solaris-kernel-startup). Later runs completed
+both installations on separate SCSI ID 3 disks and booted each to a root shell
+with the CD detached. [Installed Solaris disk boots](firmware.md#installed-solaris-disk-boot)
 
 ## Evidence
 

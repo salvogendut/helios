@@ -3,23 +3,20 @@
 The first machine target is a uniprocessor SPARCstation 5, sun4m, with a
 microSPARC-II-compatible SPARC V8 core at a nominal **85 MHz** and eight register
 windows. The initial configuration uses **128 MiB RAM**, **CGsix graphics**,
-one **SCSI disk**, one **SCSI CD-ROM**, **Ethernet**, and **TTYA/TTYB**. This keeps
-the first platform focused while leaving other Sun families for later profiles.
-The executable provides bare-metal and reset/PROM memory harnesses described
-in the README, with a polled console, NVRAM/RTC, interrupt control and counter
-timers and system reset/status; other peripherals are pending. Additional
-single-processor SPARCstation 20 and Axil 320 profiles reuse the same devices on
-the high sun4m map; see [machine profiles](machines.md).
+one **SCSI disk**, one **SCSI CD-ROM**, **Ethernet**, and **TTYA/TTYB**.
+The CLI defaults to SS-5 with 128 MiB and a serial console. A CGsix card
+and disk or CD images can be attached at launch. The SPARCstation 20 and
+Axil 320 share many of these devices on a different physical map and can
+run one or two CPUs. [Machine profiles](machines.md)
 
 The graphics target is a standard 1 MiB TurboGX card in the CGsix family, now
 implemented as a console subset in SBus slot 1 at physical `0x30000000`.
 The native frontend attaches it with a Type 5 US keyboard; see
 [graphics.md](graphics.md). The SS-5 service manual lists the 85 MHz board and 1 MiB TGX option;
 the SPARCengine 5 OEM manual describes this card's BT458 RAMDAC and 8-bit output.
-See [references.md](references.md). Disk capacity and media are configuration
-choices for the storage milestone. SCSI data transfers and installed-system
-boot are now exercised; Ethernet has a headless packet endpoint. See
-[ethernet.md](ethernet.md) for its implemented subset.
+See [references.md](references.md). Solaris 2.6 and 7 install from SCSI CD and
+boot from disk. The LANCE-compatible Ethernet controller can use the IPv4 NAT
+backend. [SCSI storage](scsi.md) · [Ethernet](ethernet.md) · [Host networking](networking.md)
 
 `CPU_CLOCK_HZ` records the nominal 85 MHz clock. The interpreter's 100 ns step
 quantum is a separate functional scheduling convention. Physical PROM reads add
@@ -63,16 +60,9 @@ In particular, reset instruction fetch and PROM access depend on CPU/MMU boot
 behavior. Helios starts at virtual PC 0 with PCR.BM set; instruction accesses
 then use `0x70000000 | (VA & 0x0fffffff)`. See [memory.md](memory.md).
 
-Bring-up starts with a serial console. The first firmware milestone requires
-CPU privileged state and traps, SRMMU/ASIs, reset/PROM mapping, NVRAM/IDPROM,
-serial, interrupts and timers. Firmware may probe additional devices, which
-must be implemented or explicitly diagnosed as evidence arrives.
-
-Original Sun OBP is the primary firmware for development and hardware accuracy.
-OpenBIOS remains a separate compatibility test until proved working. QEMU
-supplies it with interfaces such as `fw_cfg`; those must not redefine SS-5
-hardware behavior. [firmware.md](firmware.md) records the pinned images and
-bounded probe results. Original OBP reaches responsive serial and graphical prompts, and installed
-Solaris 2.6 checkpoints are documented; OpenBIOS remains unproven. This is not
-a general OS-compatibility claim.
+Original Sun OBP is the reference for hardware accuracy. Both OBP and the
+Helios OpenBIOS port accept Forth input on serial and TurboGX. OpenBIOS uses
+its own NVRAM format and firmware-only services, including `fw_cfg`. The
+[firmware guide](firmware.md#automatic-openbios-fallback) covers image
+selection, setup and verified guest configurations.
 

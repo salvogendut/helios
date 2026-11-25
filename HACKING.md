@@ -10,12 +10,11 @@ not evidence that an entire device or operating system works.
 
 Keep the emulation core independent of host UI and process lifecycle. CPU and
 devices report outcomes to their owner; they do not exit the process. Machine
-construction wires hardware together. Future frontends should call this same
-library rather than duplicate machine setup. JIT execution, device workers and
-host acceleration come after a tested interpreter and observable baseline.
+construction wires hardware together. The CLI, the Heliacal desktop frontend
+and the in-tree `helios-ui` CGsix viewer all use the library.
 
-IRIS's mature devices use per-device threads and locks. This first Helios slice
-uses one owner and synchronous stepping, which makes CPU tests deterministic.
+IRIS's mature devices use per-device threads and locks. Helios uses one
+machine owner and synchronous stepping, which makes CPU tests deterministic.
 As workers become useful, keep ownership per device, bound queues, and preserve
 guest ordering and back-pressure. Do not put a global mutex around the machine
 or assume host scheduling is guest timing.
@@ -36,7 +35,7 @@ or assume host scheduling is guest timing.
 | `src/firmware.rs`, `src/firmware/image.rs` | Shared host firmware selection, ELF boundary, separate CHRP NVRAM and opt-in fw_cfg service |
 | `src/media.rs`, `src/media/` | Logical host-media boundary, optional CHD codecs, persistent children, durable writes and explicit blank-image creation |
 | `src/serial_host.rs` | Loopback telnet serial consoles; nonblocking host I/O polled by frontends |
-| `src/net/` | User-mode NAT over the Ethernet frame endpoint: ARP/RARP, DHCP, ICMP, UDP, DNS, TFTP |
+| `src/net/` | Shared user-mode IPv4 NAT, DHCP/RARP, UDP, DNS, TFTP and optional outbound TCP and host ICMP echo |
 | `src/mmu.rs` | ASI dispatch, CPU/I/O translation, shared TLB, permissions and CPU fault registers |
 | `src/dma.rs` | Machine-owned SBus DMA transfers and device-facing errors |
 | `src/cache.rs` | Cache diagnostic arrays and indexed invalidation; ordinary cache hits/fills pending |
@@ -44,6 +43,8 @@ or assume host scheduling is guest timing.
 | `src/machine.rs` | Bare-metal/reset construction, SS-5/SS-20/Axil profiles, processor modules, deterministic scheduler, RAM/PROM limits and demo images |
 | `src/topology.rs` | MBus connector, hardware processor/module identities, arbitration and run-state enums; default constructors remain single-CPU, while the validated `--cpus 2` path selects two single-CPU modules |
 | `src/main.rs` | CLI parsing, image files, trace printing and CPU step budget |
+| `src/v9.rs`, `src/v9/` | UltraSPARC-IIi interpreter, register windows, caches and TLBs |
+| `src/ultra5.rs`, `src/ultra5/` | Ultra 5 boot flash, DRAM, PCI/EBus, IDE, Mach64, serial and HME Ethernet |
 | `tests/` | Architectural and boundary behavior through the public library |
 
 `MachineProfile` selects `Sun4mLayout`, `MmuConfig`, IDPROM identity and DRAM
@@ -179,6 +180,16 @@ operations; concurrent device/DMA owners will need the same atomicity contract.
 
 ## CPU state and control flow
 
+The sun4m V8 interpreter implements the following integer instruction groups.
+
+| Group | Instructions |
+| --- | --- |
+| Constants, arithmetic and logic | SETHI/NOP, ADD/SUB/ADDX/SUBX, AND/OR/XOR/ANDN/ORN/XNOR and their `cc` forms, SLL/SRL/SRA |
+| Control flow and windows | Bicc with delay slots and annul, CALL/JMPL, SAVE/RESTORE |
+| Memory | LD/ST, signed and unsigned byte/halfword loads, byte/halfword stores, LDD/STD, alternate-space accesses, SWAP/LDSTUB, FLUSH |
+| Multiply, divide and tagged arithmetic | UMUL/SMUL/UDIV/SDIV and their `cc` forms, MULScc, TADDcc/TSUBcc with optional overflow traps |
+| Privileged and trap handling | PSR/WIM/TBR/Y reads and writes, Ticc, RETT, UNIMP, STBAR |
+
 On sun4m (V8), globals are shared across all eight windows and `%g0` always reads zero. Each
 window owns eight outgoing and eight local registers; its incoming registers
 alias the next window's outgoing registers. SAVE decrements CWP and RESTORE
@@ -186,7 +197,7 @@ increments it modulo eight. Both read their operands before rotation and write
 the result after rotation. The WIM bit of the destination window blocks rotation
 and produces an overflow/underflow fault.
 
-The separate UltraSPARC-IIi V9 fixture uses the opposite numbering for
+The Ultra 5's UltraSPARC-IIi V9 interpreter uses the opposite numbering for
 overlap. A window's ins alias the previous window's outs. Explicit WRPR to
 CWP selects any of eight windows and retains all physical register contents.
 [Ultra 5 window fixture](docs/ultra5.md#switch-and-restore-the-window)
@@ -387,7 +398,17 @@ its base quantum and PROM wait reach retained RTC/serial state before shared
 devices and scheduler state reset. A request already on the bus is serviced before CPU execution
 without time advancement. Reset counts are additional to instruction totals.
 
-## Optional MMU profiling
+## Execution and profiling
+
+The interpreter drives the installed guest systems. The default build has no
+JIT. The optional `jit-native` backend emits x86-64 Unix code for straight-line
+SETHI and basic integer ALU operations in device-free, untranslated V8 RAM.
+The separate workstation JIT experiment missed its Solaris useful-work target
+and is parked. Heliacal's opt-in idle parking applies to a verified Solaris
+idle loop on single-CPU SS-20. It reduces idle host CPU use independently of
+instruction throughput.
+
+### Optional MMU profiling
 
 Build with `cargo build --release --locked --offline --features perf-counters`
 to expose `Machine::translation_counters()`. Normal builds contain no counter
@@ -404,6 +425,32 @@ instructions. Validate instrumentation with
 `cargo test --locked --offline --features perf-counters` as well as the normal
 test suite.
 
+## Running and tracing a guest program
+
+From the repository root, `run` loads a raw big-endian V8 program into
+contiguous RAM. The entry defaults to its load address. CPU translation and
+PROM boot mode start disabled. Supply your own image for the first command
+or use the bundled sum demo for an instruction trace.
+
+```sh
+cargo run --release -- run local/program.bin --load-address 0x1000 --steps 1000 --trace
+cargo run --release -- demo --trace
+```
+
+Use `boot` for sun4m firmware. This example takes a bounded trace from a
+local SS-5 PROM with previously saved NVRAM and a serial input file. The
+output NVRAM path must be new.
+
+```sh
+cargo run --release -- boot local/firmware/sun-ss5.bin --steps 10000 --trace \
+  --serial-in local/input.bin --nvram local/nvram.bin --nvram-out local/nvram-next.bin
+```
+
+Traces distinguish retired instructions, synchronous traps, interrupt entry
+and guest resets. Reaching the budget exits successfully even if the guest is
+still running. During `boot`, TTYA goes to stdout and diagnostics to stderr.
+[Memory and reset mapping](docs/memory.md) · [Serial, NVRAM and RTC](docs/devices.md#cli-and-validation) · [Interrupts and timers](docs/interrupts-timers.md)
+
 ## Validation
 
 ```sh
@@ -415,6 +462,11 @@ cargo run --locked --offline -- trap-demo --trace
 cargo run --locked --offline -- serial-demo
 cargo run --locked --offline -- timer-demo
 ```
+
+The firmware-free demos verify a sum of 55 in RAM, entry and return from a
+user-mode trap, IDPROM reads and serial echo, and level-10/14 timer handlers.
+The hand-encoded programs have assembly listings.
+[Sum](examples/sum.s) · [Trap](examples/trap.s) · [Serial](examples/serial.s) · [Timers](examples/timer.s)
 
 Tests cover big-endian lanes, mapping bounds, ROM protection, register windows,
 integer flags, all Bicc conditions across representative flag states, delay and
@@ -516,10 +568,9 @@ SCC regressions cover CRC initialization, first/all-character receive interrupts
 transmit-empty transitions, priority/vector encoding, BREAK latches, backpressure
 atomicity and both chips' level-12 interrupt-controller wiring.
 Original OBP lists both image-backed targets with `probe-scsi-all`; see
-[SCSI storage](docs/scsi.md). Solaris 2.6/7 CDs load their kernels and mount the
-CD's UFS root, then reach the serial language-selection prompt; installation
-remains unverified. Report actual command
-results, not just firmware device-node creation.
+[SCSI storage](docs/scsi.md). Both Solaris 2.6 and 7 install from CD and boot
+from their own writable SS-5 disks to a root shell. The Ultra 5 uses a
+separate IDE installation. [SS-5 disk boots](docs/firmware.md#installed-solaris-disk-boot) · [Ultra 5 disk boot](docs/ultra5.md#boot-the-installed-solaris-7-system)
 
 ## Replacement firmware boundary
 
