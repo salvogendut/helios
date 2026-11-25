@@ -233,23 +233,25 @@ impl Machine {
             .ok_or(DmaError::Unsupported("no SBus/IOMMU installed"))?
             .io_control
             .mapping(master, address, dram_aperture)?;
-        let standalone = self.standalone_iommu.take();
-        let (physical, boot_mode, standalone_translation) = if let Some(mut iommu) = standalone {
-            let result = iommu.translate(&mut self.bus, address, write, mapping);
-            self.standalone_iommu = Some(iommu);
-            (result?, false, true)
-        } else {
-            // The integrated microSPARC-II I/O path records the real CPU S pin
-            // and PCR.BM in MFSR, while CP remains zero for the DMA request.
-            self.bus.set_cpu_supervisor(self.cpu.psr() & 0x80 != 0);
-            (
-                self.cpu
-                    .mmu
-                    .translate_io(&mut self.bus, address, write, mapping)?,
-                self.cpu.mmu.boot_mode(),
-                false,
-            )
-        };
+        let (physical, boot_mode, standalone_translation) =
+            if let Some(iommu) = &mut self.standalone_iommu {
+                (
+                    iommu.translate(&mut self.bus, address, write, mapping)?,
+                    false,
+                    true,
+                )
+            } else {
+                // The integrated microSPARC-II I/O path records the real CPU S pin
+                // and PCR.BM in MFSR, while CP remains zero for the DMA request.
+                self.bus.set_cpu_supervisor(self.cpu.psr() & 0x80 != 0);
+                (
+                    self.cpu
+                        .mmu
+                        .translate_io(&mut self.bus, address, write, mapping)?,
+                    self.cpu.mmu.boot_mode(),
+                    false,
+                )
+            };
         if standalone_translation {
             if !self.bus.dram_contains_aperture(physical, bytes) {
                 return Err(DmaError::Unsupported("non-DRAM DVMA target"));

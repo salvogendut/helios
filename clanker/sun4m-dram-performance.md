@@ -104,3 +104,60 @@ same version found a 10.8% reduction in SS-20 copy-and-sync time, an 11.5%
 reduction in the SS-5 early kernel interval and a 5.1% increase in that
 interval on Axil. These observations motivated the separate RAM and MMIO
 entry paths and a fresh comparison to main.
+
+## SS-20 and Axil standalone IOMMU
+
+A second experiment uses the indexed-RAM commit `f366eea` as its baseline.
+The SCSI controller services one byte per DMA transaction. The old address
+translation code took the standalone IOMMU out of the machine and put it
+back on each transaction. In the x86-64 release build, that generated a
+384-byte copy onto the stack and a 392-byte copy back. Borrowing the
+machine's IOMMU and bus fields in place eliminated both copies. The SS-5
+uses a separate integrated IOMMU path.
+
+Two SS-20 instances ran original OBP and Solaris 2.6 with identical NVRAM
+and independent clones of the same SCSI disk. At the root shell each made
+four fresh copies of `/kernel`, synced them, and verified them with
+`diff -r`. Each then read 2 MiB from `/dev/rdsk/c0t3d0s2` four times per
+request size with `dd`. The harness checks the full input and output record
+counts. Each phase uses the same host CPU, with the first build alternating
+between trials of each workload. The elapsed and process CPU times, guest
+outcomes, serial transcripts and final machine snapshots are retained under
+`local/sun4m-dram-perf-2026-11-25/iommu-borrow-solaris/`.
+
+| SS-20 Solaris phase | Before | In-place IOMMU | Elapsed time change |
+| --- | ---: | ---: | ---: |
+| End of early kernel interval to root shell (one pair) | 74.189 s | 74.322 s | +0.2% |
+| Copy and sync, median | 7.087 s | 6.687 s | −5.6% |
+| Verify with `diff -r`, median | 9.853 s | 10.438 s | +5.9% |
+| Read 2 MiB in 512-byte requests, median | 5.315 s | 5.680 s | +6.9% |
+| Read 2 MiB in 8 KiB requests, median | 0.780 s | 0.741 s | −4.9% |
+
+Each copy completed faster. Each verification and 512-byte raw read took
+longer. Process CPU time also rose for these last two phases, by 5.3% and
+6.4%, respectively. The test used one guest boot per build on a
+frequency-scaling host. It establishes mixed guest results and leaves the
+cause of the small-read regression open. Both machines returned to OBP after
+2,080,150,000 outcomes with identical transcripts, NVRAM and final diagnostic
+snapshots.
+
+The controller-only replay used the same Cargo release builds as the guest
+test, one warm-up per build, then four alternating pairs on each machine.
+Each run verified the DMA residual, address and contents of every word.
+
+| 2 MiB ESP read | Before | In-place IOMMU | Elapsed time change |
+| --- | ---: | ---: | ---: |
+| SS-20, 512-byte requests | 103.42 ms | 88.83 ms | −14.1% |
+| SS-20, 8 KiB requests | 93.55 ms | 75.50 ms | −19.3% |
+| Axil, 512-byte requests | 114.65 ms | 84.44 ms | −26.3% |
+| Axil, 8 KiB requests | 104.07 ms | 74.70 ms | −28.2% |
+
+All four pairs improved for each SS-20 and Axil request size. The SS-5
+control varied in both directions across pairs. The earlier scratch replay
+measured larger reductions on SS-20 and Axil (26–36%); use the matched Cargo
+builds above when comparing controller and Solaris results.
+
+With the in-place translation change, the default suite reported 1,034
+passing test executions and the `perf-counters` suite reported 1,037.
+Each had 23 ignored tests and zero failures. Formatting, both all-target
+Clippy runs with warnings denied, and all four demos passed.

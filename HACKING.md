@@ -95,8 +95,10 @@ and `dma_write` provide aligned single-transfer access to RAM without advancing
 CPU or device time. SS-5 uses its integrated CPU/I/O TLB and CPU-derived
 initiator attributes. SS-20/Axil use a board-owned `StandaloneIommu` with its
 own 16-entry LRU cache and 36-bit IOPTE physical form; it does not use either
-CPU's SRMMU context, diagnostic state or translation cache. Ethernet and SCSI
-DMA use the onboard NCR89C100's master 5. Invalid mappings return an SBus error
+CPU's SRMMU context, diagnostic state or translation cache. Borrow the IOMMU in
+place for DMA translation. Moving it out of the machine for each address can
+copy the entire cache twice per SCSI byte. Ethernet and SCSI DMA use the
+onboard NCR89C100's master 5. Invalid mappings return an SBus error
 to the requesting device; they do not populate CPU fault registers or assert a
 CPU interrupt. SS-5 queues I/O flush commands for its shared MMU; MBus queues
 them for the standalone owner. CPU MMU accesses cannot consume standalone I/O
