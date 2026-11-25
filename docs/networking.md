@@ -67,6 +67,25 @@ route to `192.168.0.1`, and use `nameserver 192.168.0.1` in the guest's
 `/etc/resolv.conf`. On NetBSD, wait until the address no longer appears as
 `TENTATIVE` in `ifconfig le0 inet` before checking connectivity.
 
+On an Ultra 5 installed with Solaris 7 networking disabled, enable **Host
+networking** in Heliacal. To let Solaris configure `hme0` at startup, run
+the following as guest root, then reboot normally with `boot disk`.
+
+```sh
+touch /etc/hostname.hme0 /etc/dhcp.hme0
+sync
+halt
+```
+
+At the multiuser login, `ifconfig hme0 auto-dhcp status` shows the lease,
+`/sbin/dhcpinfo Router` shows the router supplied by DHCP, and `netstat -rn`
+shows whether Solaris installed it as the default route. The guest can print
+`ifconfig: timed out after 30 seconds` early in boot and still reach login
+with a bound lease and a working route. On the tested installation Solaris
+left `/etc/resolv.conf` absent and displayed the hostname `unknown`. For
+hostname lookups, add `nameserver 192.168.0.1` to the guest's
+`/etc/resolv.conf` and check the name-service switch.
+
 Solaris also needs a `hosts: files dns` entry in `/etc/nsswitch.conf`; an empty
 file or a files-only entry can produce `unknown host` without sending a DNS
 query. Preserve the other service entries when editing it. Sun's
@@ -146,6 +165,14 @@ HTTP/1.0 from a server on an isolated host network. Both guest files had
 the host's POSIX `cksum` of `3038018214 1048576`.
 An independent download through Heliacal's graphical Solaris console produced
 the same checksum on a fresh disk clone and halted cleanly.
+
+Two fresh Ultra 5 disk clones configured for DHCP reached Solaris run level 3
+with `hme0` bound and a default route through `192.168.0.1`. Both lacked
+`/etc/defaultrouter`. The second serial run used `dtconfig -d` to disable
+desktop login, retrieved the expected HTTP response from `198.18.0.1:18080`
+through that route, and halted at OpenBoot. In the first serial run the board
+stopped with `UltraSPARC block transfer to noncacheable memory` after the
+desktop-login banner. The cause of that stop remains open.
 
 `tests/net.rs` covers ARP, RARP, DHCP offer/ack, BOOTP boot-file naming, ICMP
 echo, UDP NAT against a local socket, DNS relay source-address rewriting, TFTP
