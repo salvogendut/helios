@@ -3,6 +3,8 @@
 //! the V9 fixture and is not wired into workstation machine construction.
 
 use crate::ultra5::PowerOnReset;
+#[cfg(test)]
+mod block_tests;
 mod ecache;
 mod primary_cache;
 #[cfg(test)]
@@ -227,6 +229,13 @@ pub(crate) enum PciReadAbort {
 /// Data accesses are independent of the instruction source. A reset-time
 /// peripheral may implement physical bypass reads without mapping virtual RAM.
 pub(crate) trait V9DataBus {
+    /// Verify that one aligned 64-byte PIO can complete through the xword
+    /// port. Eight independent accesses to arbitrary device registers can
+    /// have different side effects from a block transaction.
+    fn validate_uncached_block(&self, pa: u64) -> Result<(), String> {
+        Err(format!("unsupported noncacheable V9 block at PA={pa:#x}"))
+    }
+
     fn read_cacheable_xword(&mut self, pa: u64) -> Result<u64, String> {
         Err(format!(
             "unmapped V9 cacheable physical xword read at {pa:#x}"
@@ -334,6 +343,10 @@ pub(crate) struct UnmappedData;
 impl V9DataBus for UnmappedData {}
 
 impl V9DataBus for V9Memory {
+    fn validate_uncached_block(&self, pa: u64) -> Result<(), String> {
+        self.checked_range(pa, 64, 64).map(|_| ())
+    }
+
     fn read_cacheable_xword(&mut self, pa: u64) -> Result<u64, String> {
         self.try_read_u64(pa)
     }
@@ -1324,7 +1337,15 @@ impl V9Cpu {
                         self.require_privilege("alternate FP memory access")?;
                     }
                     let va = self.read_reg(rs1).wrapping_add(b);
-                    self.fp_block(memory, va, rd, asi, op3 == 0x37)?;
+                    self.fp_block(memory, va, rd, asi, op3 == 0x37).map_err(
+                        |fault| match fault {
+                            CpuFault::Stop(msg) => CpuFault::Stop(format!(
+                                "PC={:#x} nPC={:#x} instruction={word:#010x}: {msg}",
+                                self.pc, self.npc
+                            )),
+                            other => other,
+                        },
+                    )?;
                 }
                 0x20 | 0x21 | 0x23 | 0x24 | 0x25 | 0x27 | 0x30 | 0x33 | 0x34 | 0x37 => {
                     self.require_fpu()?;
@@ -1975,7 +1996,10 @@ impl V9Cpu {
         let kind = if store { Access::Write } else { Access::Read };
         let map = self.translate_asi(va, 64, kind, Some(asi))?;
         if !map.cacheable {
-            return Err("UltraSPARC block transfer to noncacheable memory".into());
+            memory.validate_uncached_block(map.pa).map_err(|reason| {
+                let tte = map.slot.map(|slot| self.data_tlb.read_data(slot));
+                format!("{reason}: {kind:?} ASI={asi:#x} VA={va:#x} TTE={tte:x?}")
+            })?;
         }
         let little = map.invert_endian ^ (asi & 8 != 0);
         let mut words = [0; 8];
@@ -1984,10 +2008,13 @@ impl V9Cpu {
             let reg = rd + (2 * i) as u8;
             if store {
                 let value = IntegerWidth::Xword.reorder(self.fp_double(reg), little);
-                memory.write_cacheable_xword(pa, value)?;
-                self.update_data_hit(va + 8 * i as u64, pa, IntegerWidth::Xword, value);
+                memory.write_integer(pa, IntegerWidth::Xword, map.cacheable, value)?;
+                if map.cacheable {
+                    self.update_data_hit(va + 8 * i as u64, pa, IntegerWidth::Xword, value);
+                }
             } else {
-                *v = IntegerWidth::Xword.reorder(memory.read_cacheable_xword(pa)?, little);
+                let value = memory.read_integer(pa, IntegerWidth::Xword, map.cacheable)?;
+                *v = IntegerWidth::Xword.reorder(value, little);
             }
         }
         if !store {

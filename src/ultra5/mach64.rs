@@ -38,6 +38,10 @@ impl Default for Mach64 {
     }
 }
 impl Mach64 {
+    pub(super) fn is_vram(off: u32) -> bool {
+        (off & 0x7f_ffff) < 0x7f_f800
+    }
+
     fn reg(&self, offset: usize) -> u32 {
         u32::from_le_bytes(self.registers[offset..offset + 4].try_into().unwrap())
     }
@@ -146,7 +150,7 @@ impl Mach64 {
             .ok_or_else(||format!("unsupported Mach64 aperture +{off:#x} width {n}"))
     }
     pub fn read<const N: usize>(&mut self, off: u32) -> Result<[u8; N], String> {
-        if (off & 0x7f_ffff) < 0x7f_f800 {
+        if Self::is_vram(off) {
             let swap = self.aperture_lane_mask::<N>(off)?;
             return Ok(std::array::from_fn(|k| {
                 self.vram[(off as usize + (k ^ swap)) & 0x3f_ffff]
@@ -189,7 +193,7 @@ impl Mach64 {
         }
     }
     pub fn write<const N: usize>(&mut self, off: u32, bytes: [u8; N]) -> Result<(), String> {
-        if (off & 0x7f_ffff) < 0x7f_f800 {
+        if Self::is_vram(off) {
             let swap = self.aperture_lane_mask::<N>(off)?;
             for (k, b) in bytes.into_iter().enumerate() {
                 let p = (off as usize + (k ^ swap)) & 0x3f_ffff;

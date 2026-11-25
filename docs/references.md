@@ -7,6 +7,13 @@ test rather than assuming either emulator defines the hardware.
 
 ## Ultra 5 graphical console
 
+- UltraSPARC-IIi table 6-2 maps a noncacheable block read in PCI memory space
+  to Memory Read Line and a block write to Memory Write. Section 13.5.3
+  specifies 64-byte alignment, eight consecutive double registers, and byte
+  swapping within each doubleword. Pinned QEMU also advances the translated
+  address by eight bytes for each register.
+  [Sun UltraSPARC-IIi User's Manual](https://www.cs.tufts.edu/comp/150PAT/arch/sparc/UltraSPARC-IIi-user-805-0087-02.pdf) · [QEMU SPARC block loads](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/translate.c#L2080) · [QEMU SPARC block stores](https://github.com/qemu/qemu/blob/f71afb409a87c4ecd0f9d63a5963eb645dfab780/target/sparc/translate.c#L2211)
+
 - Mach64 CRTC timing, offset/pitch, pixel depth, blanking and DAC index/data
   registers determine the framebuffer presented to the host. The Ultra 5
   OpenBoot 3.31 console exercises the indexed, 8-bit 1152×900 mode.

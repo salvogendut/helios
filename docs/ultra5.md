@@ -27,6 +27,13 @@ aperture follow the GTB memory controller’s independently selectable byte,
 16-bit or 32-bit ordering for each framebuffer aperture. Keyboard and mouse bytes reach
 separate PC87332 UARTs.
 
+Solaris 7 also uses VIS block stores when desktop login starts on a system
+booted from the serial console. Helios transfers each aligned 64-byte block
+through the currently enabled Mach64 PCI framebuffer BAR. The CPU applies
+endianness per floating-point doubleword and bypasses its data cache for these
+noncacheable mappings. Both framebuffer apertures use their programmed PCI
+lane ordering. Block transfers to device registers remain unsupported.
+
 ## Boot the installed Solaris 7 system
 
 The Solaris 7 11/99 SPARC End User installation uses the 32-bit sun4u kernel

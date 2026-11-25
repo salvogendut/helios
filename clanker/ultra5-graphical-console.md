@@ -97,3 +97,27 @@ at the greeter started a root session. The front panel, File Manager and
 Help Viewer appeared after the welcome screen. A host keyboard input
 changed the selected item in File Manager. Guest stack and framebuffer
 evidence are under ignored `local/ultra5-cde-debug-2026-11-23/evidence/`.
+
+### Solaris 7 VIS block store on serial startup
+
+With DHCP and CDE enabled, the V9 interpreter stopped at PC/nPC
+`0xfeb61a38/0xfeb61a3c`. Instruction `0xc1bf5e00` stored eight double
+registers starting at %f0 through ASI 0xf0. Guest VA `0xfd800000`
+translated to PA `0x1ffe1800000`, the upper Mach64 framebuffer aperture.
+D-TLB slot 18 held tag `0xfd801062` and TTE `0x800001ffe180001a`
+(CP=0, CV=1, E=1, W=1). The former CPU guard rejected the access before
+board dispatch. The repaired path checks the active Simba forwarding and
+display BAR, then issues eight xword transfers with the mapping's byte order.
+The serial clone reached run level 3 with desktop login enabled, answered
+the shell, and returned to OpenBoot on halt. Compact evidence is retained
+under `local/ultra5-cde-vis-2026-11-25/`.
+
+The graphical control booted the same Solaris installation on a separate
+clone. Keyboard entry at the original greeter opened a root CDE session
+with the front panel, File Manager and Help Viewer. For the HTTP check,
+the disposable guest's `/.dtprofile` started a terminal that waited for
+`dtwm`, retrieved a repeating 0–255 byte pattern from
+`198.18.0.1:18080`, and compared the guest file's POSIX checksum and length
+with `2572415250 1048576`. The isolated server received the matching
+acknowledgement. The graphical console showed the completed filesystem
+sync and the OpenBoot prompt after halt.

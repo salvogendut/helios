@@ -880,6 +880,22 @@ impl SuperIoConfig {
 }
 
 impl V9DataBus for Ultra5ResetBoard {
+    fn validate_uncached_block(&self, pa: u64) -> Result<(), String> {
+        // IIi table 6-2 maps a noncacheable block store to PCI Memory Write.
+        // Both the BAR and its VRAM/register boundary are 64-byte aligned.
+        if pa & 63 == 0
+            && self
+                .onboard_mem_offset(2, pa, 0x1000000)
+                .is_some_and(super::mach64::Mach64::is_vram)
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "unsupported Ultra 5 noncacheable block at PA={pa:#x}"
+            ))
+        }
+    }
+
     fn read_integer(
         &mut self,
         pa: u64,

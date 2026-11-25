@@ -170,9 +170,14 @@ Two fresh Ultra 5 disk clones configured for DHCP reached Solaris run level 3
 with `hme0` bound and a default route through `192.168.0.1`. Both lacked
 `/etc/defaultrouter`. The second serial run used `dtconfig -d` to disable
 desktop login, retrieved the expected HTTP response from `198.18.0.1:18080`
-through that route, and halted at OpenBoot. In the first serial run the board
-stopped with `UltraSPARC block transfer to noncacheable memory` after the
-desktop-login banner. The cause of that stop remains open.
+through that route, and halted at OpenBoot. The earlier stop after the
+desktop-login banner was a VIS block store to the Mach64 framebuffer. With
+framebuffer block transfers enabled, the serial guest answered a shell command
+with `dtlogin` running at run level 3 and halted cleanly at OpenBoot.
+With DHCP and CDE enabled, a root session on the Mach64 display retrieved
+a 1 MiB HTTP fixture from `198.18.0.1:18080`. Solaris reported the expected
+POSIX `cksum` of `2572415250 1048576` and halted back to OpenBoot.
+See [Ultra 5 graphical console](ultra5.md#graphical-console-in-heliacal).
 
 `tests/net.rs` covers ARP, RARP, DHCP offer/ack, BOOTP boot-file naming, ICMP
 echo, UDP NAT against a local socket, DNS relay source-address rewriting, TFTP
